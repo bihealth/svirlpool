@@ -1,0 +1,176 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[project]
+name = "svirlpool"
+authors = [{ name = "Vinzenz May", email = "vinzenz.may@bih-charite.de" }]
+description = "Svirlpool: structural variant detection from long read sequencing by local assembly"
+version = "0.1.0"
+readme = "README.md"
+keywords = ["bioinformatics"]
+license = "MIT"
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+]
+
+[project.scripts]
+svirlpool = "svirlpool.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/bihealth/svirlpool"
+Issues = "https://github.com/bihealth/svirlpool/issues"
+Source = "https://github.com/bihealth/svirlpool"
+
+[tool.hatch.version]
+path = "src/svirlpool/__init__.py"
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "coverage>=7.6.12",
+    "freezegun>=1.5.1",
+    "hatch>=1.14.0",
+    "pyright>=1.1.394",
+    "pytest>=8.3.4",
+    "pytest-coverage>=0.0",
+    "pytest-sugar>=1.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.9.6",
+    "syrupy>=4.8.1",
+]
+
+[tool.hatch.envs.quality]
+installer = "uv"
+
+[tool.hatch.envs.quality.scripts]
+check = [
+  "black --check --diff --preview src tests",
+  "ruff check src tests",
+]
+format = [
+  "black --preview src tests",
+  "ruff check --fix src tests",
+  "check",
+]
+typecheck = [
+  """
+  pyright --pythonpath="$(uv run --active hatch run quality:python -c 'import sys; print(sys.executable)')" \
+    {args:src/ tests/}
+  """
+]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+]
+defineConstant = { DEBUG = true }
+stubPath = "stubs"
+
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+
+# Missing type annotation reports
+reportMissingParameterType = "error"
+reportUnknownParameterType = "error"
+reportUnknownVariableType = "error"
+reportUnknownMemberType = "error"
+reportUnknownArgumentType = "error"
+reportMissingTypeArgument = "error"
+
+# Other useful reports for type safety
+reportGeneralTypeIssues = "error"
+reportOptionalMemberAccess = "error"
+reportOptionalSubscript = "error"
+reportPrivateImportUsage = "error"
+
+# Stub files
+reportMissingTypeStubs = "error"
+reportImportCycles = "error"
+reportUnusedImport = "error"
+reportUnusedVariable = "error"
+
+[tool.ruff]
+lint.ignore = [
+  "E501", # line too long, handled by black
+  "B008", # do not perform function calls in argument defaults
+  "C901", # too complex
+  # the following are known issues in generated code
+  "E721", # is vs. ==
+  "C409", # Unnecessary list literal
+  "B904", # raise from e not used
+  "C405", # Unnecessary list literal (rewrite as set literal)
+  "F403", # does not allow from {name} import *
+  "F405", # does not allow from {name} import *
+]
+lint.select = [
+  "E", # pycodestyle errors
+  "W", # pycodestyle warnings
+  "F", # pyflakes
+  "I", # isort
+  "C", # flake8-comprehensions
+  "B", # flake8-bugbear
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["svirlpool"]
+
+[tool.hatch.envs.tests]
+installer = "uv"
+
+[tool.hatch.envs.tests.scripts]
+run = "pytest --cov=svirlpool --cov-report=term-missing tests/ --durations 0 -s {args:tests}"
+run-snapshot = "run --snapshot-update"
+
+[tool.hatch.envs.build]
+installer = "uv"
+feature = [
+  "dev",
+]
+
+[tool.hatch.envs.build.scripts]
+run = "hatch build"
+
+[tool.hatch.envs.targets]
+installer = "uv"
+
+[tool.hatch.build]
+include = [
+    "src/svirlpool/**/*.py",
+    "src/**/py.typed",
+]
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+ignore-vcs = true
+
+[tool.hatch.build.targets.sdist]
+ignore-vcs = true
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "src/"
+]
+filterwarnings = [
+]
+
+[tool.semantic_release]
+version_variables = [
+  "src/svirlpool/__init__.py:__version__",
+]
+version_toml = [
+  "pyproject.toml:project.version",
+]
