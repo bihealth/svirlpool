@@ -52,7 +52,6 @@ dev = [
 ]
 
 [tool.hatch.envs.quality]
-installer = "uv"
 
 [tool.hatch.envs.quality.scripts]
 check = [
@@ -66,7 +65,7 @@ format = [
 ]
 typecheck = [
   """
-  pyright --pythonpath="$(uv run --active hatch run quality:python -c 'import sys; print(sys.executable)')" \
+  pyright --pythonpath="$(pixi run python -c 'import sys; print(sys.executable)')" \
     {args:src/ tests/}
   """
 ]
@@ -129,33 +128,23 @@ lint.select = [
 known-first-party = ["svirlpool"]
 
 [tool.hatch.envs.tests]
-installer = "uv"
 
 [tool.hatch.envs.tests.scripts]
 run = "pytest --cov=svirlpool --cov-report=term-missing tests/ --durations 0 -s {args:tests}"
 run-snapshot = "run --snapshot-update"
 
 [tool.hatch.envs.build]
-installer = "uv"
-feature = [
-  "dev",
-]
 
 [tool.hatch.envs.build.scripts]
 run = "hatch build"
 
 [tool.hatch.envs.targets]
-installer = "uv"
 
 [tool.hatch.build]
 include = [
     "src/svirlpool/**/*.py",
     "src/**/py.typed",
 ]
-
-[tool.hatch.build.targets.wheel]
-sources = ["src"]
-ignore-vcs = true
 
 [tool.hatch.build.targets.sdist]
 ignore-vcs = true
@@ -174,3 +163,25 @@ version_variables = [
 version_toml = [
   "pyproject.toml:project.version",
 ]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+svirlpool = { path = ".", editable = true }
+[tool.pixi.dependencies]
+python = ">=3.12"
+hatch = ">=1.14.0"
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+
+[tool.pixi.tasks]
+check = "black --check --diff --preview src tests && ruff check src tests"
+format = "black --preview src tests && ruff check --fix src tests"
+typecheck = "pyright src/ tests/"
+test = "pytest --cov=svirlpool --cov-report=term-missing tests/ --durations 0 -s"
+test-snapshot = "pytest --cov=svirlpool tests/ --snapshot-update"
+build = "hatch build"
