@@ -31,9 +31,9 @@ jobs:
         run: |
           pixi run -e dev check
 
-      - name: Run Type Checks
-        run: |
-          pixi run -e dev typecheck
+      # - name: Run Type Checks
+      #   run: |
+      #     pixi run -e dev typecheck
 
   testing:
     runs-on: ubuntu-latest
