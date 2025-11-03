@@ -11,25 +11,25 @@ help:
 	@echo "  fix        	Fix the project"
 	@echo "  test       	Run the tests"
 	@echo "  test-snapshot	Run the tests and rebuild snapshots"
-	@echo "  lock           Build uv.lock file"
+	@echo "  lock           Update pixi.lock file"
 
 .PHONY: check
 check:
-	uv run hatch run quality:check
-	uv run hatch run quality:typecheck
+	pixi run -e dev check
+	pixi run -e dev typecheck
 
 .PHONY: fix
 fix:
-	uv run hatch run quality:format
+	pixi run -e dev format
 
 .PHONY: test
 test:
-	uv run hatch run tests:run
+	pixi run -e dev test
 
 .PHONY: test-snapshot
 test-snapshot:
-	uv run hatch run tests:run-snapshot
+	pixi run -e dev test-snapshot
 
 .PHONY: lock
 lock:
-	uv lock --upgrade
+	pixi update

@@ -10,13 +10,19 @@
 
 ### Prerequisites
 
-Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/):
+Install [`pixi`](https://pixi.sh/latest/):
 
 ```
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -fsSL https://pixi.sh/install.sh | bash
 ```
 
 ### Instructions
+
+Open VS Code with pix-installed `dev` environment
+
+```
+pixi run -e dev code .
+```
 
 Clone repository:
 
