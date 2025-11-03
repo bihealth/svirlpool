@@ -1,5 +1,7 @@
 # Svirlpool: structural variant detection from long read sequencing by local assembly
 
+<img src="media/illustration.png" align="right" alt="Svirlpool illustration" width="300" height="300">
+
 ## Installing & Running
 
 ### Prerequisites
