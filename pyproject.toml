@@ -173,14 +173,15 @@ svirlpool = { path = ".", editable = true }
 [tool.pixi.dependencies]
 python = ">=3.12"
 hatch = ">=1.14.0"
+go-shfmt = "*"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
-check = "black --check --diff --preview src tests && ruff check src tests"
-format = "black --preview src tests && ruff check --fix src tests"
+check = "black --check --diff --preview src tests && ruff check src tests && shfmt -i 4 -d **/*.sh"
+format = "black --preview src tests && ruff check --fix src tests && shfmt -i 4 -w **/*.sh"
 typecheck = "pyright src/ tests/"
 test = "pytest --cov=svirlpool --cov-report=term-missing tests/ --durations 0 -s"
 test-snapshot = "pytest --cov=svirlpool tests/ --snapshot-update"
