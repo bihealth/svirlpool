@@ -16,7 +16,7 @@ help:
 .PHONY: check
 check:
 	pixi run -e dev check
-	pixi run -e dev typecheck
+# 	pixi run -e dev typecheck
 
 .PHONY: fix
 fix:

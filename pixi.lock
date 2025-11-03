@@ -1224,7 +1224,7 @@ packages:
 - pypi: ./
   name: svirlpool
   version: 0.1.0
-  sha256: 18ee038f41ff6c5cd0a3151938493f9234004490830e38b934f8964ebff0d88f
+  sha256: 2f35570b7f9404700dda5b05fcc3b5b15365beb38fd0780fee94ada194443f42
   requires_python: '>=3.12'
   editable: true
 - pypi: https://files.pythonhosted.org/packages/9d/9a/6c68aad2ccfce6e2eeebbf5bb709d0240592eb51ff142ec4c8fbf3c2460a/syrupy-5.0.0-py3-none-any.whl
