@@ -55,6 +55,8 @@ jobs:
 
       - name: Run MUC1 example as smoke text
         run: |
+            set -x
+
             mkdir -p /tmp/workdir/result
             pixi run \
                 svirlpool run \
@@ -67,3 +69,10 @@ jobs:
                     --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
                     --lamassemble-mat data/lamassemble-mats/promethion.mat \
                     --unique-regions examples/muc1/data/muc1.unique.bed
+
+            pixi run \
+                svirlpool sv-calling \
+                    --threads 1 \
+                    --reference examples/muc1/data/muc1.fa \
+                    --input /tmp/workdir/result/svirltile.db \
+                    --output /tmp/workdir/result/variants.vcf.gz
