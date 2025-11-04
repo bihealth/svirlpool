@@ -117,18 +117,86 @@ We will end up with the SV file `variants.vcf.gz` which contains the SV calls, s
 ```
 
 ## How to call SVs with Svirlpool on my real data
-### prefab data
+
+You will need the get the prefab data (I), then create the svirltile(s) of your samples (II), then call SVs from the svirltiles (III) to generate the final vcf file.
+
+Your starting point is the svirlpool directory.
+
+### I prefab data
 Some files are needed to run svirlpool. What you need:
 1) read alignments - indexed .bam files that were generated with minimap2. They need to have read DNA sequences and sequence quality scores.
 2) an indexed reference genome - in .fasta format; indexed with samtools faidx
-3) annotations files - you can get them from: https://github.com/bihealth/svirlpool-data
-  - 
+3) the matrices for lamassemble. They are here in the svirlool-repository. set: SVIRLPOOLDIR=$(realpath .)
+4) annotations files - you can get them from: https://github.com/bihealth/svirlpool-data
+  - download the data repository and cd into it. Set: DATADIR=$(realpath .)
 
+let's say you have the samples HG002 and HG003 from the GiaB test data set on HG19. You now set the variables and then run svirlpool:
 
-### svirltiles
+`cd $SVIRLPOOLDIR`
 
-### vcf
+`pixi shell`
 
+```
+REFERENCE={hs37d5.fa}
+THREADS=16
+
+TRF=$DATADIR/pbsv-annotations/human_hs37d5.trf.bed
+MAT=$SVIRLPOOLDIR/data/lamassemble-mats/promethion.mat
+MNNTS=$DATADIR/HG19/hs37d5.mononucleotides.lt6.bed.gz
+UNIQUER=$DATADIR/HG19/hs37d5.unique.bed.gz
+```
+
+Now cd into a directory of your choice, where your data shall be processed, e.g.
+
+`cd dataanalysis`
+
+### II generate svirltiles
+#### run the son HG002:
+```
+SAMPLENAME=HG002
+ALIGNMENTS={ALIGNMENTS.HG002.BAM}
+
+svirlpool run \
+    --samplename $SAMPLENAME \
+    --workdir $SAMPLENAME \
+    --alignments $ALIGNMENTS \
+    --reference $REFERENCE \
+    --trf $TRF \
+    --lamassemble-mat $MAT \
+    --mononucleotides $ MNNTS \
+    --unique-regions UNIQUER \
+    --threads $THREADS \
+    --min-sv-size 30
+```
+#### run the father HG003:
+```
+SAMPLENAME=HG003
+ALIGNMENTS={ALIGNMENTS.HG003.BAM}
+
+svirlpool run \
+    --samplename $SAMPLENAME \
+    --workdir $SAMPLENAME \
+    --alignments $ALIGNMENTS \
+    --reference $REFERENCE \
+    --trf $TRF \
+    --lamassemble-mat $MAT \
+    --mononucleotides $ MNNTS \
+    --unique-regions UNIQUER \
+    --threads $THREADS \
+    --min-sv-size 30
+```
+### III vcf
+
+```
+svirlpool sv-calling \
+    --input $HG002/svirltile.db $HG003/svirltile.db \
+    --reference $REFERENCE \
+    --output family.vcf.gz \
+    --sv-types DEL INS \
+    --min-sv-size 50
+```
+
+The resulting file should be family.vcf.gz.
 
 
 ### Hints
