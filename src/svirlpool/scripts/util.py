@@ -387,21 +387,6 @@ def bed_chr_to_chrID(
             print(s)
 
 
-def bed_chrID_to_chr(input: Path, reference: Path, output: Path = Path("")):
-    """loads a bed file (input) and converts the chromosome IDs to chromosome names."""
-    ref_dict = create_ref_dict(reference)
-    if output != Path(""):
-        f = open(output, "w")
-    for line in open(input, "r"):
-        line = line.rstrip().split("\t")
-        line[0] = ref_dict[int(line[0])]
-        s = "\t".join(list(map(str, line)))
-        if output != Path(""):
-            print(s, file=f)
-        else:
-            print(s)
-
-
 def create_fai_if_not_exists(reference: Path) -> Path:
     if not Path(str(reference) + ".fai").exists():
         log.warning(f"{str(reference)+'.fai'} not found. Trying to create one..")

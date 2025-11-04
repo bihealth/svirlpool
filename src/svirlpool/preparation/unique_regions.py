@@ -14,7 +14,7 @@ from shlex import split
 
 from logzero import logger as log
 
-from . import util
+from ..scripts import util
 
 # %%
 
