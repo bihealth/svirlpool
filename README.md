@@ -116,6 +116,21 @@ We will end up with the SV file `variants.vcf.gz` which contains the SV calls, s
 1       159707  INS.2   T       Tggggcggtggagccgcgggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggcgtggagcccggggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggc
 ```
 
+## How to call SVs with Svirlpool on my real data
+### prefab data
+Some files are needed to run svirlpool. What you need:
+1) read alignments - indexed .bam files that were generated with minimap2. They need to have read DNA sequences and sequence quality scores.
+2) an indexed reference genome - in .fasta format; indexed with samtools faidx
+3) annotations files - you can get them from: https://github.com/bihealth/svirlpool-data
+  - 
+
+
+### svirltiles
+
+### vcf
+
+
+
 ### Hints
 
 Open VS Code with pix-installed `dev` environment
