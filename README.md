@@ -48,20 +48,19 @@ Run example
 
 ```
 # create working directory
-WORKDIR=/tmp/workdir
-mkdir -p $WORKDIR/result
+mkdir -p /tmp/workdir/result
 # now run
 pixi run \
     svirlpool run \
         --threads 1 \
         --samplename muc1test \
-        --workdir $WORKDIR/result \
-        --alignments tests/muc1/data/muc1.bam \
-        --reference tests/muc1/data/muc1.fa \
-        --trf tests/muc1/data/muc1.trf.bed \
-        --mononucleotides tests/muc1/data/muc1.mononucleotides.lt6.bed \
+        --workdir /tmp/workdir/result \
+        --alignments examples/muc1/data/muc1.bam \
+        --reference examples/muc1/data/muc1.fa \
+        --trf examples/muc1/data/muc1.trf.bed \
+        --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
         --lamassemble-mat data/lamassemble-mats/promethion.mat \
-        --unique-regions tests/muc1/data/muc1.unique.bed
+        --unique-regions examples/muc1/data/muc1.unique.bed
 ```
 
 ### Hints
