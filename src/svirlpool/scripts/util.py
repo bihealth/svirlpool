@@ -370,36 +370,39 @@ def bed_chr_to_chrID(
     input: Path, reference: Path, output: Path = Path(""), add_id: bool = True
 ):
     """loads a bed file (input) and converts the chromosome names to chromosome IDs.
-    Adds an ID to the end of each line."""
+    Adds an ID to the end of each line. Supports plain text and gzipped/bgzip (.gz, .bgz) files.
+    """
     ref_dict = create_ref_dict(reference)
     ref_dict = {v: k for k, v in ref_dict.items()}
-    if output != Path(""):
-        f = open(output, "w")
-    for i, line in enumerate(open(input, "r")):
-        line = line.rstrip().split("\t")
-        line[0] = ref_dict[str(line[0])]
-        if add_id:
-            line.append(i)
-        s = "\t".join(list(map(str, line)))
-        if output != Path(""):
-            print(s, file=f)
-        else:
-            print(s)
 
-
-def bed_chrID_to_chr(input: Path, reference: Path, output: Path = Path("")):
-    """loads a bed file (input) and converts the chromosome IDs to chromosome names."""
-    ref_dict = create_ref_dict(reference)
+    out_handle = None
     if output != Path(""):
-        f = open(output, "w")
-    for line in open(input, "r"):
-        line = line.rstrip().split("\t")
-        line[0] = ref_dict[int(line[0])]
-        s = "\t".join(list(map(str, line)))
-        if output != Path(""):
-            print(s, file=f)
-        else:
-            print(s)
+        out_handle = open(output, "w")
+
+    input_path_str = str(input)
+    # support gzipped / bgzip files as well as plain text
+    if input_path_str.endswith((".gz", ".bgz")):
+        fh = gzip.open(input_path_str, "rt")
+    else:
+        fh = open(input_path_str, "r")
+
+    with fh as f:
+        for i, raw in enumerate(f):
+            line = raw.rstrip().split("\t")
+            chrom = str(line[0])
+            if chrom not in ref_dict:
+                raise KeyError(f"Chromosome name '{chrom}' not found in reference .fai")
+            line[0] = ref_dict[chrom]
+            if add_id:
+                line.append(i)
+            s = "\t".join(list(map(str, line)))
+            if out_handle:
+                print(s, file=out_handle)
+            else:
+                print(s)
+
+    if out_handle:
+        out_handle.close()
 
 
 def create_fai_if_not_exists(reference: Path) -> Path:
