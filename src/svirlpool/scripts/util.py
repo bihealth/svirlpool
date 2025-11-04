@@ -370,7 +370,8 @@ def bed_chr_to_chrID(
     input: Path, reference: Path, output: Path = Path(""), add_id: bool = True
 ):
     """loads a bed file (input) and converts the chromosome names to chromosome IDs.
-    Adds an ID to the end of each line. Supports plain text and gzipped/bgzip (.gz, .bgz) files."""
+    Adds an ID to the end of each line. Supports plain text and gzipped/bgzip (.gz, .bgz) files.
+    """
     ref_dict = create_ref_dict(reference)
     ref_dict = {v: k for k, v in ref_dict.items()}
 
@@ -390,9 +391,7 @@ def bed_chr_to_chrID(
             line = raw.rstrip().split("\t")
             chrom = str(line[0])
             if chrom not in ref_dict:
-                raise KeyError(
-                    f"Chromosome name '{chrom}' not found in reference .fai"
-                )
+                raise KeyError(f"Chromosome name '{chrom}' not found in reference .fai")
             line[0] = ref_dict[chrom]
             if add_id:
                 line.append(i)
