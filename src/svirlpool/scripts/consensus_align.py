@@ -980,34 +980,6 @@ def svPatterns_from_consensus_sequences(
             "Generating SV primitives from consensus objects and their alignments..."
         )
 
-        # Setup performance logging
-        performance_log_path = Path(
-            "/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/test/bndtest/performance.log"
-        )
-        performance_log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Configure performance logger
-        perf_logger = logging.getLogger("performance")
-        perf_logger.setLevel(logging.INFO)
-
-        # Remove any existing handlers to avoid duplicates
-        for handler in perf_logger.handlers[:]:
-            perf_logger.removeHandler(handler)
-
-        # Create file handler for performance logging
-        perf_handler = logging.FileHandler(performance_log_path, mode="w")
-        perf_formatter = logging.Formatter(
-            "%(asctime)s,%(message)s", datefmt="%Y-%m-%d %H:%M:%S.%f"
-        )
-        perf_handler.setFormatter(perf_formatter)
-        perf_logger.addHandler(perf_handler)
-        perf_logger.propagate = False
-
-        # Write CSV header
-        perf_logger.info(
-            "timestamp,consensus_id,sv_primitive_idx,consensus_length,num_sv_primitives,sum_sv_primitive_sizes,sv_type,sv_size,execution_time_ms"
-        )
-
         # TODO: continue here: fix the multiprocessed verson of svPrimitives generation
         svPrimitives: list[SVprimitives.SVprimitive] = (
             SVprimitives.generate_SVprimitives_parallel(

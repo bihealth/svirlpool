@@ -12,6 +12,7 @@ from Bio.Seq import Seq
 from intervaltree import Interval, IntervalTree
 from logzero import logger as log
 from pysam import AlignedSegment
+from Bio import SeqUtils
 
 from . import consensus, consensus_class, datastructures, datatypes
 
@@ -322,9 +323,6 @@ def save_merge_svs_in_dict_alignments_input(input, path: Path | str):
     log.info(f"Saved input for merge_svs_in_dict_alignments to {path}")
 
 
-from Bio import SeqUtils
-
-
 # --- horizontal merge --- #
 # test this!
 def merge_svs_in_dict_alignments(
@@ -334,8 +332,6 @@ def merge_svs_in_dict_alignments(
     verbose: bool = False,
     minmax_GC_tolerance: float = 0.0,
 ) -> None:
-    # debug_path = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/test/merge_svs_in_dict_alignments_input.1.pkl")
-    # save_merge_svs_in_dict_alignments_input([dict_alignments, max_low_complexity_ignored_size, merge_large_dels_with_small_gaps, verbose, minmax_GC_tolerance], debug_path)
 
     # merges proto SVs (MergedSVSignal objects) in all consensusAlignments in dict_alignments
     # following some criteria

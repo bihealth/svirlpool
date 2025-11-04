@@ -7,10 +7,6 @@
 
 # from . import alignments_to_rafs
 
-# # path_signals = Path('/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.signal')
-# # path_output = Path('/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.DELs_split.signal')
-
-# #%%
 
 # def split_DELs(
 #         path_signaldepths: Path,

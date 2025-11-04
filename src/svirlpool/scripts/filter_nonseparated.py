@@ -198,16 +198,8 @@ def process_func(args):
 
 
 # %%
-# iterate over the alignments in the same region again and
-# filter all alignemnts that are in filtered_reads
 
 
-# path_bam = Path("/home/memsonmi/development/LRSV-detection/development/test/dev/mini.bam")
-# out_path = Path("/home/memsonmi/development/LRSV-detection/development/test/dev/mini.filtered.bam")
-# path_bed = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG19.canonical.bed")
-# region = ("2", 34381546,38265653)
-# cache_size = 100
-# threads = 4
 def filter_nonseparated(
     path_bam: Path,
     out_path: Path,

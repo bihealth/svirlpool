@@ -22,8 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-dependencies = [
-]
+dependencies = ["numpy>=2.3.4,<3", "pandas>=2.3.3,<3", "matplotlib>=3.10.7,<4", "scipy>=1.16.3,<2", "scikit-learn>=1.7.2,<2", "biopython>=1.86,<2", "plotly>=6.3.1,<7", "seaborn>=0.13.2,<0.14", "tqdm>=4.67.1,<5", "logzero>=1.7.0,<2", "attrs>=25.4.0,<26", "cattrs>=25.3.0,<26", "intervaltree>=3.1.0,<4", "networkx>=3.5,<4", "python-igraph>=1.0.0,<2", "stopit>=1.1.2,<2", "vcfpy>=0.14.2,<0.15", "pyyaml>=6.0.3,<7", "typer>=0.20.0,<0.21", "rich", "pydantic>=2.12.3,<3", "requests>=2.32.5,<3", "click", "setuptools~=70.0.0", "snakemake>=9.13.4,<10"]
 
 [project.scripts]
 svirlpool = "svirlpool.__main__:main"
@@ -140,11 +139,12 @@ run = "hatch build"
 
 [tool.hatch.envs.targets]
 
-[tool.hatch.build]
-include = [
-    "src/svirlpool/**/*.py",
-    "src/**/py.typed",
-]
+# NB: activating this will break in `pixi run`.
+# [tool.hatch.build]
+# include = [
+#     "src/**/*.py",
+#     "src/**/py.typed",
+# ]
 
 [tool.hatch.build.targets.sdist]
 ignore-vcs = true
@@ -165,15 +165,25 @@ version_toml = [
 ]
 
 [tool.pixi.workspace]
-channels = ["conda-forge"]
+channels = [
+  "conda-forge",
+  "bioconda",
+]
 platforms = ["linux-64"]
 
 [tool.pixi.pypi-dependencies]
 svirlpool = { path = ".", editable = true }
+
 [tool.pixi.dependencies]
 python = ">=3.12"
 hatch = ">=1.14.0"
 go-shfmt = "*"
+bedtools = "~=2.31"
+minimap2 = "~=2.28"
+lamassemble = "~=1.7.2"
+pysam = ">=0.23.3,<0.24"
+samtools = "~=1.20"
+seqtk = "~=1.4"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }

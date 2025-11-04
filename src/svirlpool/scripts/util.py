@@ -997,13 +997,6 @@ def get_reference_sequence_from_read_alignment(
     return Seq(seq)
 
 
-# %%
-# min_clipped_length = 300
-# reference = Path("/home/vinzenz/development/LRSV-detection/development/test/hs37d5.fa")
-# alignments = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/minidels/minidels.consensus.bam")
-# output = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/minidels/minidels.consensus.refined.bam")
-
-
 def get_unaligned_intervals(
     total_length: int, covered_intervals: list[tuple[int, int]]
 ) -> list[tuple[int, int]]:
@@ -2061,74 +2054,6 @@ def cut_alignments_in_regions(
                     print(i, a.query_name, a.query_length, a.infer_query_length())
                 f.write(a)
     return None
-
-
-# #%%
-# # debug alignments
-# path_alignments = Path("/data/hdd/HG002/ont-r10.32x/minimap2.ont-r10.32x.bam")
-# output = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/HG002/svirlpool/mini/test/cut_alignments.bam")
-# regions_path = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/HG002/svirlpool/mini/QC/crs.bed") # BED file of regions
-# # parse regions
-# regions = pd.read_csv(regions_path,sep='\t',header=None).iloc[:,:3].to_numpy()
-
-# cut_alignments_in_regions(path_alignments,regions[:20],output)
-# # %%
-
-# caln = cut_alignments(alignments_file=path_alignments,region=regions[2])
-
-# # %%
-# readname = "bd452025-5999-4154-8146-03ecf6552a45"
-# region = regions[2]
-# samfile = pysam.AlignmentFile(path_alignments,'rb')
-# alignments = list(samfile.fetch(region[0],region[1],region[2]))
-# # find the alignment with the readname
-# alignment = [a for a in alignments if a.query_name == readname][0]
-# cut_aln = cut_alignment(alignment=alignment, region=region)
-
-# # %%
-# from bisect import bisect_left, bisect_right
-
-# t,x = zip(*alignment.cigartuples)
-# x = np.array(x)
-# t = np.array(t)
-
-# x_read_starts,x_read_ends,x_ref_starts,x_ref_ends = get_starts_ends(
-#     t=t,
-#     x=x,
-#     reference_start=alignment.reference_start,
-#     is_reverse=alignment.is_reverse)
-
-# region = ("12",77861429,77866626)
-
-# # do a binary search of the position on x_ref_starts and x_ref_ends
-# left = bisect_right(a=x_ref_ends, x=region[1])
-# right = bisect_left(a=x_ref_starts, x=region[1])
-# blocks_range = range(left,right)
-# # find the leftmost block that is match, mismatch or sequence match (t==0,7,8) in blocks_range
-# block_left = None
-# for b in blocks_range:
-#     if t[b] in (0,7,8):
-#         block_left = b
-#         break
-# # if block_left is None, then the position is outside of the alignment. In this case, select the first block that is match, mismatch or sequence match
-# if block_left is None:
-#     block_left = next(b for b in range(len(t)) if t[b] in (0,7,8))
-# # and the same for the rightmost block
-# left = bisect_right(a=x_ref_ends, x=region[2])
-# right = bisect_left(a=x_ref_starts, x=region[2])
-# blocks_range = range(left,right)
-# block_right = None
-# for b in blocks_range:
-#     if t[b] in (0,7,8):
-#         block_right = b
-#         break
-# # if block_right is None, then the position is outside of the alignment. In this case, select the last block that is match, mismatch or sequence match
-# if block_right is None:
-#     block_right = next(b for b in range(len(t)-1,-1,-1) if t[b] in (0,7,8))
-
-# # the correct blocks are identified. Now the difference between the end of block block_left and region[1] is the offset
-
-# # %%
 
 
 def insert_table_metadata(path_database: str, table_name: str, tag: str):

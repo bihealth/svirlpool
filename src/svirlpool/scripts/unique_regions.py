@@ -53,18 +53,6 @@ def merge_bedfiles_and_subtract_from_reference(
         p5.communicate()
 
 
-# %%
-# input
-# output = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/hs37d5.unique.bed")
-# reference = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/hs37d5.fa")
-# paths_bedfiles = [
-#     Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/wgEncodeCrgMapabilityAlign100mer.centered.bedgraph"),
-#     Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/segdups.merged.bed"),
-#     Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/human_hs37d5.trf.slop50.bed"),
-#     Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/hs37d5.Ns.bed")
-# ]
-
-
 def create_unique_regions_bed_file(
     paths_bedfiles: list[Path], reference: Path, output: Path, min_size: int
 ) -> None:

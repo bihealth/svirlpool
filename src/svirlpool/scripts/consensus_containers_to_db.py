@@ -190,17 +190,6 @@ def load_unused_reads_from_db(
 
 # %%
 
-# path_cat_CrsContainerResults = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.tiles.txt")
-# path_target_reference = Path("/home/vinzenz/development/LRSV-detection/development/reference/hs37d5/hs37d5.fa")
-# path_initial_reference = Path("/home/vinzenz/development/LRSV-detection/development/reference/hs37d5/hs37d5.fa")
-# path_consensus_fasta = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.consensus.fasta")
-# consensus_to_target_alignments = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.consensus.target.bam")
-# consensus_to_initial_alignments = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.consensus.initial.bam")
-# path_database=Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.final_db.sqlite")
-# threads=8
-# aln_args=''
-# tmp_dir_path:Path|None=None
-
 
 def consensus_containers_to_db(
     path_cat_CrsContainerResults: Path, path_database: Path

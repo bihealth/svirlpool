@@ -12,9 +12,6 @@ from . import alignments_to_rafs, rafs_indel_histograms, util
 
 # %%
 
-# rafs_path = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.0.rafs.tsv.gz")
-# rafs_path = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG003/analysis/HG003.0.rafs.tsv.gz")
-
 
 def filter_rafs_sv_signals(
     input: Path,

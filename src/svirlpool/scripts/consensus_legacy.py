@@ -1264,22 +1264,6 @@ def create_read_partitions_with_initial_signal_clusters(
 
 # %%
 # =============================================================================
-#  debugging part
-# debug input
-# mcrID=45
-# path_reads_db=Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.reads.db")
-# path_intervals_db=Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.intervals.db")
-# path_lamassemble_mat=Path("/home/vinzenz/development/lamassemble/train/promethion.mat")
-# path_output_bam = Path(f"/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/consensus/0/consensus.{mcrID}.bam")
-# path_output_fasta = Path(f"/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/consensus/0/consensus.{mcrID}.fasta")
-# min_signal_size=20
-# reads_partitioning_threshold=6.0
-# threshold_consensus_merging=6.0
-# threads=3
-# logfile=None
-# method='racon'
-# %%
-# =============================================================================
 
 
 # write function to get the minimum and maximum extends from intervals

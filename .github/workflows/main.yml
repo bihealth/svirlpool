@@ -20,12 +20,15 @@ jobs:
   formatting:
     runs-on: ubuntu-latest
     steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            liblzma-dev
+
       - uses: actions/checkout@v5
 
       - name: Install pixi
         uses: prefix-dev/setup-pixi@v0.8.1
-        with:
-          python-version: "3.12"
 
       - name: Run Lint
         run: |
@@ -37,12 +40,6 @@ jobs:
 
   testing:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version:
-          - '3.12'
-          - '3.13'
-          - '3.14'
     needs: formatting
     steps:
       - uses: actions/checkout@v5
@@ -51,9 +48,22 @@ jobs:
 
       - name: Install pixi
         uses: prefix-dev/setup-pixi@v0.8.1
-        with:
-          python-version: "${{ matrix.python-version }}"
 
       - name: Run tests
         run: |
             pixi run -e dev test
+
+      - name: Run MUC1 example as smoke text
+        run: |
+            mkdir -p /tmp/workdir/result
+            pixi run \
+                svirlpool run \
+                    --threads 1 \
+                    --samplename muc1test \
+                    --workdir /tmp/workdir/result \
+                    --alignments examples/muc1/data/muc1.bam \
+                    --reference examples/muc1/data/muc1.fa \
+                    --trf examples/muc1/data/muc1.trf.bed \
+                    --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
+                    --lamassemble-mat data/lamassemble-mats/promethion.mat \
+                    --unique-regions examples/muc1/data/muc1.unique.bed

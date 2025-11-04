@@ -44,7 +44,24 @@ git clone git@github.com:bihealth/svirlpool.git
 cd svirlpool
 ```
 
-TBD: run example
+Run example
+
+```
+# create working directory
+mkdir -p /tmp/workdir/result
+# now run
+pixi run \
+    svirlpool run \
+        --threads 1 \
+        --samplename muc1test \
+        --workdir /tmp/workdir/result \
+        --alignments examples/muc1/data/muc1.bam \
+        --reference examples/muc1/data/muc1.fa \
+        --trf examples/muc1/data/muc1.trf.bed \
+        --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
+        --lamassemble-mat data/lamassemble-mats/promethion.mat \
+        --unique-regions examples/muc1/data/muc1.unique.bed
+```
 
 ### Hints
 
