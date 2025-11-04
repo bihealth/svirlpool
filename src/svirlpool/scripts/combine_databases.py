@@ -10,12 +10,6 @@ from logzero import logger as log
 
 # %%
 
-# path_crs = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.crs.db")
-# path_consensus = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.consensuses.db")
-# path_alignments = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.consensus_alignments.db")
-
-# path_output_db = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d03/HG002.aligned.db")
-
 
 def combine_databases(
     db_paths: list[Path], output_db_path: Path, overwrite: bool = False

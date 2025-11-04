@@ -6,11 +6,6 @@ from pathlib import Path
 
 import vcfpy
 
-# %%
-
-
-# path_vcf = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/minidels/truvari/fn.vcf.gz")
-# path_bed = path_vcf.with_suffix(".bed")
 def vcf_deletions_to_bed(path_vcf: Path, path_bed: Path, min_size: int):
     reader = vcfpy.Reader.from_path(path_vcf)
     with open(path_bed, "w") as f:

@@ -16,15 +16,6 @@ from tqdm import tqdm
 from . import util
 
 # %%
-# # load test alignments
-# alns = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.consensus.bam")
-# # load alignments to list
-# alignments = list(pysam.AlignmentFile(alns, "rb"))
-# a=alignments[44]
-# reference_positions = [7588766,7589107]
-
-
-# %%
 # =============================================================================
 # cut alignments at given reference positions
 # returns a list of alignedSegments with properly cut cigar strings and other data.

@@ -19,12 +19,6 @@ from . import datatypes, filter_nonseparated, filter_rafs, util
 
 # %%
 
-# path_regions = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/data/d03.F.regions.bed")
-# path_alignments = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/alignments/minimap2.ont-r10.32x.bam")
-# path_output = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.signal")
-
-# %%
-
 
 def compress_and_index_bedlike(
     input: Path,

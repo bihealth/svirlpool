@@ -15,12 +15,7 @@ from tqdm import tqdm
 from . import util
 
 
-# %%
-# debug input
-# path_signaldepths = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.signaldepth")
-# path_sampledicts = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.sampledicts.json")
-# max_median_coverage_factor = 4.0
-# output_path = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.signaldepth.filtered")
+
 # %%
 def filter_signaldepths(
     path_signaldepths, path_sampledicts, max_median_coverage_factor, output_path

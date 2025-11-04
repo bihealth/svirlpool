@@ -20,12 +20,6 @@ from . import util
 
 # #%%
 
-# mononucleotides = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/hs37d5.mononucleotides.lt6.bed")
-# signals = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.signal")
-# reference = Path("/fast/work/projects/cubit/18.12/static_data/reference/GRCh37/hs37d5/hs37d5.fa")
-# output = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/HG002/parametertuning/d01/HG002.filtered.signal")
-
-
 # # re-build with new signals (contain only INS,DEL,BNDL,BNDR)
 # # use bedtools subtract correctly
 # # filter any signal that is very close to the annotated mononucleotide stretches

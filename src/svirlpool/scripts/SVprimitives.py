@@ -178,27 +178,6 @@ def add_genotypeMeasurements_to_SVprimitives(
 ) -> None:
     for svp in svps:
 
-        # if the consensus ID is 284.0, 284.1, 284.2 and the sample name is HG002, dump the input to a pickled file for debugging
-        # if svp.consensusID in ["284.0", "284.1", "284.2"] and svp.samplename == "HG002":
-        #     path_debugging_dump = f"/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/parametertuning/HG002/test/dump.{svp.consensusID}.pckl"
-        #     with open(path_debugging_dump, "wb") as f:
-        #         pickle.dump({
-        #             "svp": svp,
-        #             "pysam_aln": datatypes.Alignment.from_pysam(pysam_aln),
-        #             "intervals_cutread_alignments": intervals_cutread_alignments,
-        #             "core_interval_start": core_interval_start
-        #         }, f)
-        #         log.info("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-        #         log.info(f"Dumped debugging information for {svp.get_vcfID_with_samplename()} to {path_debugging_dump}")
-        #         log.info("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-
-        # trace back the read position of the sv signal's start and end (if deletion) or just the start (if insertion or breakend)
-        # start_on_consensus:int
-        # end_on_consensus:int | None = None  # None for insertions and breakends
-        # estimated_total_depth_start:int
-        # estimated_total_depth_end:int | None = None # None for insertions and breakends
-        # supporting_reads_start:list[str]
-        # supporting_reads_end:list[str] | None = None # None for insertions and breakends
         start_on_consensus = get_read_position_on_ref(
             position=svp.read_start, alignment=pysam_aln, direction=Direction.LEFT
         )

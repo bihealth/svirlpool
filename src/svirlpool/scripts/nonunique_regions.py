@@ -11,11 +11,6 @@ from . import util
 
 # %%
 
-# path_mappability = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/wgEncodeCrgMapabilityAlign100mer.bedgraph")
-# path_reference = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/hs37d5.fa")
-# output = Path("/fast/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/wgEncodeCrgMapabilityAlign50mer.lt_1.slop1000.merged50.bed")
-
-
 def check_if_all_chromosomes_are_in_refdict(
     path_mappability: Path, path_reference: Path
 ):

@@ -1985,9 +1985,6 @@ def write_svCalls_to_vcf(
 import argparse
 import os
 
-# output=Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/test/bndtest/variants.vcf.gz")
-# reference = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/GRCh38/GRCh38.fa")
-
 
 def check_if_all_svtypes_are_supported(sv_types: list[str]) -> None:
     unsupported_sv_types = []
@@ -2393,7 +2390,6 @@ def extract_test_svComposites(
 # #%%
 # # search in the data all variants that come from the consensus with ID 19.0 and 19.2
 
-# BASE_PATH = Path("/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/tests/data/multisample_sv_calling/")
 
 # test_svComposites = extract_test_svComposites(
 #     data=data,
