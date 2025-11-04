@@ -20,6 +20,11 @@ jobs:
   formatting:
     runs-on: ubuntu-latest
     steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            liblzma-dev
+
       - uses: actions/checkout@v5
 
       - name: Install pixi
