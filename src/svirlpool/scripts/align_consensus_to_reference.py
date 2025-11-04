@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from . import util
 
+
 # %%
 # =============================================================================
 # cut alignments at given reference positions

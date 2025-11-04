@@ -1262,7 +1262,6 @@ def create_read_partitions_with_initial_signal_clusters(
     return all_dict_partitions, all_alignment_paths
 
 
-
 # %%
 # =============================================================================
 

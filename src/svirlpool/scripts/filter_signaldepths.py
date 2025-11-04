@@ -15,7 +15,6 @@ from tqdm import tqdm
 from . import util
 
 
-
 # %%
 def filter_signaldepths(
     path_signaldepths, path_sampledicts, max_median_coverage_factor, output_path

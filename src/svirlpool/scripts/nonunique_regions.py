@@ -11,6 +11,7 @@ from . import util
 
 # %%
 
+
 def check_if_all_chromosomes_are_in_refdict(
     path_mappability: Path, path_reference: Path
 ):

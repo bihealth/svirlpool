@@ -53,7 +53,6 @@ def merge_bedfiles_and_subtract_from_reference(
         p5.communicate()
 
 
-
 def create_unique_regions_bed_file(
     paths_bedfiles: list[Path], reference: Path, output: Path, min_size: int
 ) -> None:

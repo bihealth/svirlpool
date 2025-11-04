@@ -2056,7 +2056,6 @@ def cut_alignments_in_regions(
     return None
 
 
-
 def insert_table_metadata(path_database: str, table_name: str, tag: str):
     """
     Inserts metadata for a table into a hardcoded metadata table in the SQLite database.

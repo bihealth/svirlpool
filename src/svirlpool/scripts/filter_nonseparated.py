@@ -199,6 +199,7 @@ def process_func(args):
 
 # %%
 
+
 def filter_nonseparated(
     path_bam: Path,
     out_path: Path,

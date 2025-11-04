@@ -323,9 +323,6 @@ def save_merge_svs_in_dict_alignments_input(input, path: Path | str):
     log.info(f"Saved input for merge_svs_in_dict_alignments to {path}")
 
 
-
-
-
 # --- horizontal merge --- #
 # test this!
 def merge_svs_in_dict_alignments(
