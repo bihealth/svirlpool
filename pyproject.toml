@@ -140,11 +140,12 @@ run = "hatch build"
 
 [tool.hatch.envs.targets]
 
-[tool.hatch.build]
-include = [
-    "src/svirlpool/**/*.py",
-    "src/**/py.typed",
-]
+# NB: activating this will break in `pixi run`.
+# [tool.hatch.build]
+# include = [
+#     "src/**/*.py",
+#     "src/**/py.typed",
+# ]
 
 [tool.hatch.build.targets.sdist]
 ignore-vcs = true
