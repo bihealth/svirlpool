@@ -1640,7 +1640,7 @@ def get_hash_of_kmer(kmer: str, letter_dict: dict) -> int:
     return hash_a  # min(hash_a,hash_b)
 
 
-## BEWARE: only computes positive kmers, no rev comp respected
+# BEWARE: only computes positive kmers, no rev comp respected
 def rolling_hashes(string: str, letter_dict: dict, k: int) -> list[int]:
     if len(string) < k:
         return []
@@ -2098,8 +2098,8 @@ def get_all_table_metadata(path_database: str) -> dict[str, str]:
         # Check if metadata table exists
         cursor.execute(
             """
-            SELECT name 
-            FROM sqlite_master 
+            SELECT name
+            FROM sqlite_master
             WHERE type='table' AND name=?;
         """,
             (metadata_table,),

@@ -99,8 +99,8 @@ def _add_consensus_sequences_to_db(db_path: Path, fasta_path: Path):
         # Insert all sequences
         conn.executemany(
             """
-            INSERT OR REPLACE INTO consensus_sequences 
-            (consensusID, sequence, description) 
+            INSERT OR REPLACE INTO consensus_sequences
+            (consensusID, sequence, description)
             VALUES (?, ?, ?)
         """,
             sequences_data,
@@ -140,7 +140,7 @@ def _add_metadata_to_db(db_path: Path, samplename: str):
         for key, value in metadata.items():
             conn.execute(
                 """
-                INSERT OR REPLACE INTO metadata (key, value) 
+                INSERT OR REPLACE INTO metadata (key, value)
                 VALUES (?, ?)
             """,
                 (key, str(value)),

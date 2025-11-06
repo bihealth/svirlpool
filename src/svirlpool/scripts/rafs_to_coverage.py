@@ -61,7 +61,7 @@ def create_database(output: bytes) -> None:
     # with table "coverage" with column "id" that is always 0 and "data" that is a BLOB
     with sqlite3.connect("file:" + str(output) + "?mode=rwc", uri=True) as conn:
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS coverage 
+            """CREATE TABLE IF NOT EXISTS coverage
             (id VARCHAR(40) PRIMARY KEY,
             data BLOB)"""
         )

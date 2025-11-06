@@ -2166,7 +2166,7 @@ def multisample_sv_calling(
         for svComposite in merged
         if abs(svComposite.get_size()) >= min_sv_size
     ]
-    ## if tmp dir is provided, dump all merged svComposites to a pickle file
+    # if tmp dir is provided, dump all merged svComposites to a pickle file
     if tmp_dir_path is not None:
         save_svComposites_to_pickle(data=merged, output_path=tmp_dir_path)
     svCalls: list[SVcall] = [

@@ -72,8 +72,8 @@ def write_copynumber_trees_to_db(
             # Insert or replace the tree in the database
             conn.execute(
                 """
-                INSERT OR REPLACE INTO copynumber_tracks 
-                (chromosome, intervaltree) 
+                INSERT OR REPLACE INTO copynumber_tracks
+                (chromosome, intervaltree)
                 VALUES (?, ?)
             """,
                 (chromosome, serialized_tree),
@@ -82,7 +82,7 @@ def write_copynumber_trees_to_db(
         # Create index for faster lookups
         conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_copynumber_chromosome 
+            CREATE INDEX IF NOT EXISTS idx_copynumber_chromosome
             ON copynumber_tracks (chromosome)
         """
         )

@@ -587,7 +587,7 @@ def find_representing_read_per_cr(
     ranks_indel = np.argsort(np.argsort(indel_differences))
     sum_ranks = ranks_start_end + ranks_indel
     chosen = np.argmin(sum_ranks)
-    if verbose:  ## print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
+    if verbose:  # print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
         log.info(
             f"rank sum order for candidate region {candidate_region.crID} ({candidate_region.chr}:{candidate_region.referenceStart}-{candidate_region.referenceEnd}):"
         )

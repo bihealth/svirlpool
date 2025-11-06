@@ -48,7 +48,7 @@ def construct_final_database(path_database: Path) -> None:
     # - unused_reads [readname,crIDs,SequenceObject] (from crsContainerResult) # crIDs is a list of INTs
     conn = sqlite3.connect("file:" + str(path_database) + "?mode=rwc", uri=True)
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS consensuses 
+        """CREATE TABLE IF NOT EXISTS consensuses
         (id VARCHAR(200) PRIMARY KEY,
         consensus BLOB)"""
     )
