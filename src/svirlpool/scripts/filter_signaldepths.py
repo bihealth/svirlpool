@@ -73,7 +73,7 @@ def filter_signaldepths(
             else:
                 counter_filtered += 1
     if counter_total == 0:
-        raise ("No signals found in signaldepth file.")
+        raise ValueError("No signals found in signaldepth file.")
     log.info(
         f"Filtered {counter_filtered} signals from {counter_total} total signals. Ratio: {counter_filtered / counter_total}"
     )
