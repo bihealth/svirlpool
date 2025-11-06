@@ -196,3 +196,6 @@ typecheck = "pyright src/ tests/"
 test = "pytest --cov=svirlpool --cov-report=term-missing tests/ --durations 0 -s"
 test-snapshot = "pytest --cov=svirlpool tests/ --snapshot-update"
 build = "hatch build"
+
+[tool.pixi.feature.dev.dependencies]
+pixi-pycharm = ">=0.0.9,<0.0.10"
