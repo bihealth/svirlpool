@@ -38,12 +38,10 @@ def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> li
     if len(svSignals) == 0:
         return []
     # check if list is sorted
-    if not all(
-        [
-            svSignals[i].ref_start <= svSignals[i + 1].ref_start
-            for i in range(len(svSignals) - 1)
-        ]
-    ):
+    if not all([
+        svSignals[i].ref_start <= svSignals[i + 1].ref_start
+        for i in range(len(svSignals) - 1)
+    ]):
         raise ValueError("List of SVsignals is not sorted by ref_start.")
 
     # build a mask. The mask keeps the density of each signal. The mask has the length of svSignals
@@ -63,9 +61,9 @@ def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> li
             left += 1
         # left is now the first signal that is in the radius
         # sum all signals sizes of the same type as midSvSignal that are in the radius
-        mask[mid] = sum(
-            [s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type]
-        )
+        mask[mid] = sum([
+            s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type
+        ])
     # filter all signals that have a mask value below min_signal_bp
     return mask
 
@@ -130,8 +128,8 @@ def create_raf_starts_ends_bed(
             with open(tmp_ends.name, "w") as out_ends:
                 for line in f:
                     chr, start, end, _ = line.strip().split("\t")
-                    out_starts.write(f"{chr}\t{start}\t{int(start)+1}\n")
-                    out_ends.write(f"{chr}\t{int(end)-1}\t{end}\n")
+                    out_starts.write(f"{chr}\t{start}\t{int(start) + 1}\n")
+                    out_ends.write(f"{chr}\t{int(end) - 1}\t{end}\n")
     # the ends file is not necessarily sorted. Sort it.
     if genome:
         cmd_sort = f"bedtools sort -g {str(genome)} -i {tmp_ends.name}"
@@ -391,9 +389,12 @@ output_rafs is sorted, bgzip compressed, and tabix indexed"""
                 counter_passed_rafs += 1
             else:
                 if writer_rafs_filtered:
-                    writer_rafs_filtered.writerow(
-                        [chr, start, end, json.dumps(raf.unstructure())]
-                    )
+                    writer_rafs_filtered.writerow([
+                        chr,
+                        start,
+                        end,
+                        json.dumps(raf.unstructure()),
+                    ])
                 counter_filtered_rafs += 1
                 continue
     # file will get sorted by alignments_to_rafs.compress_and_index_bedlike

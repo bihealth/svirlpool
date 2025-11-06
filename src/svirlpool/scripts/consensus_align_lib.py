@@ -97,21 +97,21 @@ def merge_sv_signals(
     """
     # assert that repeatIDs are all int and >= 0
     if len(repeatIDs) == 0:
-        assert all(
-            [isinstance(repeatID, int) and repeatID >= 0 for repeatID in repeatIDs]
-        ), f"all repeatIDs must be int >= 0. Got {repeatIDs}"
+        assert all([
+            isinstance(repeatID, int) and repeatID >= 0 for repeatID in repeatIDs
+        ]), f"all repeatIDs must be int >= 0. Got {repeatIDs}"
     assert len(sv_signals) > 0, "sv_signals must have at least 1 signal"
-    assert all(
-        [sv_signal.sv_type <= 1 for sv_signal in sv_signals]
-    ), f"all sv_signal types must be either 0 (INS) or 1 (DEL). Got {[sv_signal.sv_type for sv_signal in sv_signals]}"
+    assert all([sv_signal.sv_type <= 1 for sv_signal in sv_signals]), (
+        f"all sv_signal types must be either 0 (INS) or 1 (DEL). Got {[sv_signal.sv_type for sv_signal in sv_signals]}"
+    )
     # sort sv_signals by ref_start position
     # get new length of the merged signal. add if the sv signal is an insertion, subtract if it is a deletion
-    sum_ins = sum(
-        [sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 0]
-    )
-    sum_del = sum(
-        [sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 1]
-    )
+    sum_ins = sum([
+        sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 0
+    ])
+    sum_del = sum([
+        sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 1
+    ])
     total_length = sum_ins - sum_del
 
     merged_type = 0 if total_length > 0 else 1
@@ -332,7 +332,6 @@ def merge_svs_in_dict_alignments(
     verbose: bool = False,
     minmax_GC_tolerance: float = 0.0,
 ) -> None:
-
     # merges proto SVs (MergedSVSignal objects) in all consensusAlignments in dict_alignments
     # following some criteria
     # iterate all ConsensusAlignments and for each one, build union find data structures
@@ -448,28 +447,22 @@ def merge_merged_svs(
         if merged_signal.sv_type >= 3:
             raise ValueError("merged signal must not be a BND signal")
     repeatIDs = list(
-        set(
-            [
-                repeatID
-                for merged_signal in signals_to_merge
-                for repeatID in merged_signal.repeatIDs
-            ]
-        )
+        set([
+            repeatID
+            for merged_signal in signals_to_merge
+            for repeatID in merged_signal.repeatIDs
+        ])
     )
     chr = signals_to_merge[0].chr
-    total_size = sum(
-        [
-            merged_signal.size
-            for merged_signal in signals_to_merge
-            if merged_signal.sv_type == 0
-        ]
-    ) - sum(
-        [
-            merged_signal.size
-            for merged_signal in signals_to_merge
-            if merged_signal.sv_type == 1
-        ]
-    )
+    total_size = sum([
+        merged_signal.size
+        for merged_signal in signals_to_merge
+        if merged_signal.sv_type == 0
+    ]) - sum([
+        merged_signal.size
+        for merged_signal in signals_to_merge
+        if merged_signal.sv_type == 1
+    ])
     original_alt_sequences = [
         seq
         for merged_signal in signals_to_merge
@@ -541,12 +534,10 @@ def merge_to_proto_svs(
                 original_signals=[signal.unstructure()],
             )
             repeatIDs = list(
-                set(
-                    [
-                        repeat.data
-                        for repeat in it_repeats[signal.ref_start : signal.ref_end]
-                    ]
-                )
+                set([
+                    repeat.data
+                    for repeat in it_repeats[signal.ref_start : signal.ref_end]
+                ])
             )
             if len(repeatIDs) > 0:
                 merged_sv_signal.repeatIDs = repeatIDs
@@ -566,14 +557,12 @@ def merge_to_proto_svs(
                     original_signals=[bnd_signal.unstructure()],
                 )
                 repeatIDs = list(
-                    set(
-                        [
-                            repeat.data
-                            for repeat in it_repeats[
-                                bnd_signal.ref_start : bnd_signal.ref_end + 1
-                            ]
+                    set([
+                        repeat.data
+                        for repeat in it_repeats[
+                            bnd_signal.ref_start : bnd_signal.ref_end + 1
                         ]
-                    )
+                    ])
                 )
                 if len(repeatIDs) > 0:
                     merged_sv_signal.repeatIDs = repeatIDs
@@ -813,34 +802,28 @@ def add_ref_sequences_to_dict_alignments(
             for merged_signal in consensusAlignment.proto_svs:
                 if merged_signal.sv_type == 1:  # only consider deletions
                     region_string = f"{merged_signal.chr}:{merged_signal.ref_start}-{merged_signal.ref_end}"
-                    regions.append(
-                        (
-                            merged_signal.chr,
-                            merged_signal.ref_start,
-                            merged_signal.ref_end,
-                            region_string,
-                        )
-                    )
+                    regions.append((
+                        merged_signal.chr,
+                        merged_signal.ref_start,
+                        merged_signal.ref_end,
+                        region_string,
+                    ))
                 elif merged_signal.sv_type == 3:  # BND left
-                    region_string = f"{merged_signal.chr}:{merged_signal.ref_start}-{merged_signal.ref_start+1}"
-                    regions.append(
-                        (
-                            merged_signal.chr,
-                            merged_signal.ref_start,
-                            merged_signal.ref_start + 1,
-                            region_string,
-                        )
-                    )
+                    region_string = f"{merged_signal.chr}:{merged_signal.ref_start}-{merged_signal.ref_start + 1}"
+                    regions.append((
+                        merged_signal.chr,
+                        merged_signal.ref_start,
+                        merged_signal.ref_start + 1,
+                        region_string,
+                    ))
                 elif merged_signal.sv_type == 4:  # BND right
-                    region_string = f"{merged_signal.chr}:{merged_signal.ref_start-1}-{merged_signal.ref_start}"
-                    regions.append(
-                        (
-                            merged_signal.chr,
-                            merged_signal.ref_start - 1,
-                            merged_signal.ref_start,
-                            region_string,
-                        )
-                    )
+                    region_string = f"{merged_signal.chr}:{merged_signal.ref_start - 1}-{merged_signal.ref_start}"
+                    regions.append((
+                        merged_signal.chr,
+                        merged_signal.ref_start - 1,
+                        merged_signal.ref_start,
+                        region_string,
+                    ))
     # make regions unique and sorted
     regions = sorted(set(regions), key=lambda x: (x[0], x[1]))
     # log.info(f"{len(regions)} unique regions to extract ref sequences from")
@@ -859,7 +842,7 @@ def add_ref_sequences_to_dict_alignments(
                 print(chr, start, end, region, sep="\t", file=f)
             else:
                 raise ValueError(
-                    f"end-start must be > 0. Got start={start}, end={end}, end-start={end-start}"
+                    f"end-start must be > 0. Got start={start}, end={end}, end-start={end - start}"
                 )
     cmd_getfasta = [
         "bedtools",
@@ -897,13 +880,13 @@ def add_ref_sequences_to_dict_alignments(
                 elif mss.sv_type == 3:
                     mss.original_ref_sequences = [
                         ref_sequences[
-                            f"{mss.chr}:{mss.ref_start}-{mss.ref_start+1}"
+                            f"{mss.chr}:{mss.ref_start}-{mss.ref_start + 1}"
                         ].upper()
                     ]
                 elif mss.sv_type == 4:
                     mss.original_ref_sequences = [
                         ref_sequences[
-                            f"{mss.chr}:{mss.ref_start-1}-{mss.ref_start}"
+                            f"{mss.chr}:{mss.ref_start - 1}-{mss.ref_start}"
                         ].upper()
                     ]
                 else:

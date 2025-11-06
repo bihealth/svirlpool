@@ -239,7 +239,7 @@ def filter_nonseparated(
     # merge tmp files and sort with samtools sort
     tmp_merged = Path(tmp_dir.name) / "tmp_merged.bam"
     cmd_merge = split(
-        f"samtools merge --threads {threads} -f -o {str(tmp_merged)} {' '.join(list(map(str,tmp_bam_paths)))}"
+        f"samtools merge --threads {threads} -f -o {str(tmp_merged)} {' '.join(list(map(str, tmp_bam_paths)))}"
     )
     cmd_sort = split(
         f"samtools sort --threads {threads} -o {str(out_path)} {str(tmp_merged)}"

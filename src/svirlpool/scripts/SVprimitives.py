@@ -42,9 +42,9 @@ class SVprimitive(datatypes.MergedSVSignal):  # can be ins,del,bndl,bndr
         None  # samplename: GenotypeMeasurement
     )
     adjacent_bnd: None | Adjacency = None
-    similar_sequence_intervals_on_consensus: list[list[int, int]] = (
-        []
-    )  # in core sequence coords
+    similar_sequence_intervals_on_consensus: list[
+        list[int, int]
+    ] = []  # in core sequence coords
 
     @classmethod
     def from_merged_sv_signal(
@@ -131,7 +131,6 @@ def add_adjacencies_to_svPrimitives(
             and A.sv_type >= 3
             and B.sv_type >= 3
         ):
-
             tp_str_A = ""
             tp_str_B = ""
             # if A and B are BNDs, add the adjacency to both
@@ -177,7 +176,6 @@ def add_genotypeMeasurements_to_SVprimitives(
     core_interval_start: int,
 ) -> None:
     for svp in svps:
-
         start_on_consensus = get_read_position_on_ref(
             position=svp.read_start, alignment=pysam_aln, direction=Direction.LEFT
         )
@@ -361,16 +359,14 @@ def generate_SVprimitives(
                     debug_performance__len_consensus_seuquence = len(
                         consensus.consensus_sequence
                     )
-                    debug_performance__sum_svPrimitive_sizes = sum(
-                        [
-                            (
-                                svp.size
-                                if svp.sv_type == 0
-                                else (50 if svp.sv_type == 1 else 200)
-                            )
-                            for svp in svp_cache
-                        ]
-                    )
+                    debug_performance__sum_svPrimitive_sizes = sum([
+                        (
+                            svp.size
+                            if svp.sv_type == 0
+                            else (50 if svp.sv_type == 1 else 200)
+                        )
+                        for svp in svp_cache
+                    ])
                     debug_performance__num_svPrimitives = len(svp_cache)
 
                     # Start timing
@@ -638,16 +634,14 @@ def process_consensus_batch(
                 debug_performance__len_consensus_seuquence = len(
                     consensus.consensus_sequence
                 )
-                debug_performance__sum_svPrimitive_sizes = sum(
-                    [
-                        (
-                            svp.size
-                            if svp.sv_type == 0
-                            else (50 if svp.sv_type == 1 else 200)
-                        )
-                        for svp in svp_cache
-                    ]
-                )
+                debug_performance__sum_svPrimitive_sizes = sum([
+                    (
+                        svp.size
+                        if svp.sv_type == 0
+                        else (50 if svp.sv_type == 1 else 200)
+                    )
+                    for svp in svp_cache
+                ])
                 debug_performance__num_svPrimitives = len(svp_cache)
 
                 # Start timing

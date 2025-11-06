@@ -289,9 +289,9 @@ def is_variant_inconsistent(
         gt_father = None
         gt_mother = None
         all_sample_names = set([call.sample for call in variant.calls])
-        assert all_sample_names.intersection(set(names_trio)) == set(
-            names_trio
-        ), "names_trio must be in the vcf file"
+        assert all_sample_names.intersection(set(names_trio)) == set(names_trio), (
+            "names_trio must be in the vcf file"
+        )
         for call in variant.calls:
             if call.sample == names_trio[0]:
                 gt_son = call.data["GT"]
@@ -356,9 +356,9 @@ def check_ped(path_ped: PosixPath):
     with open(path_ped, "r") as f:
         for line in f:
             line = line.strip().split("\t")
-            assert (
-                len(line) == 6
-            ), "ped file must have 6 columns: familyID, individualID, fatherID, motherID, sex, phenotype"
+            assert len(line) == 6, (
+                "ped file must have 6 columns: familyID, individualID, fatherID, motherID, sex, phenotype"
+            )
 
 
 def parse_ped(path_ped: PosixPath) -> dict[str, tuple[str, str, str]]:
@@ -516,9 +516,9 @@ def get_trios_from_variants(
     variants: list[vcfpy.Record], ped: PosixPath
 ) -> list[list[str]]:
     "returns a list of trios that are present in the vcf file and in the pedigree. Each sublist has 3 elements: child, father, mother"
-    all_samplenames = set(
-        [call.sample for variant in variants for call in variant.calls]
-    )
+    all_samplenames = set([
+        call.sample for variant in variants for call in variant.calls
+    ])
     # then parse the pedigree and find all trios that are alos present in all_samplenames
     dict_ped: dict[str, tuple[str, str, str]] = parse_ped(ped)
     trios = []
@@ -586,9 +586,9 @@ def all_dict_stats_to_latex(
         for status in GTInheritanceStatus:
             line_abs = (
                 f"{status.name} & "
-                + " & ".join(
-                    [f"{all_dict_stats[sample][status]:,}" for sample in all_dict_stats]
-                )
+                + " & ".join([
+                    f"{all_dict_stats[sample][status]:,}" for sample in all_dict_stats
+                ])
                 + r"\\"
             )
             print(line_abs, file=f)
@@ -598,12 +598,10 @@ def all_dict_stats_to_latex(
             }
             line_per = (
                 f"{status.name} & "
-                + " & ".join(
-                    [
-                        f"{all_dict_stats[sample][status]/n_variants_per_sample[sample]:.2}"
-                        for sample in all_dict_stats
-                    ]
-                )
+                + " & ".join([
+                    f"{all_dict_stats[sample][status] / n_variants_per_sample[sample]:.2}"
+                    for sample in all_dict_stats
+                ])
                 + r"\\"
             )
             # line_per = line_per.replace("%", r"\%")

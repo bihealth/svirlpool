@@ -78,16 +78,14 @@ def process_single_raf_file(args: tuple[Path, str]) -> pd.DataFrame:
             # Determine SV type
             sv_type = "ins" if sv.sv_type == 0 else "del"
 
-            results.append(
-                {
-                    "sample_name": sample_name,
-                    "chr": raf.reference_name,
-                    "ref_start": sv.ref_start,
-                    "ref_end": sv.ref_end,
-                    "sv_type": sv_type,
-                    "sv_size": sv.size,
-                }
-            )
+            results.append({
+                "sample_name": sample_name,
+                "chr": raf.reference_name,
+                "ref_start": sv.ref_start,
+                "ref_end": sv.ref_end,
+                "sv_type": sv_type,
+                "sv_size": sv.size,
+            })
 
     return pd.DataFrame(results)
 

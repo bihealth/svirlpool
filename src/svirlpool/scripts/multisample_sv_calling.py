@@ -430,7 +430,6 @@ def can_merge_svComposites_deletions(
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
-
     # throroughly check the input svComposites
     # 1) test if they have svPatterns
     if (
@@ -1394,20 +1393,18 @@ class SVcall:
             ref_str = refbase + ref_seq
             alt_str = refbase + alt_seq
 
-        return "\t".join(
-            [
-                str(self.chrname),
-                str(self.start + ONE_BASED),
-                str(vcfID),  # ID
-                ref_str,  # REF
-                alt_str,  # ALT
-                str(60),  # QUAL
-                "PASS" if self.passing else "LowQual",  # FILTER
-                info_line,
-                FORMAT_field,
-                *format_line,
-            ]
-        )
+        return "\t".join([
+            str(self.chrname),
+            str(self.start + ONE_BASED),
+            str(vcfID),  # ID
+            ref_str,  # REF
+            alt_str,  # ALT
+            str(60),  # QUAL
+            "PASS" if self.passing else "LowQual",  # FILTER
+            info_line,
+            FORMAT_field,
+            *format_line,
+        ])
 
 
 def SVcalls_from_SVcomposite(
@@ -1433,12 +1430,10 @@ def SVcalls_from_SVcomposite(
         svlen: int = abs(svComposite.get_size())
         svtype: str = svComposite.sv_type
         consensusIDs: list[str] = list(
-            set(
-                [
-                    svPattern.samplenamed_consensusID
-                    for svPattern in svComposite.svPatterns
-                ]
-            )
+            set([
+                svPattern.samplenamed_consensusID
+                for svPattern in svComposite.svPatterns
+            ])
         )
         # TODO: add precise / imprecise flag: precise: all regions are near; imprecise: all regions are farther than X bp apart
         # add genotypes: for each samplename collect supporting reads and max total coverage (from genotype measurements)
@@ -1614,7 +1609,9 @@ def get_svComposite_interval_on_reference(
         weighted_regions.append((region, weight))
     # pick the winning region
     if find_leftmost_reference_position:
-        return min(weighted_regions, key=lambda x: x[1])[
+        return min(
+            weighted_regions, key=lambda x: x[1]
+        )[
             0
         ]  # reports the leftmost SVpattern, instead of the one with most supporting reads * size. This might be better aligned with the giab SV benchmark, but should be discussed in the paper.
     else:
@@ -1651,7 +1648,7 @@ def generate_header(
     # add contigs to header
     for i in range(ref_index.shape[0]):
         header.append(
-            f"##contig=<ID={str(ref_index.iloc[i,0])},length={ref_index.iloc[i,1]}>"
+            f"##contig=<ID={str(ref_index.iloc[i, 0])},length={ref_index.iloc[i, 1]}>"
         )
     header.append(
         '##FILTER=<ID=LowQual,Description="Poor quality and insufficient number of informative reads.">'
@@ -1923,7 +1920,6 @@ def write_svCalls_to_vcf(
     output: Path,
     symbolic_threshold: int,
 ) -> None:
-
     # Determine FASTA output path
     if str(output).endswith(".vcf.gz"):
         fasta_path = Path(str(output).replace(".vcf.gz", ".variants.fasta"))

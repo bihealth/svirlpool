@@ -162,9 +162,9 @@ def get_full_read_sequences_of_alignments(
     # assort all supplementary_positions to a dict of the form {chromosome:[start,start+1]}
     dict_positions = {
         chrom: []
-        for chrom in set(
-            [chr for l in dict_supplementary_positions.values() for chr, pos in l]
-        )
+        for chrom in set([
+            chr for l in dict_supplementary_positions.values() for chr, pos in l
+        ])
     }
     for readname, l in dict_supplementary_positions.items():
         for chr, pos in l:
@@ -214,12 +214,10 @@ def get_full_read_sequences_of_alignments(
                     )
             # check if all keys of dict_read_sequences have a SeqRecord
             # if so, break this loop
-            if all(
-                [
-                    readname in dict_read_sequences
-                    for readname in dict_supplementary_positions.keys()
-                ]
-            ):
+            if all([
+                readname in dict_read_sequences
+                for readname in dict_supplementary_positions.keys()
+            ]):
                 break
     # check if for each readname in dict_supplementary_positions, there is a SeqRecord in dict_read_sequences
     for readname in dict_supplementary_positions.keys():
@@ -269,9 +267,9 @@ def get_read_alignments_for_crs(
     # if no read alignments can be found for one sample,
     for cr in crs:
         # check if cr is of type datatypes.CandidateRegion
-        assert isinstance(
-            cr, datatypes.CandidateRegion
-        ), f"cr {cr} is not of type datatypes.CandidateRegion"
+        assert isinstance(cr, datatypes.CandidateRegion), (
+            f"cr {cr} is not of type datatypes.CandidateRegion"
+        )
         # crate a dict of sampleID:aug_readname
         with pysam.AlignmentFile(alignments, "rb") as f:
             for aln in f.fetch(cr.chr, max(cr.referenceStart, 0), cr.referenceEnd):
@@ -297,9 +295,9 @@ def get_read_alignment_intervals_in_region(
     """Extract read alignment intervals within a specific region."""
     # check if all elements in alignments are of type pysam.AlignedSegment
     for aln in alignments:
-        assert isinstance(
-            aln, pysam.AlignedSegment
-        ), f"aln {aln} is not a pysam.AlignedSegment"
+        assert isinstance(aln, pysam.AlignedSegment), (
+            f"aln {aln} is not a pysam.AlignedSegment"
+        )
     dict_intervals = {}
     for aln in alignments:
         cr_start, cr_end = region_start, regions_end
@@ -316,9 +314,13 @@ def get_read_alignment_intervals_in_region(
         if read_start is not None and read_end is not None and read_end > read_start:
             if aln.query_name not in dict_intervals:
                 dict_intervals[aln.query_name] = []
-            dict_intervals[aln.query_name].append(
-                (read_start, read_end, aln.reference_name, ref_start, ref_end)
-            )
+            dict_intervals[aln.query_name].append((
+                read_start,
+                read_end,
+                aln.reference_name,
+                ref_start,
+                ref_end,
+            ))
             # dict_intervals[read_aug_name].append((min(read_start,read_end),max(read_start,read_end),min(ref_start,ref_end),max(ref_start,ref_end)))
     return dict_intervals
 
@@ -339,13 +341,13 @@ def get_read_alignment_intervals_in_cr(
     for crID in dict_alignments.keys():
         assert isinstance(crID, int), f"crID {crID} is not an integer"
         # check if value is a list
-        assert isinstance(
-            dict_alignments[crID], list
-        ), f"value {dict_alignments[crID]} is not a list, but a {type(dict_alignments[crID])}"
+        assert isinstance(dict_alignments[crID], list), (
+            f"value {dict_alignments[crID]} is not a list, but a {type(dict_alignments[crID])}"
+        )
         for aln in dict_alignments[crID]:
-            assert isinstance(
-                aln, pysam.AlignedSegment
-            ), f"aln {aln} is not a pysam.AlignedSegment"
+            assert isinstance(aln, pysam.AlignedSegment), (
+                f"aln {aln} is not a pysam.AlignedSegment"
+            )
     dict_all_intervals: dict[str, tuple[int, int, str, int, int]] = {}
     cr_extents = {cr.crID: (cr.referenceStart, cr.referenceEnd) for cr in crs}
     # get the maximum insertion size of all original alignments in the candidate regions
@@ -372,18 +374,14 @@ def get_max_extents_of_read_alignments_on_cr(
     dict_max_extents = {}
     for readname in dict_all_intervals.keys():
         intervals = dict_all_intervals[readname]
-        min_start = min(
-            [
-                (start, ref_start, ref_chr)
-                for (start, end, ref_chr, ref_start, ref_end) in intervals
-            ]
-        )
-        max_end = max(
-            [
-                (end, ref_end, ref_chr)
-                for (start, end, ref_chr, ref_start, ref_end) in intervals
-            ]
-        )
+        min_start = min([
+            (start, ref_start, ref_chr)
+            for (start, end, ref_chr, ref_start, ref_end) in intervals
+        ])
+        max_end = max([
+            (end, ref_end, ref_chr)
+            for (start, end, ref_chr, ref_start, ref_end) in intervals
+        ])
         dict_max_extents[readname] = (
             min_start[0],
             max_end[0],
@@ -412,18 +410,18 @@ def trim_reads(
     for crID in dict_alignments.keys():
         assert isinstance(crID, int), f"crID {crID} is not an integer"
         for aln in dict_alignments[crID]:
-            assert isinstance(
-                aln, pysam.AlignedSegment
-            ), f"aln {aln} is not a pysam.AlignedSegment"
+            assert isinstance(aln, pysam.AlignedSegment), (
+                f"aln {aln} is not a pysam.AlignedSegment"
+            )
     # check if intervals is of the correct form
     for readname in intervals.keys():
         assert isinstance(readname, str), f"readname {readname} is not a string"
-        assert isinstance(
-            intervals[readname], tuple
-        ), f"intervals[readname] {intervals[readname]} is not a tuple"
-        assert (
-            len(intervals[readname]) == 6
-        ), f"intervals[readname] {intervals[readname]} is not of length 6"
+        assert isinstance(intervals[readname], tuple), (
+            f"intervals[readname] {intervals[readname]} is not a tuple"
+        )
+        assert len(intervals[readname]) == 6, (
+            f"intervals[readname] {intervals[readname]} is not of length 6"
+        )
         # check if each tuple is of types: int,int,str,int,str,int
         for key, (
             read_start,
@@ -433,19 +431,19 @@ def trim_reads(
             ref_end_chr,
             ref_end,
         ) in intervals.items():
-            assert isinstance(
-                read_start, int
-            ), f"read_start {read_start} is not an integer"
+            assert isinstance(read_start, int), (
+                f"read_start {read_start} is not an integer"
+            )
             assert isinstance(read_end, int), f"read_end {read_end} is not an integer"
-            assert isinstance(
-                ref_start_chr, str
-            ), f"ref_start_chr {ref_start_chr} is not a string"
-            assert isinstance(
-                ref_start, int
-            ), f"ref_start {ref_start} is not an integer"
-            assert isinstance(
-                ref_end_chr, str
-            ), f"ref_end_chr {ref_end_chr} is not a string"
+            assert isinstance(ref_start_chr, str), (
+                f"ref_start_chr {ref_start_chr} is not a string"
+            )
+            assert isinstance(ref_start, int), (
+                f"ref_start {ref_start} is not an integer"
+            )
+            assert isinstance(ref_end_chr, str), (
+                f"ref_end_chr {ref_end_chr} is not a string"
+            )
             assert isinstance(ref_end, int), f"ref_end {ref_end} is not an integer"
 
     cut_reads: dict[str, SeqRecord] = dict()
@@ -563,29 +561,23 @@ def find_representing_read_per_cr(
     #   1) sum of indel signals of each read in the given candidate region
     indel_sums = np.zeros(len(sorted_pool))
     for i, readname in enumerate(sorted_pool):
-        indel_sums[i] = sum(
-            [
-                signal.size
-                for signal in candidate_region.sv_signals
-                if signal.readname == readname and signal.sv_type < 3
-            ]
-        )
+        indel_sums[i] = sum([
+            signal.size
+            for signal in candidate_region.sv_signals
+            if signal.readname == readname and signal.sv_type < 3
+        ])
     # calculate the difference to the mean indel sum for each read
     mean_indel_sum = np.median(indel_sums)
     indel_differences = np.abs(indel_sums - mean_indel_sum)
     #   2) difference of the read coverage to the candidate region
-    distances_to_start = np.array(
-        [
-            abs(dict_max_extents[readname][2] - cr_reference_start)
-            for readname in sorted_pool
-        ]
-    )
-    distances_to_end = np.array(
-        [
-            abs(dict_max_extents[readname][3] - cr_reference_end)
-            for readname in sorted_pool
-        ]
-    )
+    distances_to_start = np.array([
+        abs(dict_max_extents[readname][2] - cr_reference_start)
+        for readname in sorted_pool
+    ])
+    distances_to_end = np.array([
+        abs(dict_max_extents[readname][3] - cr_reference_end)
+        for readname in sorted_pool
+    ])
     distances_to_start_end = distances_to_start + distances_to_end
     # concat the two distance arrays and the read indices
     # then rank the distances_to_start_end and then the indel_differences
@@ -595,9 +587,7 @@ def find_representing_read_per_cr(
     ranks_indel = np.argsort(np.argsort(indel_differences))
     sum_ranks = ranks_start_end + ranks_indel
     chosen = np.argmin(sum_ranks)
-    if (
-        verbose
-    ):  ## print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
+    if verbose:  ## print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
         log.info(
             f"rank sum order for candidate region {candidate_region.crID} ({candidate_region.chr}:{candidate_region.referenceStart}-{candidate_region.referenceEnd}):"
         )
@@ -850,7 +840,6 @@ def final_consensus(
     verbose: bool,
     tmp_dir_path: Path | None = None,
 ) -> consensus_class.Consensus | None:
-
     # check if the consensus_fasta_path or reads_fasta are empty. if so, raise an exception
     if os.path.getsize(consensus_fasta_path) == 0:
         raise ValueError(
@@ -1311,13 +1300,11 @@ def consensus_while_clustering(
             #  - find all reference names in the alignments
             #  - for each reference name in the alignments, do scoring
             all_raf_scores: dict[str, dict[str, float]] = {}
-            for reference_name in set(
-                [
-                    aln.reference_name
-                    for aln in all_vs_all_alignments
-                    if not aln.is_unmapped
-                ]
-            ):
+            for reference_name in set([
+                aln.reference_name
+                for aln in all_vs_all_alignments
+                if not aln.is_unmapped
+            ]):
                 raf_alignments = [
                     aln
                     for aln in all_vs_all_alignments
@@ -1354,13 +1341,11 @@ def consensus_while_clustering(
                     print(f"+++ {reference_name} +++")
                     for read, value in raf_scores.items():
                         print(read, value, sep="\t")
-                penalty_matrix.update(
-                    {
-                        (reference_name, read): score
-                        for read, score in raf_scores.items()
-                        if score <= dynamic_cutoff
-                    }
-                )
+                penalty_matrix.update({
+                    (reference_name, read): score
+                    for read, score in raf_scores.items()
+                    if score <= dynamic_cutoff
+                })
 
             if verbose:
                 # print penalty matrix as a matrix with rows and columns sorted by read names
@@ -1405,7 +1390,6 @@ def consensus_while_clustering(
 
             # 3. Proceed with consensus generation for each cluster
             for cluster_id in set(clustering_result.values()):
-
                 chosen_reads = [
                     read for read, cid in clustering_result.items() if cid == cluster_id
                 ]
@@ -1557,9 +1541,9 @@ def add_unaligned_reads_to_consensuses_inplace(
 ) -> None:
     """Inplace: Add all reads that are not used in any consensus object to the consensus object that they align best to."""
     """A read is not added to a consensus if its SV signals are significantly more than all already added reads."""
-    assert (
-        len(consensus_objects) > 0
-    ), "consensus_sequences must contain at least one consensus object"
+    assert len(consensus_objects) > 0, (
+        "consensus_sequences must contain at least one consensus object"
+    )
     if len(pool) == 0:
         return consensus_objects
     # write consensus sequences to a fasta file
@@ -1698,12 +1682,10 @@ def probability_of_sv_presence_with_neighbors(
         # aplly distance function to score close signals higher than distant signals
         # pick one signal per sample that fits best
         neighbors_selected = neighbors[mask_similar_size]
-        proximities = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors_selected[:, 0] - svSignal.ref_start
-            ]
-        )
+        proximities = np.array([
+            closeness_function(x, radius)
+            for x in neighbors_selected[:, 0] - svSignal.ref_start
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(neighbors_selected[:, 5]):
@@ -1718,18 +1700,14 @@ def probability_of_sv_presence_with_neighbors(
         # aplly distance function to score close signals higher than distant signals
         # pick one signal per sample that fits best
         neighbors_selected = neighbors[mask_similar_size]
-        proximities_left = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors_selected[:, 0] - svSignal.ref_start
-            ]
-        )
-        proximities_right = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors_selected[:, 1] - (svSignal.ref_start + svSignal.size)
-            ]
-        )
+        proximities_left = np.array([
+            closeness_function(x, radius)
+            for x in neighbors_selected[:, 0] - svSignal.ref_start
+        ])
+        proximities_right = np.array([
+            closeness_function(x, radius)
+            for x in neighbors_selected[:, 1] - (svSignal.ref_start + svSignal.size)
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(neighbors_selected[:, 5]):
@@ -1738,12 +1716,9 @@ def probability_of_sv_presence_with_neighbors(
             sum_signal += np.max(proximities_right[mask_sample]) * 0.5
         return sum_signal / N_samples
     if svSignal.sv_type == 3 or svSignal.sv_type == 4:  # break end
-        proximities = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors[:, 0] - svSignal.ref_start
-            ]
-        )
+        proximities = np.array([
+            closeness_function(x, radius) for x in neighbors[:, 0] - svSignal.ref_start
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(neighbors[:, 5]):
@@ -1775,9 +1750,9 @@ def probability_of_sv_with_similar_svs(
         mask = (signals[:, 3] == 0) & (abs(signals[:, 2] - svSignal.size) <= margin)
         candidates = signals[mask]
         # apply closeness_function to the size difference of the candidates
-        similarities = np.array(
-            [closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size]
-        )
+        similarities = np.array([
+            closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(candidates[:, 5]):
@@ -1790,9 +1765,9 @@ def probability_of_sv_with_similar_svs(
         mask = (signals[:, 3] == 1) & (abs(signals[:, 2] - svSignal.size) <= margin)
         candidates = signals[mask]
         # apply closeness_function to the size difference of the candidates
-        similarities = np.array(
-            [closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size]
-        )
+        similarities = np.array([
+            closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(candidates[:, 5]):
@@ -2443,9 +2418,9 @@ def load_crs_containers_from_db(
         raise ValueError(f"{path_db} is not a file.")
     if crIDs is not None:
         assert type(crIDs) == list, "crIDs must be a list of integers."
-        assert (
-            len(crIDs) > 0
-        ), "crIDs must be a list of integers with at least one element."
+        assert len(crIDs) > 0, (
+            "crIDs must be a list of integers with at least one element."
+        )
         if not all([isinstance(crID, int) for crID in crIDs]):
             raise ValueError(f"crIDs must be a list of integers. Instead got {crIDs}")
 
@@ -2786,21 +2761,21 @@ def crs_containers_to_consensus(
     tmp_dir_path: Path | str | None = None,
     verbose: bool = False,
 ) -> None:
-    assert Path(
-        lamassemble_mat
-    ).exists(), f"lamassemble matrix file {lamassemble_mat} does not exist."
+    assert Path(lamassemble_mat).exists(), (
+        f"lamassemble matrix file {lamassemble_mat} does not exist."
+    )
     assert input.exists(), f"Input file {input} does not exist."
     assert input.is_file(), f"Input file {input} is not a file."
     assert output.parent.exists(), f"Output directory {output.parent} does not exist."
     assert threads > 0, "threads must be greater than 0."
     if crIDs:
         assert type(crIDs) == list, "crIDs must be a list of integers."
-        assert (
-            len(crIDs) > 0
-        ), "crIDs must be a list of integers with at least one element."
-        assert all(
-            [isinstance(crID, int) for crID in crIDs]
-        ), "crIDs must be a list of integers."
+        assert len(crIDs) > 0, (
+            "crIDs must be a list of integers with at least one element."
+        )
+        assert all([isinstance(crID, int) for crID in crIDs]), (
+            "crIDs must be a list of integers."
+        )
     log.info("load data")
     if crIDs:
         existing_crIDs = load_crIDs_from_containers_db(path_db=input)

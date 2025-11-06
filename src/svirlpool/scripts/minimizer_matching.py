@@ -51,19 +51,15 @@ class MinimizerIndex:
         return hash(kmer) & 0x7FFFFFFF  # Keep positive
 
     def _compute_minimizers(self) -> tuple[np.ndarray, np.ndarray]:
-        reference_hashes = np.array(
-            [
-                self._hash_kmer(self.reference[i : i + self.k])
-                for i in range(len(self.reference) - self.k + 1)
-            ]
-        )
+        reference_hashes = np.array([
+            self._hash_kmer(self.reference[i : i + self.k])
+            for i in range(len(self.reference) - self.k + 1)
+        ])
         reference_revcomp = str(Seq(self.reference).reverse_complement())
-        reference_hashes_revcomp = np.array(
-            [
-                self._hash_kmer(reference_revcomp[i : i + self.k])
-                for i in range(len(reference_revcomp) - self.k + 1)
-            ]
-        )
+        reference_hashes_revcomp = np.array([
+            self._hash_kmer(reference_revcomp[i : i + self.k])
+            for i in range(len(reference_revcomp) - self.k + 1)
+        ])
         reference_hashes = np.minimum(reference_hashes, reference_hashes_revcomp)
 
         full_minimizers = np.full(len(reference_hashes), -1, dtype=int)
@@ -94,7 +90,9 @@ class MinimizerIndex:
         # then compress the minimizers to eliminate all repetitions by building a mask that is 1 when two adjacent minimizers are not equal
         mask = full_minimizers[1:] != full_minimizers[:-1]
         minimizers = full_minimizers[:-1][mask != 0]
-        positions = full_positions[:-1][
+        positions = full_positions[
+            :-1
+        ][
             mask != 0
         ]  # the i-th minimizer maps to the j-th position on the reference_hashes. The seq letter pos is j:j+k
 
@@ -111,18 +109,14 @@ class MinimizerIndex:
 
     def minimizers_of_query(self, query: str) -> np.ndarray:
         query_revcom = str(Seq(query).reverse_complement())
-        hashes = np.array(
-            [
-                self._hash_kmer(query[i : i + self.k])
-                for i in range(len(query) - self.k + 1)
-            ]
-        )
-        hashes_revcomp = np.array(
-            [
-                self._hash_kmer(query_revcom[i : i + self.k])
-                for i in range(len(query_revcom) - self.k + 1)
-            ]
-        )
+        hashes = np.array([
+            self._hash_kmer(query[i : i + self.k])
+            for i in range(len(query) - self.k + 1)
+        ])
+        hashes_revcomp = np.array([
+            self._hash_kmer(query_revcom[i : i + self.k])
+            for i in range(len(query_revcom) - self.k + 1)
+        ])
         hashes = np.minimum(hashes, hashes_revcomp)
         minimizers = np.full(len(hashes), -1, dtype=int)
         # compute minimizers by rolling over all kmers with a window of size k+w-
@@ -187,12 +181,10 @@ class MinimizerIndex:
                 np.sum(query_hits_array[i : i + minimizer_hit_window_size])
                 >= hits_ratio * minimizer_hit_window_size
             ):
-                seeds.append(
-                    (
-                        self.positions[i],
-                        self.positions[i + minimizer_hit_window_size - 1] + self.k - 1,
-                    )
-                )
+                seeds.append((
+                    self.positions[i],
+                    self.positions[i + minimizer_hit_window_size - 1] + self.k - 1,
+                ))
 
         if len(seeds) == 0:
             return []

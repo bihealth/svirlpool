@@ -84,27 +84,25 @@ class Consensus:
     original_regions: list[tuple[str, int, int]]  # chr,start,end
     consensus_sequence: str
     consensus_padding: ConsensusPadding | None = None
-    intervals_cutread_alignments: list[tuple[int, int, str, bool]] = (
-        []
-    )  # start,end,readname,forward
-    cut_read_alignment_signals: list[datatypes.ReadAlignmentSignals] = (
-        []
-    )  # ReadAlignmentSignals objects of the aligned cut reads to their consensus
-    clustering_meta_data: dict[str, str | int | float] = (
-        {}
-    )  # metadata from the clustering step
+    intervals_cutread_alignments: list[
+        tuple[int, int, str, bool]
+    ] = []  # start,end,readname,forward
+    cut_read_alignment_signals: list[
+        datatypes.ReadAlignmentSignals
+    ] = []  # ReadAlignmentSignals objects of the aligned cut reads to their consensus
+    clustering_meta_data: dict[
+        str, str | int | float
+    ] = {}  # metadata from the clustering step
 
     def unstructure(self):
         return cattrs.unstructure(self)
 
     def get_used_readnames(self) -> set[str]:
         """Returns a set of read names that were used to generate this consensus."""
-        return set(
-            [
-                readname
-                for start, end, readname, forward in self.intervals_cutread_alignments
-            ]
-        )
+        return set([
+            readname
+            for start, end, readname, forward in self.intervals_cutread_alignments
+        ])
 
     def get_consensus_distortions(self) -> list[ConsensusDistortion]:
         if len(self.cut_read_alignment_signals) == 0:
@@ -203,7 +201,7 @@ def write_consensus_to_db(
             conn.commit()
 
             log.debug(
-                f"Wrote batch {i//batch_size + 1}/{(len(data)-1)//batch_size + 1} ({len(batch)} consensus objects)"
+                f"Wrote batch {i // batch_size + 1}/{(len(data) - 1) // batch_size + 1} ({len(batch)} consensus objects)"
             )
 
     log.info(f"Successfully wrote {len(data)} consensus objects to database")
@@ -247,9 +245,12 @@ def read_consensus_from_db(
                     "(crIDs LIKE ? OR crIDs LIKE ? OR crIDs LIKE ? OR crIDs = ?)"
                 )
                 crid_str = str(crid)
-                params.extend(
-                    [f"{crid_str},%", f"%,{crid_str},%", f"%,{crid_str}", crid_str]
-                )
+                params.extend([
+                    f"{crid_str},%",
+                    f"%,{crid_str},%",
+                    f"%,{crid_str}",
+                    crid_str,
+                ])
 
             query = (
                 f"SELECT consensus_data FROM consensus WHERE {' OR '.join(conditions)}"

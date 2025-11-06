@@ -11,15 +11,13 @@ from . import signalstrength_to_crs
 def print_crs_to_bed(input: Path, output: Path) -> None:
     writer = csv.writer(open(output, "w"), delimiter="\t")
     for cr in signalstrength_to_crs.load_crs_from_db(path_db=input):
-        writer.writerow(
-            [
-                cr.chr,
-                cr.referenceStart,
-                cr.referenceEnd,
-                cr.crID,
-                cr.referenceEnd - cr.referenceStart,
-            ]
-        )
+        writer.writerow([
+            cr.chr,
+            cr.referenceStart,
+            cr.referenceEnd,
+            cr.crID,
+            cr.referenceEnd - cr.referenceStart,
+        ])
     return None
 
 

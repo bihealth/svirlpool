@@ -188,24 +188,22 @@ def run(args):
         for i, label in enumerate(SIZE_BIN_LABELS):
             ins_count = result["total_insertions"].get(i, 0)
             del_count = result["total_deletions"].get(i, 0)
-            all_stats.append(
-                {
-                    "sample": result["sample_name"],
-                    "size_bin": label,
-                    "insertions": ins_count,
-                    "deletions": del_count,
-                    "insertions_per_mb": (
-                        (ins_count / total_aligned_bases * 1_000_000)
-                        if total_aligned_bases > 0
-                        else 0
-                    ),
-                    "deletions_per_mb": (
-                        (del_count / total_aligned_bases * 1_000_000)
-                        if total_aligned_bases > 0
-                        else 0
-                    ),
-                }
-            )
+            all_stats.append({
+                "sample": result["sample_name"],
+                "size_bin": label,
+                "insertions": ins_count,
+                "deletions": del_count,
+                "insertions_per_mb": (
+                    (ins_count / total_aligned_bases * 1_000_000)
+                    if total_aligned_bases > 0
+                    else 0
+                ),
+                "deletions_per_mb": (
+                    (del_count / total_aligned_bases * 1_000_000)
+                    if total_aligned_bases > 0
+                    else 0
+                ),
+            })
 
     stats_df = pd.DataFrame(all_stats)
     stats_df.to_csv(args.output, sep="\t", index=False)

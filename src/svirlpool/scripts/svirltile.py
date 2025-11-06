@@ -90,13 +90,11 @@ def _add_consensus_sequences_to_db(db_path: Path, fasta_path: Path):
         for record in SeqIO.parse(fasta_path, "fasta"):
             # Compress sequence with pickle before storing
             compressed_sequence = pickle.dumps(str(record.seq))
-            sequences_data.append(
-                (
-                    record.id,
-                    compressed_sequence,
-                    record.description if record.description else "",
-                )
-            )
+            sequences_data.append((
+                record.id,
+                compressed_sequence,
+                record.description if record.description else "",
+            ))
 
         # Insert all sequences
         conn.executemany(
@@ -182,11 +180,14 @@ def get_consensus_sequences(db_path: Path, consensus_ids: list[str] | None = Non
             count = 0
             for row in c.fetchall():
                 consensus_id, compressed_sequence, description = row
-                yield consensus_id, {
-                    "id": consensus_id,
-                    "sequence": compressed_sequence,  # Keep compressed for efficiency
-                    "description": description,
-                }
+                yield (
+                    consensus_id,
+                    {
+                        "id": consensus_id,
+                        "sequence": compressed_sequence,  # Keep compressed for efficiency
+                        "description": description,
+                    },
+                )
                 count += 1
             log.debug(f"Yielded {count} consensus sequences from database")
         except sqlite3.Error as e:

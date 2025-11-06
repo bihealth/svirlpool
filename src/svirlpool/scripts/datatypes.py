@@ -58,16 +58,14 @@ class SVsignal:
         )
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.ref_start,
-                self.ref_end,
-                self.read_start,
-                self.read_end,
-                self.size,
-                self.sv_type,
-            )
-        )
+        return hash((
+            self.ref_start,
+            self.ref_end,
+            self.read_start,
+            self.read_end,
+            self.size,
+            self.sv_type,
+        ))
 
 
 @attrs.define
@@ -370,15 +368,13 @@ class Alignment:
         cattrs.unstructure(self)
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.readname,
-                self.reference_name,
-                self.reference_ID,
-                self.samplename,
-                self.samdict["cigar"],
-            )
-        )
+        return hash((
+            self.readname,
+            self.reference_name,
+            self.reference_ID,
+            self.samplename,
+            self.samdict["cigar"],
+        ))
 
 
 # given this object and a reference, the original query sequence can be reconstructed

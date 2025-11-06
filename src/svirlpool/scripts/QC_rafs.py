@@ -15,70 +15,52 @@ from . import datatypes, util
 def get_n_indels_signals(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
-    return sum(
-        [
-            1
-            for sv in raf.SV_signals
-            if (
-                min_size <= sv.size <= max_size
-                and sv.sv_type < 2
-                and (
-                    raf.effective_interval[1]
-                    <= sv.ref_start
-                    <= raf.effective_interval[2]
-                    or raf.effective_interval[1]
-                    <= sv.ref_end
-                    <= raf.effective_interval[2]
-                )
+    return sum([
+        1
+        for sv in raf.SV_signals
+        if (
+            min_size <= sv.size <= max_size
+            and sv.sv_type < 2
+            and (
+                raf.effective_interval[1] <= sv.ref_start <= raf.effective_interval[2]
+                or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
-        ]
-    )
+        )
+    ])
 
 
 def get_summed_indels_sizes(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
-    return sum(
-        [
-            sv.size
-            for sv in raf.SV_signals
-            if (
-                min_size <= sv.size <= max_size
-                and sv.sv_type < 2
-                and (
-                    raf.effective_interval[1]
-                    <= sv.ref_start
-                    <= raf.effective_interval[2]
-                    or raf.effective_interval[1]
-                    <= sv.ref_end
-                    <= raf.effective_interval[2]
-                )
+    return sum([
+        sv.size
+        for sv in raf.SV_signals
+        if (
+            min_size <= sv.size <= max_size
+            and sv.sv_type < 2
+            and (
+                raf.effective_interval[1] <= sv.ref_start <= raf.effective_interval[2]
+                or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
-        ]
-    )
+        )
+    ])
 
 
 def get_median_indel_size(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
-    sizes = np.array(
-        [
-            sv.size
-            for sv in raf.SV_signals
-            if (
-                min_size <= sv.size <= max_size
-                and sv.sv_type < 2
-                and (
-                    raf.effective_interval[1]
-                    <= sv.ref_start
-                    <= raf.effective_interval[2]
-                    or raf.effective_interval[1]
-                    <= sv.ref_end
-                    <= raf.effective_interval[2]
-                )
+    sizes = np.array([
+        sv.size
+        for sv in raf.SV_signals
+        if (
+            min_size <= sv.size <= max_size
+            and sv.sv_type < 2
+            and (
+                raf.effective_interval[1] <= sv.ref_start <= raf.effective_interval[2]
+                or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
-        ]
-    )
+        )
+    ])
     if len(sizes) == 0:
         return 0
     return np.median(sizes)
@@ -95,15 +77,13 @@ def parse_rafs_to_df(path_rafs) -> pd.DataFrame:
     ]
     L = []
     for raf in tqdm(util.yield_from_raf(path_rafs)):
-        L.append(
-            [
-                raf.read_name,
-                raf.effective_interval[2] - raf.effective_interval[1],
-                get_n_indels_signals(raf, 1, 50),
-                get_summed_indels_sizes(raf, 1, 50),
-                get_median_indel_size(raf, 1, 50),
-            ]
-        )
+        L.append([
+            raf.read_name,
+            raf.effective_interval[2] - raf.effective_interval[1],
+            get_n_indels_signals(raf, 1, 50),
+            get_summed_indels_sizes(raf, 1, 50),
+            get_median_indel_size(raf, 1, 50),
+        ])
     return pd.DataFrame(L, columns=columns)
 
 

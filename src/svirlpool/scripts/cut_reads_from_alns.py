@@ -25,22 +25,22 @@ def cut_reads(
     # check if dict_alignments is of the correct form
     for readname, l in dict_alignments.items():
         for aln in l:
-            assert isinstance(
-                aln, pysam.AlignedSegment
-            ), f"aln {aln} is not a pysam.AlignedSegment"
+            assert isinstance(aln, pysam.AlignedSegment), (
+                f"aln {aln} is not a pysam.AlignedSegment"
+            )
     # check if intervals is of the correct form
     for readname in intervals.keys():
         assert isinstance(readname, str), f"readname {readname} is not a string"
-        assert isinstance(
-            intervals[readname], tuple
-        ), f"intervals[readname] {intervals[readname]} is not a tuple"
-        assert (
-            len(intervals[readname]) == 4
-        ), f"intervals[readname] {intervals[readname]} is not of length 4"
+        assert isinstance(intervals[readname], tuple), (
+            f"intervals[readname] {intervals[readname]} is not a tuple"
+        )
+        assert len(intervals[readname]) == 4, (
+            f"intervals[readname] {intervals[readname]} is not of length 4"
+        )
         for i in range(4):
-            assert isinstance(
-                intervals[readname][i], int
-            ), f"intervals[readname][{i}] {intervals[readname][i]} is not an integer"
+            assert isinstance(intervals[readname][i], int), (
+                f"intervals[readname][{i}] {intervals[readname][i]} is not an integer"
+            )
 
     # log.info(f"cutting reads from alignments")
     cut_reads: dict[str, SeqRecord] = dict()
@@ -63,7 +63,7 @@ def cut_reads(
                 record.name = aln.query_name
                 record.id = aln.query_name
                 # log.info(f"{aln.query_name} cut from {start} to {end} (length={end-start}) on ref: {ref_start} to {ref_end}")
-                record.description = f"start={start}, end={end}, ref_start={min(ref_start,ref_end)}, ref_end={max(ref_start,ref_end)}"
+                record.description = f"start={start}, end={end}, ref_start={min(ref_start, ref_end)}, ref_end={max(ref_start, ref_end)}"
                 cut_reads[aln.query_name] = record
     return cut_reads
 
@@ -95,9 +95,9 @@ def get_read_alignment_intervals_in_region(
     # check if all elements in alignments are of type pysam.AlignedSegment
     for l in alignments.values():
         for aln in l:
-            assert isinstance(
-                aln, pysam.AlignedSegment
-            ), f"aln {aln} is not a pysam.AlignedSegment"
+            assert isinstance(aln, pysam.AlignedSegment), (
+                f"aln {aln} is not a pysam.AlignedSegment"
+            )
     result = dict()
     for l in alignments.values():
         for aln in l:
@@ -118,9 +118,12 @@ def get_read_alignment_intervals_in_region(
                 and read_end is not None
                 and read_end > read_start
             ):
-                result[aln.query_name].append(
-                    (read_start, read_end, ref_start, ref_end)
-                )
+                result[aln.query_name].append((
+                    read_start,
+                    read_end,
+                    ref_start,
+                    ref_end,
+                ))
     return result
 
 
@@ -131,12 +134,12 @@ def get_max_extents_of_read_alignments_in_region(
     dict_max_extents = {}
     for readname in dict_all_intervals.keys():
         intervals = dict_all_intervals[readname]
-        min_start = min(
-            [(start, ref_start) for (start, end, ref_start, ref_end) in intervals]
-        )
-        max_end = max(
-            [(end, ref_end) for (start, end, ref_start, ref_end) in intervals]
-        )
+        min_start = min([
+            (start, ref_start) for (start, end, ref_start, ref_end) in intervals
+        ])
+        max_end = max([
+            (end, ref_end) for (start, end, ref_start, ref_end) in intervals
+        ])
         dict_max_extents[readname] = (
             min_start[0],
             max_end[0],
@@ -198,9 +201,9 @@ def get_full_read_sequences_of_alignments(
 
     dict_positions = {
         chrom: []
-        for chrom in set(
-            [chr for l in dict_supplementary_positions.values() for chr, pos in l]
-        )
+        for chrom in set([
+            chr for l in dict_supplementary_positions.values() for chr, pos in l
+        ])
     }
     for readname, l in dict_supplementary_positions.items():
         for chr, pos in l:
@@ -287,9 +290,9 @@ def get_full_read_sequences_of_alignments(
                 )
     # check if all elements in dict_read_sequences are of type SeqRecord
     for readname, record in dict_read_sequences.items():
-        assert isinstance(
-            record, SeqRecord
-        ), f"record {record} is not a SeqRecord. dict_read_sequences without record are: {' '.join(set([readname for readname,record in dict_read_sequences.items() if record is None]))}"
+        assert isinstance(record, SeqRecord), (
+            f"record {record} is not a SeqRecord. dict_read_sequences without record are: {' '.join(set([readname for readname, record in dict_read_sequences.items() if record is None]))}"
+        )
     # filter dict_read_sequences for reads that have a full sequence
     dict_read_sequences = {
         readname: record

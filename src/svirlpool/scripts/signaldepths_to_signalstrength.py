@@ -186,7 +186,7 @@ def pseudo_convolve(
             if k > last_warned_index:
                 last_warned_index = k
                 log.info(
-                    f"High-density region {str(j)} to {str(k)} ({str(np_signals[j,:4])} to {str(np_signals[k-1,:4])}) with {str(region_size)} signals. Assigned score {high_density_score}."
+                    f"High-density region {str(j)} to {str(k)} ({str(np_signals[j, :4])} to {str(np_signals[k - 1, :4])}) with {str(region_size)} signals. Assigned score {high_density_score}."
                 )
             # Skip to end of this region
             i = k
@@ -198,7 +198,7 @@ def pseudo_convolve(
             if k > last_warned_index:
                 last_warned_index = k
                 log.warning(
-                    f"region {str(j)} to {str(k)} ({str(np_signals[j,:4])} to {str(np_signals[k-1,:4])}) is very large ({str(region_size)}). (>{str(warning_collapsed_region_size)})."
+                    f"region {str(j)} to {str(k)} ({str(np_signals[j, :4])} to {str(np_signals[k - 1, :4])}) is very large ({str(region_size)}). (>{str(warning_collapsed_region_size)})."
                 )
 
         for l in range(j, k):
@@ -438,9 +438,9 @@ def signaldepths_to_signalstrength(
                 pool.map(process_func, jobs_args, chunksize=1)
             )
     else:
-        values_signal = np.concatenate(
-            [pseudo_convolve(**kwargs) for kwargs in jobs_args]
-        )
+        values_signal = np.concatenate([
+            pseudo_convolve(**kwargs) for kwargs in jobs_args
+        ])
     # add values_signal to signaldepths. Open signals and to each row add the value_signal and write to output
     log.info("write output..")
     tmp_output = tempfile.NamedTemporaryFile(delete=True, suffix=".tsv")

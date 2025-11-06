@@ -39,7 +39,7 @@ def compress_and_index_bedlike(
         cmd_sort = f"sort -k1,1V -k2,2n -k3,3n {Path(input)}"
     if genome:
         cmd_sort = f"bedtools sort -g {str(genome)} -i {Path(input)}"
-    cmd_bgzip = f"bgzip -@ {max(1,threads)} -f -c"
+    cmd_bgzip = f"bgzip -@ {max(1, threads)} -f -c"
     cmd_index = f"tabix -0 -s 1 -b 2 -e 3 {Path(output)}"
     with open(Path(output), "wb") as file_out:
         p0 = subprocess.Popen(split(cmd_sort), stdout=subprocess.PIPE)
@@ -81,13 +81,11 @@ def parse_and_split_regions(
         chrom, start, end = region
         N_regions = (end - start) // desired_region_size
         for i in range(N_regions):
-            split_regions.append(
-                (
-                    chrom,
-                    start + i * desired_region_size,
-                    start + (i + 1) * desired_region_size,
-                )
-            )
+            split_regions.append((
+                chrom,
+                start + i * desired_region_size,
+                start + (i + 1) * desired_region_size,
+            ))
         # add the last region
         split_regions.append((chrom, start + N_regions * desired_region_size, end))
     # concatenate the smaller regions with the split regions
@@ -255,7 +253,6 @@ def parse_ReadAlignmentFragment_from_alignment(
     filter_density_radius: int = 0,
     filter_density_min_bp: int = 0,
 ) -> datatypes.ReadAlignmentFragment:
-
     ref_start, ref_end, read_start, read_end = get_start_end(alignment)
 
     sv_signals = sorted(
@@ -412,7 +409,6 @@ def process_bam(
     threads: int = 1,
     tmp_dir_path: Path | None = None,
 ):
-
     if threads < 1:
         threads = mp.cpu_count()
     if threads > mp.cpu_count():
@@ -481,14 +477,12 @@ def process_bam(
                 raf.reference_alignment_end,
             ),
         ):
-            writer.writerow(
-                [
-                    raf.reference_name,
-                    raf.reference_alignment_start,
-                    raf.reference_alignment_end,
-                    json.dumps(raf.unstructure()),
-                ]
-            )
+            writer.writerow([
+                raf.reference_name,
+                raf.reference_alignment_start,
+                raf.reference_alignment_end,
+                json.dumps(raf.unstructure()),
+            ])
     # compress and index the output file
     compress_and_index_bedlike(input=tmp_out.name, output=path_output, threads=threads)
     log.info(f"written tmp output of sample {samplename} to {path_output}")

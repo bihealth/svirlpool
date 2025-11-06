@@ -407,13 +407,13 @@ def bed_chr_to_chrID(
 
 def create_fai_if_not_exists(reference: Path) -> Path:
     if not Path(str(reference) + ".fai").exists():
-        log.warning(f"{str(reference)+'.fai'} not found. Trying to create one..")
+        log.warning(f"{str(reference) + '.fai'} not found. Trying to create one..")
         try:
             cmd = shlex.split(f"samtools faidx {reference}")
             subprocess.check_call(cmd)
         except:
             raise FileNotFoundError(
-                f"{str(reference)+'.fai'} not found. And could not be created. Make sure to provide a path to a .fasta file for which a .fai file exists in the same directory."
+                f"{str(reference) + '.fai'} not found. And could not be created. Make sure to provide a path to a .fasta file for which a .fai file exists in the same directory."
             )
     return Path(str(reference) + ".fai")
 
@@ -1009,12 +1009,10 @@ def get_unaligned_intervals(
     # in the range 0,total_lenght
     # 0 to a and end to total_length are handled separately
     sorted_intervals = sorted(covered_intervals, key=lambda x: (x[0], x[1]))
-    assert all(
-        [
-            sorted_intervals[i][1] <= sorted_intervals[i + 1][0]
-            for i in range(len(sorted_intervals) - 1)
-        ]
-    )
+    assert all([
+        sorted_intervals[i][1] <= sorted_intervals[i + 1][0]
+        for i in range(len(sorted_intervals) - 1)
+    ])
 
     unaligned_intervals = []
     first_interval = (0, sorted_intervals[0][0])
@@ -1022,9 +1020,10 @@ def get_unaligned_intervals(
         unaligned_intervals.append(first_interval)
     for i in range(len(sorted_intervals) - 1):
         if sorted_intervals[i][1] < sorted_intervals[i + 1][0]:
-            unaligned_intervals.append(
-                (sorted_intervals[i][1], sorted_intervals[i + 1][0])
-            )
+            unaligned_intervals.append((
+                sorted_intervals[i][1],
+                sorted_intervals[i + 1][0],
+            ))
     last_interrval = (sorted_intervals[-1][1], total_length)
     if last_interrval[0] < total_length:
         unaligned_intervals.append(last_interrval)
@@ -1174,13 +1173,11 @@ def display_ascii_alignments(
         alns = dict_alns[refname]
         if max_ref_len < 1:
             try:
-                max_ref_len = max(
-                    [
-                        a.reference_start + a.reference_length
-                        for a in alns
-                        if a.reference_length
-                    ]
-                )
+                max_ref_len = max([
+                    a.reference_start + a.reference_length
+                    for a in alns
+                    if a.reference_length
+                ])
             except:
                 continue
         print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
@@ -1473,9 +1470,7 @@ def get_read_pitx_on_ref(
         if is_reverse:
             last_matching_block = np.where((t == 0) | (t == 1) | (t == 7) | (t == 8))[
                 0
-            ][
-                -1
-            ]  # maybe not with 8 (sequence mismatch)
+            ][-1]  # maybe not with 8 (sequence mismatch)
             return int(ref_end), last_matching_block, t, x
         else:
             last_matching_block = 0
@@ -1489,9 +1484,7 @@ def get_read_pitx_on_ref(
         else:
             last_matching_block = np.where((t == 0) | (t == 1) | (t == 7) | (t == 8))[
                 0
-            ][
-                -1
-            ]  # maybe not with 8 (sequence mismatch
+            ][-1]  # maybe not with 8 (sequence mismatch
             return int(ref_end), last_matching_block, t, x
     x_read_starts, x_read_ends, x_ref_starts, x_ref_ends = get_starts_ends(
         t=t, x=x, is_reverse=is_reverse, reference_start=ref_start
@@ -1638,12 +1631,10 @@ def get_hash_of_kmer(kmer: str, letter_dict: dict) -> int:
         raise ValueError("kmer must not be empty")
     n_letters = len(letter_dict)
     k = len(kmer)
-    hash_a = sum(
-        [
-            letter_dict.get(kmer[i], len(letter_dict)) * n_letters ** (k - i - 1)
-            for i in range(k)
-        ]
-    )
+    hash_a = sum([
+        letter_dict.get(kmer[i], len(letter_dict)) * n_letters ** (k - i - 1)
+        for i in range(k)
+    ])
     # kmer_rc = str(Seq(kmer).reverse_complement())
     # hash_b = sum([letter_dict.get(kmer_rc[i],len(letter_dict)) * n_letters**(k-i-1) for i in range(k)])
     return hash_a  # min(hash_a,hash_b)
@@ -1699,13 +1690,11 @@ def kmer_sketch_from_strings(
     )
     # filter the merged counter dict
     sum_letters = sum(map(len, strings))
-    return set(
-        [
-            k
-            for k, v in summed_counter_dict.items()
-            if v >= min_abs and v >= min_rel * sum_letters
-        ]
-    )
+    return set([
+        k
+        for k, v in summed_counter_dict.items()
+        if v >= min_abs and v >= min_rel * sum_letters
+    ])
 
 
 def kmer_similarity(
@@ -1864,9 +1853,9 @@ def get_read_alignment_intervals_in_region(
 ) -> dict[str, tuple[int, int, int, int]]:
     # check if all elements in alignments are of type pysam.AlignedSegment
     for aln in alignments:
-        assert isinstance(
-            aln, pysam.AlignedSegment
-        ), f"aln {aln} is not a pysam.AlignedSegment"
+        assert isinstance(aln, pysam.AlignedSegment), (
+            f"aln {aln} is not a pysam.AlignedSegment"
+        )
     dict_intervals = {}
     for aln in alignments:
         cr_start, cr_end = region_start, regions_end
@@ -1883,9 +1872,12 @@ def get_read_alignment_intervals_in_region(
         if read_start is not None and read_end is not None and read_end > read_start:
             if aln.query_name not in dict_intervals:
                 dict_intervals[aln.query_name] = []
-            dict_intervals[aln.query_name].append(
-                (read_start, read_end, ref_start, ref_end)
-            )
+            dict_intervals[aln.query_name].append((
+                read_start,
+                read_end,
+                ref_start,
+                ref_end,
+            ))
             # dict_intervals[read_aug_name].append((min(read_start,read_end),max(read_start,read_end),min(ref_start,ref_end),max(ref_start,ref_end)))
     return dict_intervals
 
@@ -1908,9 +1900,9 @@ def cut_alignments(
     """As a result, all alignments start and end within the region."""
     chr, start, end = region
     # verify that all alignments are on the same chromosome
-    assert all(
-        [a.reference_name == chr for a in alignments]
-    ), "all alignments must be on the same chromosome"
+    assert all([a.reference_name == chr for a in alignments]), (
+        "all alignments must be on the same chromosome"
+    )
     cut_alns: list[pysam.AlignedSegment] = []
     for alignment in alignments:
         # find the positions on the ref on the read

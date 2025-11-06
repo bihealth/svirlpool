@@ -78,13 +78,11 @@ def write_consensus_crsContainerResult_to_database(
             if len(list_sequenceObjects) > 0:
                 crIDs_unused_reads.append(crID)
             for sequenceObject in list_sequenceObjects:
-                unused_reads_data.append(
-                    [
-                        f"{sequenceObject.name}.{crID}",
-                        int(crID),
-                        pickle.dumps(sequenceObject.unstructure()),
-                    ]
-                )
+                unused_reads_data.append([
+                    f"{sequenceObject.name}.{crID}",
+                    int(crID),
+                    pickle.dumps(sequenceObject.unstructure()),
+                ])
         c = conn.cursor()
         c.executemany(
             "INSERT OR REPLACE INTO unused_reads (readname_crID,crID,sequenceObject) VALUES (?,?,?)",

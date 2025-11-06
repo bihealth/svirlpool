@@ -88,9 +88,9 @@ def alignments_to_consensusAlignments(
     Returns:
         dict[str,list[consensus_class.ConsensusAlignment]]: dict of ConsensusAlignment objects
     """
-    dict_results: dict[str, list[consensus_class.ConsensusAlignment]] = (
-        {}
-    )  # dict consensusID:list[ConsensusAlignment]
+    dict_results: dict[
+        str, list[consensus_class.ConsensusAlignment]
+    ] = {}  # dict consensusID:list[ConsensusAlignment]
     current_uid: int = 0
     for consensusID, alns in alignments.items():
         if consensusID not in dict_results:
@@ -137,17 +137,16 @@ def align_padded_consensus_sequences(
     tmp_dir_path: Path | None = None,
 ) -> tuple[dict[str, bytes], dict[str, tuple[int, int]]]:
     # iterate all CrsContainerResults and write the padded DNA sequences to a fasta file
-    core_sequences: dict[str, bytes] = (
-        {}
-    )  # save key = consensusID, value = sequence (compressed with pickle and simplified padding parts)
-    core_intervals: dict[str, tuple[int, int]] = (
-        {}
-    )  # save key = consensusID, value = (start,end) of the core sequence
+    core_sequences: dict[
+        str, bytes
+    ] = {}  # save key = consensusID, value = sequence (compressed with pickle and simplified padding parts)
+    core_intervals: dict[
+        str, tuple[int, int]
+    ] = {}  # save key = consensusID, value = (start,end) of the core sequence
 
     with tempfile.TemporaryDirectory(
         dir=tmp_dir_path, delete=False if tmp_dir_path else True
     ) as tmp_dir:
-
         log.debug(
             f"Writing core sequences and intervals to fasta file: {str(path_fastaout)} "
         )
@@ -787,9 +786,9 @@ def svPatterns_from_consensus_sequences(
         consensus_alignments: dict[str, list[datatypes.Alignment]] = load_alignments(
             path_alignments=output_consensus_to_reference_alignments, parse_DNA=False
         )
-        n_alignments = sum(
-            [len(alignments) for alignments in consensus_alignments.values()]
-        )
+        n_alignments = sum([
+            len(alignments) for alignments in consensus_alignments.values()
+        ])
         if n_alignments == 0:
             raise ValueError(
                 f"No consensus alignments found in {output_consensus_to_reference_alignments}!"

@@ -886,7 +886,7 @@ def plot_copynumber_tracks(
     ax.set_title(title, fontsize=14, fontweight="bold")
 
     # Format x-axis to show Mb
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{int(x/1e6)}"))
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{int(x / 1e6)}"))
     ax.set_xlabel("Position (Mb)", fontsize=12)
 
     # Remove y-axis ticks (chromosome labels are on the left)
