@@ -165,7 +165,9 @@ def _to_numpy_per_base_coverage(
     for chr in tqdm(chrs, desc="Converting to per-base coverage arrays"):
         chr = str(chr)
         data_chr_intervals = data[data[:, 0] == chr][:, 1:3].astype(int)
-        _data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)  # FIXME: unused?
+        _data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(
+            str
+        )  # FIXME: unused?
         if len(data_chr_intervals) == 0:
             continue
         max_pos = np.max(data_chr_intervals)

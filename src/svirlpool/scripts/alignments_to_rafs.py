@@ -117,9 +117,7 @@ def get_indels(
         t=t, x=x, is_reverse=is_reverse, reference_start=ref_start
     )
     # get deletion ref start, ref end tuples
-    deletions_ref = list(
-        zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)], strict=True)
-    )
+    deletions_ref = list(zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)], strict=True))
     # get deletion read start, read end tuples
     deletions_read = list(
         zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)], strict=True)
