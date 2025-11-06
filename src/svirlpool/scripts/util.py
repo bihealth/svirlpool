@@ -1900,43 +1900,6 @@ def cut_pysam_alignment_to_region(
     # shorten the cigar string
 
 
-# cut alignments given a single region
-def cut_alignments(
-    alignments: list[pysam.AlignedSegment], region: tuple[str, int, int]
-) -> list[pysam.AlignedSegment]:
-    """cuts alignments such that they seem to come from a read with the max extents of the region"""
-    """As a result, all alignments start and end within the region."""
-    chr, start, end = region
-    # verify that all alignments are on the same chromosome
-    assert all(a.reference_name == chr for a in alignments), (
-        "all alignments must be on the same chromosome"
-    )
-    _cut_alns: list[pysam.AlignedSegment] = []  # FIXME: unused?
-    for alignment in alignments:
-        # find the positions on the ref on the read
-        start_final_pos, start_block, start_t, start_x = get_ref_pitx_on_read(
-            alignment=alignment,
-            position=region[1],
-            direction=Direction.BOTH,
-            buffer_clipped_length=0,
-        )
-        end_final_pos, end_block, end_t, end_x = get_ref_pitx_on_read(
-            alignment=alignment,
-            position=region[2],
-            direction=Direction.BOTH,
-            buffer_clipped_length=0,
-        )
-        # find the positions of the read on the reference
-        ref_start, ref_start_block, ref_start_t, ref_start_x = get_read_pitx_on_ref(
-            alignment=alignment, position=start_final_pos, direction=Direction.BOTH
-        )
-        ref_end, ref_end_block, ref_end_t, ref_end_x = get_read_pitx_on_ref(
-            alignment=alignment, position=end_final_pos, direction=Direction.BOTH
-        )
-        # cut the cigar string. it should be cut in the ref_start_block and ref_end_block
-        # but what is the exact offset? i.e. the match block would need to be changed.
-
-
 def cigartuples_to_cigarstring(cigartuples: list[tuple[int, int]]) -> str:
     code = {0: "M", 1: "I", 2: "D", 3: "N", 4: "S", 5: "H", 6: "P", 7: "=", 8: "X"}
     return "".join([f"{x[1]}{code[x[0]]}" for x in cigartuples])
