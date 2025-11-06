@@ -99,7 +99,7 @@ class SVcomposite:
         sizes = [sv.get_size() for sv in self.svPatterns]
         weights = [len(sv.get_supporting_reads()) for sv in self.svPatterns]
         weighted_mean_size = sum(
-            size * weight for size, weight in zip(sizes, weights)
+            size * weight for size, weight in zip(sizes, weights, strict=True)
         ) / sum(weights)
         return int(round(weighted_mean_size))
 

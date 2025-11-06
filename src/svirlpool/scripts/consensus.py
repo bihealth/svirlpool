@@ -1203,7 +1203,7 @@ def partition_reads_spectral(
     )
 
     labels = clustering.fit_predict(similarity_matrix)
-    return {read: int(label) for read, label in zip(all_reads, labels)}
+    return {read: int(label) for read, label in zip(all_reads, labels, strict=True)}
 
 
 def handle_isolated_reads(
@@ -2007,7 +2007,7 @@ def score_ras_from_alignments(
     # always pick the highest scoring raf for each read_name
     rass_scores = calc_ras_scores(rass=rass, reflen=reflen)
     rafs_scores_dict = {}
-    for ras, score in zip(rass, rass_scores, strict=False):
+    for ras, score in zip(rass, rass_scores, strict=True):
         if ras.read_name in rafs_scores_dict:
             if rafs_scores_dict[ras.read_name] < score:
                 rafs_scores_dict[ras.read_name] = score

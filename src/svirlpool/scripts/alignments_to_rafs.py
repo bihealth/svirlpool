@@ -110,20 +110,28 @@ def get_indels(
     - insertions in read"""
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     x_read_starts, x_read_ends, x_ref_starts, x_ref_ends = util.get_starts_ends(
         t=t, x=x, is_reverse=is_reverse, reference_start=ref_start
     )
     # get deletion ref start, ref end tuples
-    deletions_ref = list(zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)]))
+    deletions_ref = list(
+        zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)], strict=True)
+    )
     # get deletion read start, read end tuples
-    deletions_read = list(zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)]))
+    deletions_read = list(
+        zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)], strict=True)
+    )
     # get insertion ref start, ref end tuples
-    insertions_ref = list(zip(x_ref_starts[(t == 1)], x_ref_ends[(t == 1)]))
+    insertions_ref = list(
+        zip(x_ref_starts[(t == 1)], x_ref_ends[(t == 1)], strict=True)
+    )
     # get insertion read start, read end tuples
-    insertions_read = list(zip(x_read_starts[(t == 1)], x_read_ends[(t == 1)]))
+    insertions_read = list(
+        zip(x_read_starts[(t == 1)], x_read_ends[(t == 1)], strict=True)
+    )
     return deletions_ref, deletions_read, insertions_ref, insertions_read
 
 
@@ -140,7 +148,7 @@ def get_start_end(alignment: pysam.AlignedSegment):
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     m = sum(x[(t == 0) | (t == 1) | (t == 7) | (t == 8)])
@@ -223,7 +231,9 @@ def parse_SVsignals_from_alignment(
             size=int(abs(delr - dell)),
             sv_type=int(1),
         )
-        for ((dell, delr), (rdell, rdelr)) in zip(deletions_ref, deletions_read)
+        for ((dell, delr), (rdell, rdelr)) in zip(
+            deletions_ref, deletions_read, strict=True
+        )
         if abs(delr - dell) >= min_signal_size
     ]
     insertions = [
@@ -235,7 +245,9 @@ def parse_SVsignals_from_alignment(
             size=int(abs(rinsr - rinsl)),
             sv_type=int(0),
         )
-        for ((insl, insr), (rinsl, rinsr)) in zip(insertions_ref, insertions_read)
+        for ((insl, insr), (rinsl, rinsr)) in zip(
+            insertions_ref, insertions_read, strict=True
+        )
         if abs(rinsr - rinsl) >= min_signal_size
     ]
     if len(deletions):

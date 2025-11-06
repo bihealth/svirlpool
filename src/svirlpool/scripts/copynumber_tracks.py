@@ -660,7 +660,7 @@ def generate_copynumber_tracks(
             )
 
             # Combine positions with copy numbers
-            for (start, end, _), cn in zip(bins, copy_numbers):
+            for (start, end, _), cn in zip(bins, copy_numbers, strict=True):
                 cn_tracks[chr].append((start, end, cn))
 
     # Write to BED file

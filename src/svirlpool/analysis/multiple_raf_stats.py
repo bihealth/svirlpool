@@ -253,7 +253,7 @@ def process_multiple_rafs(
     # Prepare arguments for multiprocessing
     process_args = [
         (raf_path, sample_name)
-        for raf_path, sample_name in zip(raf_paths, sample_names)
+        for raf_path, sample_name in zip(raf_paths, sample_names, strict=True)
     ]
 
     # Process files in parallel

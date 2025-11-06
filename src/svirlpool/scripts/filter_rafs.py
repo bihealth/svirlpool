@@ -258,7 +258,7 @@ and for each RAF end the closest unique upstream region and report their distanc
         )
         for l in open(tmp_closest_ends.name, "r").readlines()
     ]
-    return list(zip(starts_distances, ends_distances))
+    return list(zip(starts_distances, ends_distances, strict=True))
 
 
 #  6) reduce each RAF effective region to start+distance_to_closest_downstream_unique_region and end-distance_to_closest_upstream_unique_region
@@ -333,7 +333,7 @@ output_rafs is sorted, bgzip compressed, and tabix indexed"""
     with open(tmp_output_starts.name, "w") as out:
         writer = csv.writer(out, delimiter="\t")
         for raf, (start_distance, _) in zip(
-            util.yield_from_raf(Path(input_rafs)), distances
+            util.yield_from_raf(Path(input_rafs)), distances, strict=True
         ):
             chr: str = str(raf.reference_name)
             start: int = int(raf.reference_alignment_start)
@@ -374,7 +374,9 @@ output_rafs is sorted, bgzip compressed, and tabix indexed"""
         if rafs_filtered_handle:
             writer_rafs_filtered = csv.writer(rafs_filtered_handle, delimiter="\t")
         for raf, (_, end_distance) in zip(
-            util.yield_from_raf(Path(tmp_output_starts_sorted.name)), distances
+            util.yield_from_raf(Path(tmp_output_starts_sorted.name)),
+            distances,
+            strict=True,
         ):
             chr: str = str(raf.reference_name)
             start: int = int(raf.reference_alignment_start)
@@ -552,6 +554,7 @@ def adjust_rafs_effective_intervals(
         zip(
             split_paths,
             [tmp_dir_path / f"split.{i}.output.bed" for i in range(threads)],
+            strict=True,
         )
     )
     jobs_args = [

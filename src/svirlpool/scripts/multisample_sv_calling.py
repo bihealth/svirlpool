@@ -2006,7 +2006,9 @@ def load_copynumber_tracks_from_svirltiles(
     from .copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
-    for i, (path, samplename) in enumerate(zip(svirltile_paths, samplenames)):
+    for _i, (path, samplename) in enumerate(
+        zip(svirltile_paths, samplenames, strict=True)
+    ):
         try:
             cn_tracks[samplename] = load_copynumber_trees_from_db(Path(path))
             log.info(f"Loaded copy number tracks for sample {samplename} from {path}")

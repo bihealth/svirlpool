@@ -1333,7 +1333,7 @@ Forward or backward orientation of the aligned query sequence is respected.
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     aln_length = int(
@@ -1454,7 +1454,7 @@ def get_read_pitx_on_ref(
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     read_start = 0
@@ -1585,7 +1585,7 @@ def get_interval_on_consensus_in_region(
 
 def query_start_end_on_read(aln: pysam.AlignedSegment) -> typing.Tuple[int, int]:
     """This function returns the position of the start and end of the query alignment on the read, following the alignment orientation."""
-    t, x = list(zip(*aln.cigartuples))
+    t, x = list(zip(*aln.cigartuples, strict=True))
     t = np.array(t)
     x = np.array(x)
     s = int(x[0]) if t[0] in (4, 5) else int(0)
@@ -1599,7 +1599,7 @@ def query_start_end_on_read(aln: pysam.AlignedSegment) -> typing.Tuple[int, int]
 
 def query_total_length(aln: pysam.AlignedSegment) -> int:
     """This function returns the total length of the query alignment on the read."""
-    t, x = list(zip(*aln.cigartuples))
+    t, x = list(zip(*aln.cigartuples, strict=True))
     t = np.array(t)
     x = np.array(x)
     return int(
@@ -1663,7 +1663,7 @@ def rolling_hashes(string: str, letter_dict: dict, k: int) -> list[int]:
 def kmer_counter_from_string(string: str, letter_dict: dict, k: int) -> Counter:
     hashes_a = rolling_hashes(string, letter_dict, k)
     hashes_b = rolling_hashes(str(Seq(string).complement()), letter_dict, k)
-    hashes = [min(a, b) for a, b in zip(hashes_a, hashes_b)]
+    hashes = [min(a, b) for a, b in zip(hashes_a, hashes_b, strict=True)]
     return Counter(hashes)
 
 

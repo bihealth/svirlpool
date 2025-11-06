@@ -150,7 +150,7 @@ def plot_mendelian(
         names = [input_file.stem for input_file in inputs]
 
     all_dfs = []
-    for input_file, group_name in zip(inputs, names):
+    for input_file, group_name in zip(inputs, names, strict=True):
         df = pd.read_csv(input_file, sep="\t")
 
         # Keep only required columns and ignore others
