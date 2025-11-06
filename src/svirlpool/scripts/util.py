@@ -1177,11 +1177,11 @@ def display_ascii_alignments(
         alns = dict_alns[refname]
         if max_ref_len < 1:
             try:
-                max_ref_len = max([
+                max_ref_len = max(
                     a.reference_start + a.reference_length
                     for a in alns
                     if a.reference_length
-                ])
+                )
             except:
                 continue
         print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
@@ -1635,10 +1635,10 @@ def get_hash_of_kmer(kmer: str, letter_dict: dict) -> int:
         raise ValueError("kmer must not be empty")
     n_letters = len(letter_dict)
     k = len(kmer)
-    hash_a = sum([
+    hash_a = sum(
         letter_dict.get(kmer[i], len(letter_dict)) * n_letters ** (k - i - 1)
         for i in range(k)
-    ])
+    )
     # kmer_rc = str(Seq(kmer).reverse_complement())
     # hash_b = sum([letter_dict.get(kmer_rc[i],len(letter_dict)) * n_letters**(k-i-1) for i in range(k)])
     return hash_a  # min(hash_a,hash_b)

@@ -134,12 +134,10 @@ def get_max_extents_of_read_alignments_in_region(
     dict_max_extents = {}
     for readname in dict_all_intervals.keys():
         intervals = dict_all_intervals[readname]
-        min_start = min([
+        min_start = min(
             (start, ref_start) for (start, end, ref_start, ref_end) in intervals
-        ])
-        max_end = max([
-            (end, ref_end) for (start, end, ref_start, ref_end) in intervals
-        ])
+        )
+        max_end = max((end, ref_end) for (start, end, ref_start, ref_end) in intervals)
         dict_max_extents[readname] = (
             min_start[0],
             max_end[0],

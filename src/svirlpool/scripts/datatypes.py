@@ -236,8 +236,8 @@ class CandidateRegion:
             raise ValueError("Cannot create CandidateRegion from empty sv_signals list")
         chr = sv_signals[0].chr
         referenceID = sv_signals[0].chrID
-        referenceStart = max(0, min([s.ref_start for s in sv_signals]) - buffer)
-        referenceEnd = max([s.ref_end for s in sv_signals]) + buffer
+        referenceStart = max(0, min(s.ref_start for s in sv_signals) - buffer)
+        referenceEnd = max(s.ref_end for s in sv_signals) + buffer
         return cls(
             crID=crID,
             chr=chr,

@@ -21,7 +21,7 @@ from . import alignments_to_rafs, datatypes, util
 def get_n_indels_signals(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
-    return sum([
+    return sum(
         1
         for sv in raf.SV_signals
         if (
@@ -32,7 +32,7 @@ def get_n_indels_signals(
                 or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
         )
-    ])
+    )
 
 
 def get_indels_bp_per_1kb(
@@ -77,7 +77,7 @@ def filter_rafs_by_excessive_indel_counts_per_chr(
 
     for idx, raf in enumerate(read_rafs_per_chr(input, chr)):
         # Count deletions (sv_type == 1)
-        n_deletions = sum([1 for sv in raf.SV_signals if sv.sv_type == 1])
+        n_deletions = sum(1 for sv in raf.SV_signals if sv.sv_type == 1)
         rafs_data.append({
             "chr": raf.reference_name,
             "start": raf.effective_interval[1],

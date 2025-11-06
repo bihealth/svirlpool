@@ -374,14 +374,14 @@ def get_max_extents_of_read_alignments_on_cr(
     dict_max_extents = {}
     for readname in dict_all_intervals.keys():
         intervals = dict_all_intervals[readname]
-        min_start = min([
+        min_start = min(
             (start, ref_start, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
-        ])
-        max_end = max([
+        )
+        max_end = max(
             (end, ref_end, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
-        ])
+        )
         dict_max_extents[readname] = (
             min_start[0],
             max_end[0],
@@ -561,11 +561,11 @@ def find_representing_read_per_cr(
     #   1) sum of indel signals of each read in the given candidate region
     indel_sums = np.zeros(len(sorted_pool))
     for i, readname in enumerate(sorted_pool):
-        indel_sums[i] = sum([
+        indel_sums[i] = sum(
             signal.size
             for signal in candidate_region.sv_signals
             if signal.readname == readname and signal.sv_type < 3
-        ])
+        )
     # calculate the difference to the mean indel sum for each read
     mean_indel_sum = np.median(indel_sums)
     indel_differences = np.abs(indel_sums - mean_indel_sum)

@@ -15,7 +15,7 @@ from . import datatypes, util
 def get_n_indels_signals(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
-    return sum([
+    return sum(
         1
         for sv in raf.SV_signals
         if (
@@ -26,13 +26,13 @@ def get_n_indels_signals(
                 or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
         )
-    ])
+    )
 
 
 def get_summed_indels_sizes(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
-    return sum([
+    return sum(
         sv.size
         for sv in raf.SV_signals
         if (
@@ -43,7 +43,7 @@ def get_summed_indels_sizes(
                 or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
         )
-    ])
+    )
 
 
 def get_median_indel_size(

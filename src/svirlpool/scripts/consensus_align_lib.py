@@ -105,12 +105,8 @@ def merge_sv_signals(
     )
     # sort sv_signals by ref_start position
     # get new length of the merged signal. add if the sv signal is an insertion, subtract if it is a deletion
-    sum_ins = sum([
-        sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 0
-    ])
-    sum_del = sum([
-        sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 1
-    ])
+    sum_ins = sum(sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 0)
+    sum_del = sum(sv_signal.size for sv_signal in sv_signals if sv_signal.sv_type == 1)
     total_length = sum_ins - sum_del
 
     merged_type = 0 if total_length > 0 else 1
@@ -451,15 +447,15 @@ def merge_merged_svs(
         for repeatID in merged_signal.repeatIDs
     })
     chr = signals_to_merge[0].chr
-    total_size = sum([
+    total_size = sum(
         merged_signal.size
         for merged_signal in signals_to_merge
         if merged_signal.sv_type == 0
-    ]) - sum([
+    ) - sum(
         merged_signal.size
         for merged_signal in signals_to_merge
         if merged_signal.sv_type == 1
-    ])
+    )
     original_alt_sequences = [
         seq
         for merged_signal in signals_to_merge

@@ -394,7 +394,7 @@ def filter_signals_for_too_many_aligned_segments(lines: list, max_bnds: int) -> 
         else:
             counter[line[7]] += 1
     # count the number of values that are > max_bnds
-    large_values = sum([1 for value in counter.values() if value > max_bnds])
+    large_values = sum(1 for value in counter.values() if value > max_bnds)
     log.info(
         f"among {c} reads there are {large_values} reads with more than {max_bnds} BNDs which are filtered out."
     )

@@ -786,9 +786,9 @@ def svPatterns_from_consensus_sequences(
         consensus_alignments: dict[str, list[datatypes.Alignment]] = load_alignments(
             path_alignments=output_consensus_to_reference_alignments, parse_DNA=False
         )
-        n_alignments = sum([
+        n_alignments = sum(
             len(alignments) for alignments in consensus_alignments.values()
-        ])
+        )
         if n_alignments == 0:
             raise ValueError(
                 f"No consensus alignments found in {output_consensus_to_reference_alignments}!"
@@ -800,7 +800,7 @@ def svPatterns_from_consensus_sequences(
             alignments_to_consensusAlignments(alignments=consensus_alignments)
         )
         log.info(
-            f"{sum([len(alignments) for alignments in dict_alignments.values()])} consensus alignments converted to ConsensusAlignment objects."
+            f"{sum(len(alignments) for alignments in dict_alignments.values())} consensus alignments converted to ConsensusAlignment objects."
         )
 
         log.info("Caching pysam alignments for tracing back core intervals...")

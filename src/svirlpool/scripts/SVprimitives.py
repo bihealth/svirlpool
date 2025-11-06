@@ -359,14 +359,14 @@ def generate_SVprimitives(
                     debug_performance__len_consensus_seuquence = len(
                         consensus.consensus_sequence
                     )
-                    debug_performance__sum_svPrimitive_sizes = sum([
+                    debug_performance__sum_svPrimitive_sizes = sum(
                         (
                             svp.size
                             if svp.sv_type == 0
                             else (50 if svp.sv_type == 1 else 200)
                         )
                         for svp in svp_cache
-                    ])
+                    )
                     debug_performance__num_svPrimitives = len(svp_cache)
 
                     # Start timing
@@ -634,14 +634,14 @@ def process_consensus_batch(
                 debug_performance__len_consensus_seuquence = len(
                     consensus.consensus_sequence
                 )
-                debug_performance__sum_svPrimitive_sizes = sum([
+                debug_performance__sum_svPrimitive_sizes = sum(
                     (
                         svp.size
                         if svp.sv_type == 0
                         else (50 if svp.sv_type == 1 else 200)
                     )
                     for svp in svp_cache
-                ])
+                )
                 debug_performance__num_svPrimitives = len(svp_cache)
 
                 # Start timing

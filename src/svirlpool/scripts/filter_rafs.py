@@ -61,9 +61,9 @@ def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> li
             left += 1
         # left is now the first signal that is in the radius
         # sum all signals sizes of the same type as midSvSignal that are in the radius
-        mask[mid] = sum([
+        mask[mid] = sum(
             s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type
-        ])
+        )
     # filter all signals that have a mask value below min_signal_bp
     return mask
 
