@@ -181,9 +181,11 @@ def _to_numpy_per_base_coverage(
 def _to_numpy_per_base_coverage_with_regions(
     data: np.ndarray,
     regions: dict[str, list[tuple[int, int]]],
-    chr_filterlist: list[str] = [],
+    chr_filterlist: list[str] = None,
 ) -> dict[str, np.ndarray]:
     """Converts coverage data to per-base numpy arrays for specified regions only."""
+    if chr_filterlist is None:
+        chr_filterlist = []
     chrs = set(data[:, 0]) - set(chr_filterlist)
     cov_arrays = {}
 
@@ -398,10 +400,12 @@ def _get_default_transition_matrix(stay_prob: float) -> np.ndarray:
 def median_binned_total_coverage(
     path_db: Path | str,
     bin_size: int,
-    chr_filterlist: list[str] = [],
+    chr_filterlist: list[str] = None,
     regions: Path | str | None = None,
 ) -> int:
     """Computes median coverage of all bins across all chromosomes, except those in chr_filterlist."""
+    if chr_filterlist is None:
+        chr_filterlist = []
     data = rafs_to_coverage.load_cov_from_db(path_db)
     data = np.array(data)
 
@@ -517,7 +521,7 @@ def generate_copynumber_tracks(
     threads: int,
     stay_prob: float,
     dispersion: float,
-    chr_filterlist: list[str] = [],
+    chr_filterlist: list[str] = None,
     regions_path: Path | None = None,
     transition_matrix=None,
 ) -> tuple[Path, Path]:
@@ -541,6 +545,8 @@ def generate_copynumber_tracks(
     Returns:
         Tuple of (bgzipped_bed_path, database_path)
     """
+    if chr_filterlist is None:
+        chr_filterlist = []
     log.info("Generating copy number tracks...")
 
     # step 1: use covtree to compute non-overlapping intervals of coverage

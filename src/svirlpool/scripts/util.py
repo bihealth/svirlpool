@@ -485,7 +485,7 @@ def kmers_on_dna5(seq: npt.NDArray[np.float16], k: int) -> npt.NDArray[np.float1
 def complexity_local_track(
     dna_iter: typing.Iterator,
     w: int = 11,
-    K: list[int] = [1, 2, 3, 4, 5],
+    K: list[int] = None,
     padding: bool = False,
 ) -> npt.NDArray[np.float16]:
     """
@@ -502,6 +502,8 @@ def complexity_local_track(
     """
     # Set up alphabet based on use_5letter flag
     # 5-letter alphabet: A=0, C=1, G=2, T=3, N=4, unknown=4
+    if K is None:
+        K = [1, 2, 3, 4, 5]
     alphabet_hash_dict = {
         "A": np.uint8(0),
         "a": np.uint8(0),
@@ -667,8 +669,10 @@ def delete_interval(seq: list, a: int, b: int):
 
 
 def insertion(
-    seq: list, pos: int, size: int = 0, sequence: list = [], seed: int = 0
+    seq: list, pos: int, size: int = 0, sequence: list = None, seed: int = 0
 ) -> typing.List[str]:
+    if sequence is None:
+        sequence = []
     if sequence == [] and size == 0:
         return seq
     if sequence == []:
@@ -944,7 +948,9 @@ def load_sampledicts(input: Path) -> typing.List[dict]:
 
 # plot to terminal a quick visualization that works like imshow with a provided list
 # of ascii letters as shades from light to dark.
-def plot_to_terminal(data: list, shades: list = [".", "-", "+", "#"]):
+def plot_to_terminal(data: list, shades: list = None):
+    if shades is None:
+        shades = [".", "-", "+", "#"]
     ndata = preprocessing.normalize(data)
     for row in ndata:
         for col in row:
@@ -1690,19 +1696,21 @@ def kmer_sketch_from_strings(
     )
     # filter the merged counter dict
     sum_letters = sum(map(len, strings))
-    return set([
+    return {
         k
         for k, v in summed_counter_dict.items()
         if v >= min_abs and v >= min_rel * sum_letters
-    ])
+    }
 
 
 def kmer_similarity(
     string_a: str,
     string_b: str,
-    letter_dict: dict = {"A": 0, "C": 1, "G": 2, "T": 3},
+    letter_dict: dict = None,
     k: int = 9,
 ) -> float:
+    if letter_dict is None:
+        letter_dict = {"A": 0, "C": 1, "G": 2, "T": 3}
     a: dict[int, int] = dict(
         kmer_counter_from_string(string=string_a.upper(), letter_dict=letter_dict, k=k)
     )
@@ -1726,10 +1734,12 @@ def kmer_similarity(
 def kmer_similarity_of_groups(
     group_a: list[str],
     group_b: list[str],
-    letter_dict: dict = {"A": 0, "C": 1, "G": 2, "T": 3},
+    letter_dict: dict = None,
     k: int = 9,
 ) -> float:
     # construct kmer counter dicts for each group and combine them. Combining them means is summing their values
+    if letter_dict is None:
+        letter_dict = {"A": 0, "C": 1, "G": 2, "T": 3}
     combined_counter_a = Counter()
     for seq in group_a:
         assert isinstance(seq, str), f"seq {seq} is not a string"
