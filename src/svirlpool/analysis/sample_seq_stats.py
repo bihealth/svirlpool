@@ -205,7 +205,7 @@ def add_ref_seq_to_deletions(
         path_bed = Path(tmpdir) / "dels.bed"
         # write all deletions to a bed file
         with open(path_bed, "w") as bed:
-            for signal, seq in signals:
+            for signal, _seq in signals:
                 if signal.sv_type == 1:
                     print(f"{signal.chr}:{signal.ref_start}-{signal.ref_end}", file=bed)
         # use samtools faidx to extract all sequences defined in 'bed' from the reference sequence

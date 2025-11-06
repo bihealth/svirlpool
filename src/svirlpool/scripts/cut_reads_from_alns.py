@@ -23,8 +23,8 @@ def cut_reads(
     # dict_alignments is of the form: dict_alignments[cr.crID][sampleID]=[pysam.AlignedSegment]
     # returns a list of read sequence records
     # check if dict_alignments is of the correct form
-    for readname, l in dict_alignments.items():
-        for aln in l:
+    for _readname, alignments in dict_alignments.items():
+        for aln in alignments:
             assert isinstance(aln, pysam.AlignedSegment), (
                 f"aln {aln} is not a pysam.AlignedSegment"
             )
@@ -44,8 +44,8 @@ def cut_reads(
 
     # log.info(f"cutting reads from alignments")
     cut_reads: dict[str, SeqRecord] = {}
-    for l in dict_alignments.values():
-        for aln in l:
+    for alignments in dict_alignments.values():
+        for aln in alignments:
             if aln.query_name in intervals:
                 if aln.query_name not in read_records:
                     log.warning(
@@ -89,18 +89,18 @@ def get_read_alignments_from_region(
 
 def get_read_alignment_intervals_in_region(
     region: tuple[str, int, int],
-    alignments: dict[str, list[pysam.AlignedSegment]],
+    dict_alignments: dict[str, list[pysam.AlignedSegment]],
     buffer_clipped_length: int,
 ) -> dict[str, tuple[int, int, int, int]]:
     # check if all elements in alignments are of type pysam.AlignedSegment
-    for l in alignments.values():
-        for aln in l:
+    for alignments in dict_alignments.values():
+        for aln in alignments:
             assert isinstance(aln, pysam.AlignedSegment), (
                 f"aln {aln} is not a pysam.AlignedSegment"
             )
     result = {}
-    for l in alignments.values():
-        for aln in l:
+    for alignments in dict_alignments.values():
+        for aln in alignments:
             if aln.query_name not in result:
                 result[aln.query_name] = []
             read_start, read_end = util.get_interval_on_read_in_region(
@@ -179,8 +179,8 @@ def get_full_read_sequences_of_alignments(
     """Retrieves all DNA sequences of all given read alignments. The read DNA is in original orientation, as it was given in the original fasta file."""
     # iterate all alignments of a sampleID across all crIDs
     dict_supplementary_positions: dict[str, list[tuple[str, int]]] = {}
-    for l in dict_alignments.values():
-        for aln in l:
+    for alignments in dict_alignments.values():
+        for aln in alignments:
             if (
                 aln.infer_read_length() != len(aln.query_sequence)
                 and aln.query_name not in dict_supplementary_positions
@@ -203,8 +203,8 @@ def get_full_read_sequences_of_alignments(
             chr for l in dict_supplementary_positions.values() for chr, pos in l
         }
     }
-    for _readname, l in dict_supplementary_positions.items():
-        for chr, pos in l:
+    for _readname, alignments in dict_supplementary_positions.items():
+        for chr, pos in alignments:
             dict_positions[chr].append(pos)
     # then sort the list of start positions in each chromosome
     for chrom in dict_positions.keys():
@@ -264,8 +264,8 @@ def get_full_read_sequences_of_alignments(
             if all(v is not None for v in dict_read_sequences.values()):
                 break
     # for all other alignments, just add the sequence and reverse flag
-    for l in dict_alignments.values():
-        for aln in l:
+    for alignments in dict_alignments.values():
+        for aln in alignments:
             if (
                 aln.query_name not in dict_read_sequences.keys()
                 and aln.infer_read_length() == len(aln.query_sequence)
@@ -351,7 +351,7 @@ def cut_reads_from_alignments(
     # get all read alignment intervals in region
     dict_intervals = get_read_alignment_intervals_in_region(
         region=region,
-        alignments=dict_alignments,
+        dict_alignments=dict_alignments,
         buffer_clipped_length=buffer_clipped_length,
     )
     dict_max_intervals = get_max_extents_of_read_alignments_in_region(dict_intervals)

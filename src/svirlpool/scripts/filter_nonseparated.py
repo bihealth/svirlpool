@@ -147,25 +147,25 @@ def split_regions(
     total_bases = 0
     with open(bedfile, "r") as f:
         for line in f:
-            line = line.strip().split("\t")
-            total_bases += int(line[2]) - int(line[1])
+            _contig, start, end, *_ = line.strip().split("\t")
+            total_bases += int(end) - int(start)
     # then, compute the chunk size
     chunk_size = int(round(total_bases / threads))
     # then, iterate over the regions and split if necessary
     # split to sizes of chunk_size. Split only, if the region is 30% longer than chunk_size.
     regions = []
     with open(bedfile, "r") as f:
-        for l in f:
-            line: list = l.strip().split("\t")
+        for line in f:
+            contig, start, end, *_ = line.strip().split("\t")
             # split if region is longer than chunk_size * 1.3
-            if int(line[2]) - int(line[1]) < chunk_size * 1.3:
-                regions.append((line[0], int(line[1]), int(line[2])))
+            if int(end) - int(start) < chunk_size * 1.3:
+                regions.append((contig, int(start), int(end)))
             else:
                 # split region
-                start: int = int(line[1])
-                while int(line[2]) > start:
-                    step: int = min(chunk_size, int(line[2]) - start)
-                    regions.append((line[0], start, start + step))
+                start: int = int(start)
+                while int(end) > start:
+                    step: int = min(chunk_size, int(end) - start)
+                    regions.append((contig, start, start + step))
                     start: int = start + step
     return regions
 

@@ -96,18 +96,18 @@ class SVpattern(ABC):
 
     def get_similar_sequence_intervals_from_svPrimitives(self) -> list[list[int, int]]:
         """gets all similar_sequence_intervals_on_consensus from the SVprimitives and merges them."""
-        l = sorted([
+        intervals = sorted([
             interval
             for svp in self.SVprimitives
             for interval in svp.similar_sequence_intervals_on_consensus
         ])
         # since the intervals have different lengths, the merging window can only advance once the next interval starts after the previous one ends
-        if len(l) == 0:
+        if len(intervals) == 0:
             return [[svp.read_start, svp.read_end] for svp in self.SVprimitives]
-        current_start = l[0][0]
+        current_start = intervals[0][0]
         merged_intervals = []
-        current_end = l[0][1]
-        for start, end in l[1:]:
+        current_end = intervals[0][1]
+        for start, end in intervals[1:]:
             if start > current_end:
                 merged_intervals.append([current_start, current_end])
                 current_start = start

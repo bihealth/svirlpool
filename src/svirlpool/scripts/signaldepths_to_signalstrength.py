@@ -201,7 +201,7 @@ def pseudo_convolve(
                     f"region {str(j)} to {str(k)} ({str(np_signals[j, :4])} to {str(np_signals[k - 1, :4])}) is very large ({str(region_size)}). (>{str(warning_collapsed_region_size)})."
                 )
 
-        for l in range(j, k):
+        for l in range(j, k):  # noqa: E741
             if l == i:
                 continue
             next_val = delta(subj=np_signals[i], obj=np_signals[l], flatness=flatness)

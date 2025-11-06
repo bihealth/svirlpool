@@ -244,19 +244,19 @@ and for each RAF end the closest unique upstream region and report their distanc
     # log.info(f"parsing distance from RAF start end RAF end to list..")
     starts_distances = [
         (
-            abs(int(l.strip().split("\t")[-1]))
-            if l.strip().split("\t")[-2] != "-1"
+            abs(int(line.strip().split("\t")[-1]))
+            if line.strip().split("\t")[-2] != "-1"
             else None
         )
-        for l in open(tmp_closest_starts.name, "r").readlines()
+        for line in open(tmp_closest_starts.name, "r").readlines()
     ]
     ends_distances = [
         (
-            abs(int(l.strip().split("\t")[-1]))
-            if l.strip().split("\t")[-2] != "-1"
+            abs(int(line.strip().split("\t")[-1]))
+            if line.strip().split("\t")[-2] != "-1"
             else None
         )
-        for l in open(tmp_closest_ends.name, "r").readlines()
+        for line in open(tmp_closest_ends.name, "r").readlines()
     ]
     return list(zip(starts_distances, ends_distances, strict=True))
 

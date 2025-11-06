@@ -584,13 +584,13 @@ def generate_copynumber_tracks(
 
     # step 3: compute the genome-wide median coverage from all bins (intervals) across all chromosomes. An interval is of the form (start, end, coverage)
     all_coverages = []
-    for chr, tree in cov_trees.items():
+    for _chr, tree in cov_trees.items():
         all_coverages.extend([interval.data for interval in tree])
     median_cov = int(np.median(all_coverages))
 
     # step 4: compute the median read length from intervall_trees_reads
     all_read_lengths = []
-    for chr, tree in intervall_trees_reads.items():
+    for _chr, tree in intervall_trees_reads.items():
         all_read_lengths.extend([interval.end - interval.begin for interval in tree])
 
     # step 5: new bin size is 10 * median read length

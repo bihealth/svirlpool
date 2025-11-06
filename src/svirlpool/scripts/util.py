@@ -139,7 +139,10 @@ def load_alignments(path: Path) -> typing.List[pysam.AlignedSegment]:
 
 def load_crs_connections(input: Path) -> dict:
     reader = csv.reader(input.open("r"), delimiter="\t")
-    return {tuple(json.loads(l[0])): [set(k) for k in json.loads(l[1])] for l in reader}
+    return {
+        tuple(json.loads(record[0])): [set(k) for k in json.loads(record[1])]
+        for record in reader
+    }
 
 
 def execute_to_df(cmd: list, sep="\t", header=None, index_col=None) -> pd.DataFrame:
@@ -571,7 +574,7 @@ def complexity_local_track(
     if padding:
         # Append padding values at the end
         pad_count = int(floor(w / 2))
-        for i in range(pad_count):
+        for _ in range(pad_count):
             track.append(track[-1])
     return np.array(track, dtype=np.float16)
 

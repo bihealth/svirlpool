@@ -47,10 +47,14 @@ class UnionFind:
     ) -> list[set[int]]:
         """computes lists of sets of connected components"""
         ccomponents = {}
-        for id in IDs if IDs else self._name_to_id.keys():
-            union = self.name_of_id(self.find_by_name(id))
+        for id_ in IDs if IDs else self._name_to_id.keys():
+            union = self.name_of_id(self.find_by_name(id_))
             if union not in ccomponents:
-                ccomponents[union] = {id}
+                ccomponents[union] = {id_}
             else:
-                ccomponents[union].add(id)
-        return [l for l in list(ccomponents.values()) if len(l) > 1 or allow_singletons]
+                ccomponents[union].add(id_)
+        return [
+            component
+            for component in list(ccomponents.values())
+            if len(component) > 1 or allow_singletons
+        ]

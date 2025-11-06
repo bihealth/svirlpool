@@ -421,7 +421,7 @@ def add_reference_sequence_to_svPatterns(
             regions_file = Path(tmp_dir) / "regions.bed"
             with open(regions_file, "w") as f:
                 for region_key, svps in regions.items():
-                    for svp in svps:
+                    for _svp in svps:  # FIXME: unused?
                         print(region_key, file=f)
             cmd_faidx = (
                 f"samtools faidx --region-file {regions_file} {reference_sequence}"
@@ -801,7 +801,7 @@ def svPatterns_from_consensus_sequences(
         log.info("Caching pysam alignments for tracing back core intervals...")
         pysam_cache: dict[int, AlignedSegment] = {}
         # fill the pysam cache
-        for consensusID, consensusAlignments in tqdm(dict_alignments.items()):
+        for _consensusID, consensusAlignments in tqdm(dict_alignments.items()):
             for consensusAlignment in consensusAlignments:
                 # Cache the pysam alignment using the alignment hash
                 if consensusAlignment.uid not in pysam_cache:

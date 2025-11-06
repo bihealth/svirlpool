@@ -160,12 +160,14 @@ def get_full_read_sequences_of_alignments(
     dict_positions = {
         chrom: []
         for chrom in {
-            chr for l in dict_supplementary_positions.values() for chr, pos in l
+            chr
+            for positions in dict_supplementary_positions.values()
+            for chr, pos in positions
         }
     }
-    for readname, l in dict_supplementary_positions.items():
-        for chr, pos in l:
-            dict_positions[chr].append(pos)
+    for _readname, positions in dict_supplementary_positions.items():
+        for chr_, pos in positions:
+            dict_positions[chr_].append(pos)
     # then sort the list of start positions in each chromosome
     for chrom in dict_positions.keys():
         dict_positions[chrom] = sorted(dict_positions[chrom])
@@ -606,8 +608,8 @@ def find_representing_read(
     """Find the best representative read across multiple candidate regions. Returns the name of the representative read."""
     # construct dict of intervaltrees for all intervals
     dict_interval_trees = {cr.chr: IntervalTree() for cr in crs.values()}
-    for readname, l in all_intervals.items():
-        for start, end, ref_chr, ref_start, ref_end in l:
+    for readname, intervals in all_intervals.items():
+        for start, end, ref_chr, ref_start, ref_end in intervals:
             acutal_ref_start = min(ref_start, ref_end)
             actural_ref_end = max(ref_start, ref_end)
             actual_read_start = min(start, end)
