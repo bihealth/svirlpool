@@ -226,7 +226,7 @@ def _bins_from_per_base_coverage(
 ) -> list[int]:
     """Bins per-base coverage arrays and returns a list of binned coverages."""
     all_bin_coverages = []
-    for chr, coverage_array in cov_arrays.items():
+    for _chr, coverage_array in cov_arrays.items():
         max_pos = len(coverage_array)
         num_bins = (max_pos + bin_size - 1) // bin_size  # Ceiling division
         for i in range(num_bins):

@@ -123,13 +123,13 @@ class Consensus:
     def get_max_cutread_coverage(self) -> int:
         # compute the maximum depth of overlaps of cut reads on the consensus
         events = []
-        for start, end, readname, forward in self.intervals_cutread_alignments:
+        for start, end, _readname, _forward in self.intervals_cutread_alignments:
             events.append((start, 1))
             events.append((end, -1))
         events = sorted(events)
         max_depth = 0
         current_depth = 0
-        for position, event_type in events:
+        for _position, event_type in events:
             current_depth += event_type
             max_depth = max(max_depth, current_depth)
         return max_depth

@@ -205,7 +205,7 @@ def get_full_read_sequences_of_alignments(
             chr for l in dict_supplementary_positions.values() for chr, pos in l
         ])
     }
-    for readname, l in dict_supplementary_positions.items():
+    for _readname, l in dict_supplementary_positions.items():
         for chr, pos in l:
             dict_positions[chr].append(pos)
     # then sort the list of start positions in each chromosome

@@ -651,7 +651,7 @@ def find_representing_read(
         raise ValueError("no representative read could be found")
     # if there are more than 1 different representatives, choose the one that is most often. If two are equally often, choose the one with the smallest ranks sum
     dict_chosen_reads = {readname: 0 for readname, score in chosen_reads}
-    for readname, score in chosen_reads:
+    for readname, _score in chosen_reads:
         dict_chosen_reads[readname] += 1
     max_count = max(dict_chosen_reads.values())
     chosen_read = sorted(
@@ -2112,7 +2112,7 @@ def visualize_raf_score_graph(
     edge_colors = []
     edge_widths = []
 
-    for u, v, data in G.edges(data=True):
+    for _u, _v, data in G.edges(data=True):
         weight = data["weight"]
 
         # Color: red if weight > weighted_median, black otherwise
@@ -2314,7 +2314,7 @@ def _get_padding_sizes_per_read(
     for readname, (
         start,
         end,
-        cutread_length,
+        _cutread_length,
         read_length,
         forward,
     ) in read_paddings_for_consensus.items():
@@ -2448,7 +2448,7 @@ def summed_indel_distribution(
     alns: dict[int, list[pysam.AlignedSegment]],
 ) -> dict[str, list[int]]:
     rafs: list[datatypes.ReadAlignmentFragment] = []
-    for crID, alnlist in alns.items():
+    for _crID, alnlist in alns.items():
         for aln in alnlist:
             rafs.append(
                 alignments_to_rafs.parse_ReadAlignmentFragment_from_alignment(

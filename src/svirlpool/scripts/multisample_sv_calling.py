@@ -207,7 +207,7 @@ def svPatterns_to_horizontally_merged_svComposites(
         _svPatterns, key=lambda x: (x.consensusID, get_sv_group_key(x.get_sv_type()))
     )
     # loop svPatterns of each group and connect them if they share at least one repeatID
-    for (consensusID, sv_type), group in groups:
+    for (_consensusID, _sv_type), group in groups:
         group = list(group)
         if len(group) == 1:
             result.append(SVcomposite.from_SVpatterns(group))

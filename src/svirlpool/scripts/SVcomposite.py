@@ -290,7 +290,7 @@ class SVcomposite:
             intervaltrees[region[0]].addi(
                 region[1], region[2], {1}
             )  # add 1 as it is the identifier for the second SVcomposite
-        for chr, tree in intervaltrees.items():
+        for _chr, tree in intervaltrees.items():
             tree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
             # then iterate all merged intervals in the tree. If data is {0,1}, then there is an overlap
             for interval in tree:

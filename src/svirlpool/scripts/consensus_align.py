@@ -252,7 +252,7 @@ def svPrimitives_to_svPatterns(
 
     # Process each group of SVprimitives
     svpatterns = []
-    for consensusID, group in grouped_svprimitives.items():
+    for _consensusID, group in grouped_svprimitives.items():
         svpatterns.extend(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
                 SVprimitives=group, max_del_size=max_del_size

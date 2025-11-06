@@ -183,7 +183,7 @@ def add_genotypeMeasurements_to_SVprimitives(
         # find all reads that support this SV signal. This means to find all overlapping intervals_cutread_alignments
         supporting_reads_start = []
         svp_start = svp.read_start - core_interval_start
-        for start, end, readname, forward in intervals_cutread_alignments:
+        for start, end, readname, _forward in intervals_cutread_alignments:
             start, end = (end, start) if start > end else (start, end)
             if start <= svp_start <= end:
                 supporting_reads_start.append(readname)
@@ -203,7 +203,7 @@ def add_genotypeMeasurements_to_SVprimitives(
         )
         supporting_reads_end = []
         svp_end = svp.read_end - core_interval_start
-        for start, end, readname, forward in intervals_cutread_alignments:
+        for start, end, readname, _forward in intervals_cutread_alignments:
             if start <= svp_end <= end:
                 supporting_reads_end.append(readname)
         svp.genotypeMeasurement = genotyping.GenotypeMeasurement(

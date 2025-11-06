@@ -337,7 +337,7 @@ def merge_svs_in_dict_alignments(
     # and connect all SV signals that share a repeatID
     # then test each connected component, if all members fulfill the criteria for merging
     # and merge them. If not, add them as singletons
-    for consensusID, consensusAlignments in dict_alignments.items():
+    for _consensusID, consensusAlignments in dict_alignments.items():
         for consensusAlignment in consensusAlignments:
             svs: list[datatypes.MergedSVSignal] = consensusAlignment.proto_svs
             # make all sv.repeatIDs sets
