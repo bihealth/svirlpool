@@ -1,4 +1,3 @@
-# %%
 #!/usr/bin/env python
 import argparse
 import csv
@@ -15,10 +14,7 @@ from intervaltree import IntervalTree
 from logzero import logger
 from tqdm import tqdm
 
-# %%
 from . import datatypes, util
-
-# %%
 
 # # find stretches, accepts a np array of ints, returns a list of tuples
 # def find_stretches(arr:np.ndarray) -> typing.List[typing.Tuple[int,int]]:
