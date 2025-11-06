@@ -1,5 +1,7 @@
 # Svirlpool: structural variant detection from long read sequencing by local assembly
 
+Our [preprint](https://www.biorxiv.org/content/10.1101/2025.11.03.686231v1) is now on BioRXiv!
+
 <img src="media/illustration.png" align="right" alt="Svirlpool illustration" width="300" height="300">
 
 - License: MIT
