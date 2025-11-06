@@ -2365,14 +2365,14 @@ def _create_padding_object(
         padding_intervals[0][0] : padding_intervals[0][1]
     ]
     # needs to be reverse complimented if the cutread alignment is reverse
-    if read_paddings_for_consensus[padding_reads[0]][4] == False:
+    if not read_paddings_for_consensus[padding_reads[0]][4]:
         left_padding = left_padding.reverse_complement()
 
     right_padding: Seq = read_records[padding_reads[1]].seq[
         padding_intervals[1][0] : padding_intervals[1][1]
     ]
     # needs to be reverse complimented if the cutread alignment is reverse
-    if read_paddings_for_consensus[padding_reads[1]][4] == False:
+    if not read_paddings_for_consensus[padding_reads[1]][4]:
         right_padding = right_padding.reverse_complement()
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(

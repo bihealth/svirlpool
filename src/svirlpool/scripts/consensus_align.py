@@ -336,7 +336,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 log.debug(
                     f"Size distortions for SVpattern {processed_svp.consensusID} in consensus {consensusID}: {size_distortions}"
                 )
-                if size_distortions != None and len(size_distortions) > 0:
+                if size_distortions is not None and len(size_distortions) > 0:
                     processed_svp.size_distortions = size_distortions
                 else:
                     raise ValueError(

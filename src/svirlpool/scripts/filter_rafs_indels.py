@@ -133,7 +133,7 @@ def filter_rafs_by_excessive_indel_counts_per_chr(
     )
     with open(output, "w") as f:
         writer = csv.writer(f, delimiter="\t")
-        if dropped != None:
+        if dropped is not None:
             dropped_file_handle = open(dropped, "w")
             writer_dropped = csv.writer(dropped_file_handle, delimiter="\t")
 
@@ -154,7 +154,7 @@ def filter_rafs_by_excessive_indel_counts_per_chr(
             else:
                 writer.writerow([chr, start, end, json.dumps(raf.unstructure())])
 
-        if dropped != None:
+        if dropped is not None:
             dropped_file_handle.close()
 
 
@@ -280,7 +280,7 @@ def filter_rafs_by_excessive_indel_counts(
         log.warning(
             "multiplier is lower than 2.0. This will result in a lot of dropped rafs."
         )
-    keep_dropped = dropped_path != None
+    keep_dropped = dropped_path is not None
     # get chr names
     chr_names = get_chr_names(reference)
     # run filter_rafs_by_excessive_indel_counts_per_chr in parallel

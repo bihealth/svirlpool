@@ -510,7 +510,7 @@ def adjust_rafs_effective_intervals(
     rafs_dropped: Path | None = None,
 ) -> None:
     custom_tmp_dir: bool = True
-    if tmp_dir_path == None:
+    if tmp_dir_path is None:
         custom_tmp_dir = False
         tmp_dir = tempfile.TemporaryDirectory()
         tmp_dir_path = Path(tmp_dir.name)
