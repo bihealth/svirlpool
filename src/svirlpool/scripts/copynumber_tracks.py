@@ -155,15 +155,17 @@ def _parse_bed_file(bed_path: Path | str) -> dict[str, list[tuple[int, int]]]:
 
 
 def _to_numpy_per_base_coverage(
-    data: np.ndarray, chr_filterlist: list[str] = []
+    data: np.ndarray, chr_filterlist: list[str] = None
 ) -> dict[str, np.ndarray]:
     """Converts coverage data to per-base numpy arrays for each chromosome."""
+    if chr_filterlist is None:
+        chr_filterlist = []
     chrs = set(data[:, 0]) - set(chr_filterlist)
     cov_arrays = {}
     for chr in tqdm(chrs, desc="Converting to per-base coverage arrays"):
         chr = str(chr)
         data_chr_intervals = data[data[:, 0] == chr][:, 1:3].astype(int)
-        data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)
+        _data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)  # FIXME: unused?
         if len(data_chr_intervals) == 0:
             continue
         max_pos = np.max(data_chr_intervals)

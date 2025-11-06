@@ -190,7 +190,7 @@ def crs_containers_QC(
     )
 
     # create a histogram of the number of crs per crs container
-    data = [len(cr["crs"]) for cr in crs_containers]
+    _data = [len(cr["crs"]) for cr in crs_containers]  # FIXME: unused?
     # import seaborn as sns
     # # # create histogram with seaborn
     # sns.histplot(data,bins=range(1,max(data)+1),discrete=True)

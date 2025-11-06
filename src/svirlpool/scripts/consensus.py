@@ -1141,7 +1141,7 @@ def assemble_consensus(
     verbose: bool = False,
 ) -> str | None:
     # create a temporary fasta file with the read sequences filtered by chosen reads. only the chosen reads can be kept.
-    with tempfile.TemporaryDirectory() as tmp_dir:
+    with tempfile.TemporaryDirectory():
         # ====== try lamassemble first ====== #
         consensus_sequence: str | None = make_consensus_with_lamassemble(
             lamassemble_mat=lamassemble_mat,

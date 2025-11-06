@@ -241,7 +241,7 @@ def svPrimitives_to_svPatterns(
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
         return []
-    current_consensusID = SVprimitives[0].consensusID
+    _current_consensusID = SVprimitives[0].consensusID  # FIXME: unused?
 
     # Group SVprimitives by consensusID
     grouped_svprimitives = {}
@@ -873,7 +873,7 @@ def svPatterns_from_consensus_sequences(
         dict_alignments_processed: dict[
             str, list[consensus_class.ConsensusAlignment]
         ] = {}
-        consensusIDs = list(dict_alignments.keys())
+        _consensusIDs = list(dict_alignments.keys())  # FIXME: unused?
         for consensusID, consensusAlignments in tqdm(dict_alignments.items()):
             if last_consensus is None or last_consensus.consensusID != consensusID:
                 last_consensus = LastConsensus(

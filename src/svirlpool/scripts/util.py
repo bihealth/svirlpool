@@ -1903,7 +1903,7 @@ def cut_alignments(
     assert all(a.reference_name == chr for a in alignments), (
         "all alignments must be on the same chromosome"
     )
-    cut_alns: list[pysam.AlignedSegment] = []
+    _cut_alns: list[pysam.AlignedSegment] = []  # FIXME: unused?
     for alignment in alignments:
         # find the positions on the ref on the read
         start_final_pos, start_block, start_t, start_x = get_ref_pitx_on_read(
