@@ -7,12 +7,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from Bio import SeqIO
+from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from intervaltree import Interval, IntervalTree
 from logzero import logger as log
 from pysam import AlignedSegment
-from Bio import SeqUtils
 
 from . import consensus, consensus_class, datastructures, datatypes
 
