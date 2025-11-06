@@ -412,9 +412,9 @@ def extract_all_signals(
     log.info("parsing repeats..")
     intervaltrees = create_intervaltrees(path_repeats)
     all_signals: list[datatypes.ExtendedSVsignal] = []
-    dict_region_del_idx: dict[str:int] = (
-        dict()
-    )  # this dict links a region string (chr:start-end) to the index of the deletion in all_signals
+    dict_region_del_idx: dict[
+        str, int
+    ] = {}  # this dict links a region string (chr:start-end) to the index of the deletion in all_signals
     log.info("parsing SV signals..")
     with tempfile.TemporaryDirectory() as tmpdir:
         path_regions = Path(tmpdir) / "dels.regions"
