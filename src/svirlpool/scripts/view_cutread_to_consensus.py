@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from . import util
+from . import util, consensus_class
 
 
 def view_cut_reads_from_consensus(
