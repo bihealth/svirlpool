@@ -288,7 +288,7 @@ def is_variant_inconsistent(
         gt_son = None
         gt_father = None
         gt_mother = None
-        all_sample_names = set([call.sample for call in variant.calls])
+        all_sample_names = {call.sample for call in variant.calls}
         assert all_sample_names.intersection(set(names_trio)) == set(names_trio), (
             "names_trio must be in the vcf file"
         )
@@ -376,7 +376,7 @@ def parse_variants(path_vcf: PosixPath, passonly: bool = False) -> list[vcfpy.Re
     reader = vcfpy.Reader.from_path(path_vcf)
     if passonly:
         return [record for record in reader if record.FILTER == ["PASS"]]
-    return [record for record in reader]
+    return list(reader)
 
 
 def extract_variant_features(variant: vcfpy.Record) -> str:
@@ -516,9 +516,7 @@ def get_trios_from_variants(
     variants: list[vcfpy.Record], ped: PosixPath
 ) -> list[list[str]]:
     "returns a list of trios that are present in the vcf file and in the pedigree. Each sublist has 3 elements: child, father, mother"
-    all_samplenames = set([
-        call.sample for variant in variants for call in variant.calls
-    ])
+    all_samplenames = {call.sample for variant in variants for call in variant.calls}
     # then parse the pedigree and find all trios that are alos present in all_samplenames
     dict_ped: dict[str, tuple[str, str, str]] = parse_ped(ped)
     trios = []
@@ -803,7 +801,7 @@ def mendelian_consistency(
         father = variants[0].calls[1].sample
         mother = variants[0].calls[2].sample
         trios = [[sample, father, mother]]
-    all_dict_stats: dict[str, dict[GTInheritanceStatus, int]] = dict()
+    all_dict_stats: dict[str, dict[GTInheritanceStatus, int]] = {}
     with open(output, "w") as f:
         for sample, father, mother in sorted(trios, key=lambda x: x[0]):
             # Create sample-specific output_bed path if requested

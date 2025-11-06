@@ -145,9 +145,9 @@ def get_full_read_sequences_of_alignments(
     """Retrieves all DNA sequences of all given read alignments. The read DNA is in original orientation, as it was given in the original fasta file."""
     # iterate all alignments of a sampleID across all crIDs
     crIDs = dict_alignments.keys()
-    dict_read_sequences: dict[str, SeqRecord] = (
-        dict()
-    )  # {(readname:(aln_reverse:bool,query_sequence:str))}
+    dict_read_sequences: dict[
+        str, SeqRecord
+    ] = {}  # {(readname:(aln_reverse:bool,query_sequence:str))}
     dict_supplementary_positions: dict[str, list[tuple[str, int]]] = {}
     for crID in crIDs:
         for aln in dict_alignments[crID]:
@@ -162,9 +162,9 @@ def get_full_read_sequences_of_alignments(
     # assort all supplementary_positions to a dict of the form {chromosome:[start,start+1]}
     dict_positions = {
         chrom: []
-        for chrom in set([
+        for chrom in {
             chr for l in dict_supplementary_positions.values() for chr, pos in l
-        ])
+        }
     }
     for readname, l in dict_supplementary_positions.items():
         for chr, pos in l:
@@ -259,8 +259,8 @@ def get_read_alignments_for_crs(
     dict[int, list[pysam.AlignedSegment]], dict[int, list[pysam.AlignedSegment]]
 ]:
     """Returns a dict of the form crID:{sampleID:[alignments]}"""
-    dict_alignments: dict[int, list[pysam.AlignedSegment]] = dict()
-    dict_alignments_wt: dict[int, list[pysam.AlignedSegment]] = dict()
+    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {}
+    dict_alignments_wt: dict[int, list[pysam.AlignedSegment]] = {}
     readnames_in_signals: dict[str] = {
         signal.readname for cr in crs for signal in cr.sv_signals
     }
@@ -423,7 +423,7 @@ def trim_reads(
             f"intervals[readname] {intervals[readname]} is not of length 6"
         )
         # check if each tuple is of types: int,int,str,int,str,int
-        for key, (
+        for _key, (
             read_start,
             read_end,
             ref_start_chr,
@@ -446,7 +446,7 @@ def trim_reads(
             )
             assert isinstance(ref_end, int), f"ref_end {ref_end} is not an integer"
 
-    cut_reads: dict[str, SeqRecord] = dict()
+    cut_reads: dict[str, SeqRecord] = {}
     for crID in dict_alignments.keys():
         for aln in dict_alignments[crID]:
             if aln.query_name in intervals:
@@ -1300,11 +1300,11 @@ def consensus_while_clustering(
             #  - find all reference names in the alignments
             #  - for each reference name in the alignments, do scoring
             all_raf_scores: dict[str, dict[str, float]] = {}
-            for reference_name in set([
+            for reference_name in {
                 aln.reference_name
                 for aln in all_vs_all_alignments
                 if not aln.is_unmapped
-            ]):
+            }:
                 raf_alignments = [
                     aln
                     for aln in all_vs_all_alignments
@@ -1884,7 +1884,7 @@ def calc_ras_scores(
     bias: float = 0.5,
 ) -> np.ndarray:
     # calc a score for each raf. The score of a raf is the sum of probabilities of each sv signal in the raf
-    N_samples = len(set([ras.read_name for ras in rass]))
+    N_samples = len({ras.read_name for ras in rass})
     signals = extract_signals(rass=rass)
     # generate regions with repeats / low complexity
     # For each
@@ -2006,8 +2006,8 @@ def score_ras_from_alignments(
     # return dict of {read_name: score}
     # always pick the highest scoring raf for each read_name
     rass_scores = calc_ras_scores(rass=rass, reflen=reflen)
-    rafs_scores_dict = dict()
-    for ras, score in zip(rass, rass_scores):
+    rafs_scores_dict = {}
+    for ras, score in zip(rass, rass_scores, strict=False):
         if ras.read_name in rafs_scores_dict:
             if rafs_scores_dict[ras.read_name] < score:
                 rafs_scores_dict[ras.read_name] = score
@@ -2434,7 +2434,7 @@ def load_crs_containers_from_db(
         )
     else:
         c.execute("SELECT crID, data FROM containers")
-    containers = dict()
+    containers = {}
     for crID, data in c.fetchall():
         crs_container = json.loads(data)
         crs_container = deserialize_crs_container(crs_container)
@@ -2552,7 +2552,7 @@ def process_consensus_container(
         )
         # parse unused reads to datatypes.SequenceObject
         dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: set([signal.readname for signal in cr.sv_signals])
+            cr.crID: {signal.readname for signal in cr.sv_signals}
             for cr in crs_dict.values()
         }
         dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
@@ -2576,7 +2576,7 @@ def process_consensus_container(
                             ),
                         )
                         dict_unused_reads[crID].append(read_sequence_object)
-        return dict(), dict_unused_reads
+        return {}, dict_unused_reads
 
     alns, alns_wt = get_read_alignments_for_crs(
         crs=list(crs_dict.values()), alignments=path_alignments
@@ -2607,7 +2607,7 @@ def process_consensus_container(
 
     # =========================================== CONSENSUS BUILDING =========================================== #
 
-    consensus_objects: dict[str, consensus_class.Consensus] = dict()
+    consensus_objects: dict[str, consensus_class.Consensus] = {}
 
     res: dict[str, consensus_class.Consensus] | None = None
     res = consensus_while_clustering(
@@ -2635,7 +2635,7 @@ def process_consensus_container(
         )
         # parse unused reads to datatypes.SequenceObject
         dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: set([signal.readname for signal in cr.sv_signals])
+            cr.crID: {signal.readname for signal in cr.sv_signals}
             for cr in crs_dict.values()
         }
         dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
@@ -2656,7 +2656,7 @@ def process_consensus_container(
                     ),
                 )
                 dict_unused_reads[crID].append(read_sequence_object)
-        return dict(), dict_unused_reads
+        return {}, dict_unused_reads
         # TODO: implement assembly for regions without representatives
 
     # ================================ ADDING UNUSED READS TO CONSENSUS OBJECTS ================================ #
@@ -2704,7 +2704,7 @@ def process_consensus_container(
         f"Found {len(set_unused_readnames)} unused reads after consensus building."
     )
 
-    unused_seqobjects: dict[str, datatypes.SequenceObject] = dict()
+    unused_seqobjects: dict[str, datatypes.SequenceObject] = {}
     for readname in set_unused_readnames:
         read_seqRecord = cutreads[readname]
         unused_seqobjects[readname] = datatypes.SequenceObject(
@@ -2718,10 +2718,10 @@ def process_consensus_container(
                 else None
             ),
         )
-    dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = dict()
+    dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
     for crID, cr in crs_dict.items():
         # save all reads to dict_unused_reads that are in the cr and in set_unused_readnames
-        readnames_in_cr = set([signal.readname for signal in cr.sv_signals])
+        readnames_in_cr = {signal.readname for signal in cr.sv_signals}
         dict_unused_reads[crID] = []
         for readname, seqobject in unused_seqobjects.items():
             if readname in readnames_in_cr:
@@ -2773,26 +2773,26 @@ def crs_containers_to_consensus(
         assert len(crIDs) > 0, (
             "crIDs must be a list of integers with at least one element."
         )
-        assert all([isinstance(crID, int) for crID in crIDs]), (
+        assert all(isinstance(crID, int) for crID in crIDs), (
             "crIDs must be a list of integers."
         )
     log.info("load data")
     if crIDs:
         existing_crIDs = load_crIDs_from_containers_db(path_db=input)
         # log all crIDs that are missing in a warning
-        if not all([crID in existing_crIDs for crID in crIDs]):
+        if not all(crID in existing_crIDs for crID in crIDs):
             log.warning(
                 f"crIDs {set(crIDs) - set(existing_crIDs)} are not in the database. They are skipped."
             )
         # if no real crIDs are left, return with warning
-        if not any([crID in existing_crIDs for crID in crIDs]):
+        if not any(crID in existing_crIDs for crID in crIDs):
             log.error("No crIDs to process. Exiting.")
             return
     log.info(f"Loading crs containers from database at {input}.")
     containers = load_crs_containers_from_db(path_db=input, crIDs=crIDs)
     log.info("loaded data")
-    all_consensuses: dict[str, consensus_class.Consensus] = dict()
-    all_unused_reads: dict[int, list[datatypes.SequenceObject]] = dict()
+    all_consensuses: dict[str, consensus_class.Consensus] = {}
+    all_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
     for crID, container in containers.items():
         log.info(f"Processing crID {crID}.")
         crs_dict = {cr.crID: cr for cr in container["crs"]}

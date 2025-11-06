@@ -130,10 +130,10 @@ def get_crs_containers(
     }
     # all keys (crID tuples) in dict_connections_filtered are connected crIDs.
     # flat set of all connected crIDs:
-    set_connected_crIDs: set[int] = set([
+    set_connected_crIDs: set[int] = {
         int(crID) for crIDs in dict_connections_filtered.keys() for crID in crIDs
-    ])
-    set_singleton_crIDs: set[int] = set(list(crs_dict.keys())) - set_connected_crIDs
+    }
+    set_singleton_crIDs: set[int] = set(crs_dict.keys()) - set_connected_crIDs
 
     # create connected components
     UF = datastructures.UnionFind(sorted(set_connected_crIDs))
@@ -148,12 +148,12 @@ def get_crs_containers(
         crs_containers.append({
             "crID": crID,
             "crs": [crs_dict[crID]],
-            "connecting_reads": dict(),
+            "connecting_reads": {},
         })
 
     for cc in CC:
         # find the connecting reads. They need to be in dict_connections_filtered
-        connecting_reads: dict[str, list[int]] = dict()
+        connecting_reads: dict[str, list[int]] = {}
         for crIDa, crIDb in combinations(cc, 2):
             if (crIDa, crIDb) in dict_connections_filtered:
                 for readname in dict_connections_filtered[(crIDa, crIDb)]:

@@ -11,7 +11,7 @@ from . import util
 
 
 def get_indel_counts(input: Path | str) -> tuple[dict[str, object], int, int]:
-    counts = {"deletions": dict(), "insertions": dict(), "breakends": 0}
+    counts = {"deletions": {}, "insertions": {}, "breakends": 0}
     n_rafs = 0
     sum_bp = 0
     for raf in util.yield_from_raf(input=input):

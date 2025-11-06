@@ -257,7 +257,7 @@ class CandidateRegion:
         return f"{self.chr}:{self.referenceStart}-{self.referenceEnd}"
 
     def get_read_names(self) -> set[str]:
-        return set([s.readname for s in self.sv_signals])
+        return {s.readname for s in self.sv_signals}
 
     def get_ReadAlignmentSignals(self) -> list[ReadAlignmentSignals]:
         # construct a ReadAlignmentSignals object from the sv_signals list

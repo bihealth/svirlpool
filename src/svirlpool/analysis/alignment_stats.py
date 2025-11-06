@@ -53,7 +53,7 @@ def process_region(bam_path: Path, region: tuple[str, int, int], min_mapq: int) 
 
     # Divide region into 2Mb sub-regions
     sub_region_size = 2_000_000
-    region_length = end - start
+    _region_length = end - start  # FIXME: unused?
 
     # Process sub-regions sequentially
     for sub_start in range(start, end, sub_region_size):
@@ -175,7 +175,7 @@ def run(args):
 
     # Process each sample
     sample_results = []
-    for bam_path, sample_name in zip(bam_files, sample_names):
+    for bam_path, sample_name in zip(bam_files, sample_names, strict=True):
         result = process_sample(
             bam_path, sample_name, regions, args.min_mapq, args.threads
         )
@@ -258,7 +258,7 @@ def run(args):
                 fontsize=9,
                 verticalalignment="top",
                 horizontalalignment="right",
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
             )
 
         # Plot 2: Indel counts by size bin

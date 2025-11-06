@@ -21,7 +21,7 @@ def n_signals(cr: datatypes.CandidateRegion) -> int:
 
 
 def n_reads(cr: datatypes.CandidateRegion) -> int:
-    return len(set([s.aug_readname() for s in cr.sv_signals]))
+    return len({s.aug_readname() for s in cr.sv_signals})
 
 
 def avg_coverage(cr: datatypes.CandidateRegion) -> float:
@@ -29,7 +29,7 @@ def avg_coverage(cr: datatypes.CandidateRegion) -> float:
 
 
 def n_repeats(cr: datatypes.CandidateRegion) -> int:
-    return len(set([s.repeatID for s in cr.sv_signals if s.repeatID != -1]))
+    return len({s.repeatID for s in cr.sv_signals if s.repeatID != -1})
 
 
 # iterate crs and extract stats

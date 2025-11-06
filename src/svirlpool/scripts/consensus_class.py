@@ -99,10 +99,10 @@ class Consensus:
 
     def get_used_readnames(self) -> set[str]:
         """Returns a set of read names that were used to generate this consensus."""
-        return set([
+        return {
             readname
             for start, end, readname, forward in self.intervals_cutread_alignments
-        ])
+        }
 
     def get_consensus_distortions(self) -> list[ConsensusDistortion]:
         if len(self.cut_read_alignment_signals) == 0:

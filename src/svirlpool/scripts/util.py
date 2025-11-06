@@ -430,7 +430,7 @@ def genome_file_for_bedtools(
     reference: Path, output: Path | None = None
 ) -> dict[str, int]:
     create_fai_if_not_exists(reference=reference)
-    rdict = dict()
+    rdict = {}
     if output:
         with open(output, "w") as f:
             for line in open(Path(str(reference) + ".fai"), "r"):
@@ -886,7 +886,7 @@ def get_alignments_to_reference(
 def get_samplenames_from_samfile(samfile: pysam.Samfile) -> typing.List[str]:
     """returns a list of unique sample names from the RG tags in the samfile header."""
     try:
-        return list(set([item["SM"] for item in samfile.header.to_dict()["RG"]]))
+        return list({item["SM"] for item in samfile.header.to_dict()["RG"]})
     except KeyError:
         return []
 
@@ -1058,8 +1058,8 @@ def add_clipped_tails_to_alignments(
         "%s is deprecated and will be removed in the future. It has no use anymore since aligned virtual fragments are now padded with read sequence."
     )
     """adds clipped tails to alignments. The clipped tails are aligned to the reference and added to the original alignment. Known issue: hard clips are missing on the added tails."""
-    read_covered_intervals: dict[str, list[tuple]] = dict()
-    readlengths: dict[str, int] = dict()
+    read_covered_intervals: dict[str, list[tuple]] = {}
+    readlengths: dict[str, int] = {}
     # selected_readalignments = dict()
     for aln in pysam.AlignmentFile(
         alignments, "rb"
@@ -1089,7 +1089,7 @@ def add_clipped_tails_to_alignments(
         suffix=".fasta", dir=tmp_dir.name, delete=False
     )
     # sort each read's intervals and process
-    unaligned_intervals: dict[str, list[tuple]] = dict()
+    unaligned_intervals: dict[str, list[tuple]] = {}
     with open(tmp_fasta_unaligned_tails.name, "w") as f:
         for aln in pysam.AlignmentFile(alignments, "rb"):
             # check if the alignment is primary (has no hard clippings)
@@ -2117,7 +2117,7 @@ def get_all_table_metadata(path_database: str) -> dict[str, str]:
             FROM {metadata_table}
         """
         )
-        return {k: v for k, v in cursor.fetchall()}
+        return dict(cursor.fetchall())
 
 
 # =============================================================================

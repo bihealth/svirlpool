@@ -221,7 +221,7 @@ def add_ref_seq_to_deletions(
 
 def create_intervaltrees(path_repeats: Path) -> dict[str, IntervalTree]:
     # construct dict of interval tree from repeats
-    it_repeats: dict[str, IntervalTree] = dict()
+    it_repeats: dict[str, IntervalTree] = {}
     with open(path_repeats, "r") as f:
         for i, line in enumerate(f):
             chr, start, end = line.strip().split("\t")

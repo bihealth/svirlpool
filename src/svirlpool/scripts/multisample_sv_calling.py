@@ -1429,12 +1429,9 @@ def SVcalls_from_SVcomposite(
         )
         svlen: int = abs(svComposite.get_size())
         svtype: str = svComposite.sv_type
-        consensusIDs: list[str] = list(
-            set([
-                svPattern.samplenamed_consensusID
-                for svPattern in svComposite.svPatterns
-            ])
-        )
+        consensusIDs: list[str] = list({
+            svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
+        })
         # TODO: add precise / imprecise flag: precise: all regions are near; imprecise: all regions are farther than X bp apart
         # add genotypes: for each samplename collect supporting reads and max total coverage (from genotype measurements)
         genotypes: dict[str, Genotype] = {}

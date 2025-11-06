@@ -56,7 +56,7 @@ class SVcomposite:
         if len(svPatterns) == 1:
             return cls(sv_type=svPatterns[0].get_sv_type(), svPatterns=svPatterns)
         sv_type = svPatterns[0].get_sv_type()
-        all_sv_types = set(sv.get_sv_type() for sv in svPatterns)
+        all_sv_types = {sv.get_sv_type() for sv in svPatterns}
         if all_sv_types == {
             "INS",
             "DEL",

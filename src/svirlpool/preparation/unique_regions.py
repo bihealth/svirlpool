@@ -24,7 +24,7 @@ def check_chr_are_in_reference(bedfile: Path, reference: Path) -> set:
     with open(reference_fai) as f:
         reference_chrs = [line.split("\t")[0] for line in f]
     with open(bedfile) as f:
-        bed_chrs = set([line.split("\t")[0] for line in f])
+        bed_chrs = {line.split("\t")[0] for line in f}
     # return all chromosome names in bedfile that are not in reference
     return bed_chrs - set(reference_chrs)
 

@@ -834,7 +834,7 @@ def svPatterns_from_consensus_sequences(
             dict_alignments=dict_alignments,
             trf_intervals=trf_to_interval_tree(input_trf),
         )
-        consensus_alignments = dict()  # has no real use anymore, free memory
+        consensus_alignments = {}  # has no real use anymore, free memory
 
         unaligned_consensusIDs = set(sequences_core.keys()) - set(
             dict_alignments.keys()
@@ -993,7 +993,7 @@ def svPatterns_from_consensus_sequences(
             )
         )  # TODO: fix parallelization and change this parameter to threads
         # debug: print all types of svPrimitives that occurr in svPrimitives
-        svp_types = set([svp.sv_type for svp in svPrimitives])
+        svp_types = {svp.sv_type for svp in svPrimitives}
         log.warning(f"{len(svPrimitives)} SV primitives of types found: {svp_types}")
 
         # svPrimitives = [svp for svp in svPrimitives if len(svp.genotypeMeasurements.supporting_reads_start) > 0]
@@ -1006,7 +1006,7 @@ def svPatterns_from_consensus_sequences(
         svPatterns = svPrimitives_to_svPatterns(
             SVprimitives=svPrimitives, max_del_size=max_del_size
         )
-        svp_types = set([svp.get_sv_type() for svp in svPatterns])
+        svp_types = {svp.get_sv_type() for svp in svPatterns}
         log.warning(
             f"After svPrimitives_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
         )
@@ -1017,7 +1017,7 @@ def svPatterns_from_consensus_sequences(
             distance_scale=distance_scale,
             falloff=falloff,
         )
-        svp_types = set([svp.get_sv_type() for svp in svPatterns])
+        svp_types = {svp.get_sv_type() for svp in svPatterns}
         log.warning(
             f"After add_consensus_sequence_and_size_distortions_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
         )
@@ -1025,7 +1025,7 @@ def svPatterns_from_consensus_sequences(
         svPatterns = add_reference_sequence_to_svPatterns(
             svPatterns=svPatterns, reference_sequence=input_reference
         )
-        svp_types = set([svp.get_sv_type() for svp in svPatterns])
+        svp_types = {svp.get_sv_type() for svp in svPatterns}
         log.warning(
             f"After add_reference_sequence_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
         )

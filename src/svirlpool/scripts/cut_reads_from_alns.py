@@ -43,7 +43,7 @@ def cut_reads(
             )
 
     # log.info(f"cutting reads from alignments")
-    cut_reads: dict[str, SeqRecord] = dict()
+    cut_reads: dict[str, SeqRecord] = {}
     for l in dict_alignments.values():
         for aln in l:
             if aln.query_name in intervals:
@@ -72,7 +72,7 @@ def get_read_alignments_from_region(
     region: tuple[str, int, int], alignments: Path, no_secondary: bool = True
 ) -> dict[str, list[pysam.AlignedSegment]]:
     """Returns a dict of the form readname:[pysam.alignedSegment]"""
-    result = dict()
+    result = {}
     region_interval = Interval(region[1], region[2])
     with pysam.AlignmentFile(alignments, "rb") as f:
         for aln in f.fetch(*region):
@@ -98,7 +98,7 @@ def get_read_alignment_intervals_in_region(
             assert isinstance(aln, pysam.AlignedSegment), (
                 f"aln {aln} is not a pysam.AlignedSegment"
             )
-    result = dict()
+    result = {}
     for l in alignments.values():
         for aln in l:
             if aln.query_name not in result:
@@ -180,7 +180,7 @@ def get_full_read_sequences_of_alignments(
 ) -> dict[str, SeqRecord]:
     """Retrieves all DNA sequences of all given read alignments. The read DNA is in original orientation, as it was given in the original fasta file."""
     # iterate all alignments of a sampleID across all crIDs
-    dict_supplementary_positions: dict[str, list[tuple[str, int]]] = dict()
+    dict_supplementary_positions: dict[str, list[tuple[str, int]]] = {}
     for l in dict_alignments.values():
         for aln in l:
             if (
@@ -232,7 +232,7 @@ def get_full_read_sequences_of_alignments(
     log.info(
         "To find the full read sequences, the following regions are fetched from the alignments file:"
     )
-    dict_read_sequences = dict()
+    dict_read_sequences = {}
     with pysam.AlignmentFile(alignments, "rb") as f:
         for region in regions:
             log.info(f"fetching from {region}")
@@ -291,7 +291,7 @@ def get_full_read_sequences_of_alignments(
     # check if all elements in dict_read_sequences are of type SeqRecord
     for readname, record in dict_read_sequences.items():
         assert isinstance(record, SeqRecord), (
-            f"record {record} is not a SeqRecord. dict_read_sequences without record are: {' '.join(set([readname for readname, record in dict_read_sequences.items() if record is None]))}"
+            f"record {record} is not a SeqRecord. dict_read_sequences without record are: {' '.join({readname for readname, record in dict_read_sequences.items() if record is None})}"
         )
     # filter dict_read_sequences for reads that have a full sequence
     dict_read_sequences = {

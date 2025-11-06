@@ -347,7 +347,7 @@ def merge_svs_in_dict_alignments(
                 if sv.repeatIDs is None or len(sv.repeatIDs) == 0:
                     sv.repeatIDs = []
             # count all 2-mers and save their counts in a dict index:dict[2-mer:count]
-            dict_gc_content: dict[int, float] = dict()
+            dict_gc_content: dict[int, float] = {}
             for i, sv in enumerate(svs):
                 if sv.sv_type == 0:  # insertion
                     dict_gc_content[i] = SeqUtils.gc_fraction(sv.get_alt_sequence())
@@ -445,13 +445,11 @@ def merge_merged_svs(
     for merged_signal in signals_to_merge:
         if merged_signal.sv_type >= 3:
             raise ValueError("merged signal must not be a BND signal")
-    repeatIDs = list(
-        set([
-            repeatID
-            for merged_signal in signals_to_merge
-            for repeatID in merged_signal.repeatIDs
-        ])
-    )
+    repeatIDs = list({
+        repeatID
+        for merged_signal in signals_to_merge
+        for repeatID in merged_signal.repeatIDs
+    })
     chr = signals_to_merge[0].chr
     total_size = sum([
         merged_signal.size
@@ -532,12 +530,9 @@ def merge_to_proto_svs(
                 chr=chr,
                 original_signals=[signal.unstructure()],
             )
-            repeatIDs = list(
-                set([
-                    repeat.data
-                    for repeat in it_repeats[signal.ref_start : signal.ref_end]
-                ])
-            )
+            repeatIDs = list({
+                repeat.data for repeat in it_repeats[signal.ref_start : signal.ref_end]
+            })
             if len(repeatIDs) > 0:
                 merged_sv_signal.repeatIDs = repeatIDs
             merged_svs.append(merged_sv_signal)
@@ -555,14 +550,12 @@ def merge_to_proto_svs(
                     chr=chr,
                     original_signals=[bnd_signal.unstructure()],
                 )
-                repeatIDs = list(
-                    set([
-                        repeat.data
-                        for repeat in it_repeats[
-                            bnd_signal.ref_start : bnd_signal.ref_end + 1
-                        ]
-                    ])
-                )
+                repeatIDs = list({
+                    repeat.data
+                    for repeat in it_repeats[
+                        bnd_signal.ref_start : bnd_signal.ref_end + 1
+                    ]
+                })
                 if len(repeatIDs) > 0:
                     merged_sv_signal.repeatIDs = repeatIDs
                 merged_svs.append(merged_sv_signal)
