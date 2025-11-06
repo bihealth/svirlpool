@@ -263,7 +263,7 @@ def get_full_read_sequences_of_alignments(
                         # log.info(f"found a full read sequence for {aln.query_name}")
             # check if all keys of dict_read_sequences have a SeqRecord
             # if so, break this loop
-            if all([v is not None for v in dict_read_sequences.values()]):
+            if all(v is not None for v in dict_read_sequences.values()):
                 break
     # for all other alignments, just add the sequence and reverse flag
     for l in dict_alignments.values():
@@ -318,8 +318,8 @@ def write_cut_reads_to_output_file(
 ) -> None:
     extension = Path(output).suffix
     is_fastq = False
-    if any([ext in extension for ext in ["fastq", "fq"]]):
-        if all([r.letter_annotations for r in dict_cut_reads.values()]):
+    if any(ext in extension for ext in ["fastq", "fq"]):
+        if all(r.letter_annotations for r in dict_cut_reads.values()):
             is_fastq = True
         else:
             raise ValueError(

@@ -214,10 +214,10 @@ def get_full_read_sequences_of_alignments(
                     )
             # check if all keys of dict_read_sequences have a SeqRecord
             # if so, break this loop
-            if all([
+            if all(
                 readname in dict_read_sequences
                 for readname in dict_supplementary_positions.keys()
-            ]):
+            ):
                 break
     # check if for each readname in dict_supplementary_positions, there is a SeqRecord in dict_read_sequences
     for readname in dict_supplementary_positions.keys():
@@ -552,7 +552,7 @@ def find_representing_read_per_cr(
         return (pool.pop(), 0)
     # check if all readnames of pool are in dict_max_extents
     sorted_pool = sorted(pool)
-    if not all([readname in dict_max_extents for readname in pool]):
+    if not all(readname in dict_max_extents for readname in pool):
         raise ValueError(
             f"not all readnames in pool are in dict_max_extents. pool={pool}, dict_max_extents={dict_max_extents}"
         )
@@ -2421,7 +2421,7 @@ def load_crs_containers_from_db(
         assert len(crIDs) > 0, (
             "crIDs must be a list of integers with at least one element."
         )
-        if not all([isinstance(crID, int) for crID in crIDs]):
+        if not all(isinstance(crID, int) for crID in crIDs):
             raise ValueError(f"crIDs must be a list of integers. Instead got {crIDs}")
 
     conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)

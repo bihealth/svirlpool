@@ -132,7 +132,7 @@ class ReadAlignmentFragment:
         # check if any SV signal is not equal
         if len(self.SV_signals) != len(__value.SV_signals):
             return False
-        if not all([s in __value.SV_signals for s in self.SV_signals]):
+        if not all(s in __value.SV_signals for s in self.SV_signals):
             return False
         return (
             self.samplename == __value.samplename

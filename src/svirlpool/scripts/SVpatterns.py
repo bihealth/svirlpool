@@ -859,9 +859,7 @@ def parse_SVprimitives_to_SVpatterns(
     """
     Parses Sv patterns from the SVprimitives of one consensus. All SVprimitives must have the same consensusID.
     """
-    if not all([
-        svp.consensusID == SVprimitives[0].consensusID for svp in SVprimitives
-    ]):
+    if not all(svp.consensusID == SVprimitives[0].consensusID for svp in SVprimitives):
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )

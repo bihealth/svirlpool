@@ -448,7 +448,7 @@ def write_crs_to_db(path_db: Path, crs: list[datatypes.CandidateRegion]) -> None
     assert path_db.exists(), f"Database {path_db} does not exist"
     assert path_db.is_file(), f"Database {path_db} is not a file"
     assert type(crs) == list, "crs is not a list"
-    assert all([type(cr) == datatypes.CandidateRegion for cr in crs]), (
+    assert all(type(cr) == datatypes.CandidateRegion for cr in crs), (
         "crs is not a list of datatypes.CandidateRegion"
     )
 
@@ -466,7 +466,7 @@ def load_crs_from_db(
 ) -> list[datatypes.CandidateRegion]:
     if crIDs:
         assert type(crIDs) == list, "crIDs is not a list"
-        assert all([type(crID) == int for crID in crIDs]), (
+        assert all(type(crID) == int for crID in crIDs), (
             "crIDs is not a list of integers"
         )
     assert type(path_db) == PosixPath or type(path_db) == str, (

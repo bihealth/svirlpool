@@ -1009,10 +1009,10 @@ def get_unaligned_intervals(
     # in the range 0,total_lenght
     # 0 to a and end to total_length are handled separately
     sorted_intervals = sorted(covered_intervals, key=lambda x: (x[0], x[1]))
-    assert all([
+    assert all(
         sorted_intervals[i][1] <= sorted_intervals[i + 1][0]
         for i in range(len(sorted_intervals) - 1)
-    ])
+    )
 
     unaligned_intervals = []
     first_interval = (0, sorted_intervals[0][0])
@@ -1900,7 +1900,7 @@ def cut_alignments(
     """As a result, all alignments start and end within the region."""
     chr, start, end = region
     # verify that all alignments are on the same chromosome
-    assert all([a.reference_name == chr for a in alignments]), (
+    assert all(a.reference_name == chr for a in alignments), (
         "all alignments must be on the same chromosome"
     )
     cut_alns: list[pysam.AlignedSegment] = []

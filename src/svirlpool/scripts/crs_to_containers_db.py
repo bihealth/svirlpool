@@ -68,7 +68,7 @@ def write_containers_to_db(path_db: Path, crs_containers: list[dict[str, object]
     assert path_db.exists(), f"Database {path_db} does not exist"
     assert path_db.is_file(), f"Database {path_db} is not a file"
     assert type(crs_containers) == list, "crs_containers is not a list"
-    assert all([type(crs_container) == dict for crs_container in crs_containers]), (
+    assert all(type(crs_container) == dict for crs_container in crs_containers), (
         "crs_containers is not a list of dicts"
     )
 
@@ -181,11 +181,11 @@ def crs_containers_QC(
         raise ValueError(f"path_histogram must end with .png. It is {path_histogram}")
     # validate crs_containers
     assert type(crs_containers) == list, "crs_containers is not a list"
-    assert all([type(crs_container) == dict for crs_container in crs_containers]), (
+    assert all(type(crs_container) == dict for crs_container in crs_containers), (
         "crs_containers is not a list of dicts"
     )
     # check if all crs_containers have the keys 'crID', 'crs' and 'connecting_reads'
-    assert all(["crs" in crs_container for crs_container in crs_containers]), (
+    assert all("crs" in crs_container for crs_container in crs_containers), (
         "crs_containers does not contain the key 'crs'"
     )
 

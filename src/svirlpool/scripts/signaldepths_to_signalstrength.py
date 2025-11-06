@@ -253,7 +253,7 @@ def parse_signaldepths_to_npsignals(input: Path) -> npt.NDArray[np.int32]:
     # compute hash value of each sampleID
     # readHashes = pd.read_csv(tmp_signals_indexed,sep='\t',usecols=[7],header=None,dtype=str).iloc[:,0].apply(lambda x: hash(x))
     # add readHashes to np_signals
-    readHashes = np.array(list(map(lambda x: readnames_dict[x], readnames)))
+    readHashes = np.array([readnames_dict[x] for x in readnames])
     return np.hstack((np_signals, np.array(readHashes).reshape(-1, 1)))
 
 

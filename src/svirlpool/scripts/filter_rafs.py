@@ -38,10 +38,10 @@ def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> li
     if len(svSignals) == 0:
         return []
     # check if list is sorted
-    if not all([
+    if not all(
         svSignals[i].ref_start <= svSignals[i + 1].ref_start
         for i in range(len(svSignals) - 1)
-    ]):
+    ):
         raise ValueError("List of SVsignals is not sorted by ref_start.")
 
     # build a mask. The mask keeps the density of each signal. The mask has the length of svSignals

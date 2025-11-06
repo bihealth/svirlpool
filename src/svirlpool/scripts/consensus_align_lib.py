@@ -96,11 +96,11 @@ def merge_sv_signals(
     """
     # assert that repeatIDs are all int and >= 0
     if len(repeatIDs) == 0:
-        assert all([
+        assert all(
             isinstance(repeatID, int) and repeatID >= 0 for repeatID in repeatIDs
-        ]), f"all repeatIDs must be int >= 0. Got {repeatIDs}"
+        ), f"all repeatIDs must be int >= 0. Got {repeatIDs}"
     assert len(sv_signals) > 0, "sv_signals must have at least 1 signal"
-    assert all([sv_signal.sv_type <= 1 for sv_signal in sv_signals]), (
+    assert all(sv_signal.sv_type <= 1 for sv_signal in sv_signals), (
         f"all sv_signal types must be either 0 (INS) or 1 (DEL). Got {[sv_signal.sv_type for sv_signal in sv_signals]}"
     )
     # sort sv_signals by ref_start position
