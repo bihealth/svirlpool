@@ -526,12 +526,10 @@ def complexity_local_track(
     # init iteration
     try:
         dna_window = np.array(
-            list(
-                map(
-                    lambda x: alphabet_hash_dict.get(x, default_value),
-                    [next(dna_iter) for _ in range(w)],
-                )
-            ),
+            [
+                alphabet_hash_dict.get(x, default_value)
+                for x in [next(dna_iter) for _ in range(w)]
+            ],
             dtype=np.uint8,
         )
     except StopIteration:
@@ -678,7 +676,7 @@ def insertion(
     if sequence == []:
         sequence = generate_sequence(size=size, seed=seed)
     r = [*seq[:pos], *sequence, *seq[pos:]]
-    return [*seq[:pos], *sequence, *seq[pos:]]
+    return r
 
 
 def duplication(
@@ -697,7 +695,7 @@ def duplication(
 
 def complement(seq: list) -> typing.List[str]:
     d = {"A": "T", "T": "A", "G": "C", "C": "G"}
-    return list(map(lambda s: d[s], seq))
+    return [d[s] for s in seq]
 
 
 def reverse_complement(seq: list, _=None, __=None) -> typing.List[str]:
@@ -1627,9 +1625,9 @@ def compute_letter_dict(alphabet) -> dict[str, int]:
         raise ValueError("alphabet must not be empty")
     if type(alphabet) != str:
         raise ValueError("alphabet must be a string")
-    d = {c: i for i, c in enumerate(sorted(list(set(map(str.upper, alphabet)))))}
+    d = {c: i for i, c in enumerate(sorted(set(map(str.upper, alphabet))))}
     d.setdefault("N", len(d))
-    return {c: i for i, c in enumerate(sorted(list(set(map(str.upper, alphabet)))))}
+    return {c: i for i, c in enumerate(sorted(set(map(str.upper, alphabet))))}
 
 
 def get_hash_of_kmer(kmer: str, letter_dict: dict) -> int:

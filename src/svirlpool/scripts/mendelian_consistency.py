@@ -442,7 +442,7 @@ def variants_consistency_stats(
     # Open bed file if provided
     bed_file = open(bed, "w") if bed else None
 
-    with open(output, "w") as f:
+    with open(output, "w"):
         dict_stats = {
             GTInheritanceStatus.consistent: 0,
             GTInheritanceStatus.inconsistent: 0,
