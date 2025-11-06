@@ -54,11 +54,11 @@ dev = [
 [tool.hatch.envs.quality.scripts]
 check = [
   "ruff format --check --diff --preview src tests",
-  "ruff check src tests",
+  "ruff check --preview src tests",
 ]
 format = [
   "ruff format --preview src tests",
-  "ruff check --fix src tests",
+  "ruff check --preview --fix src tests",
   "check",
 ]
 typecheck = [
