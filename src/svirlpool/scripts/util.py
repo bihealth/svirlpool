@@ -21,6 +21,7 @@ from pathlib import Path
 
 import cattrs
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pysam
 from Bio import SeqIO
@@ -446,8 +447,6 @@ def genome_file_for_bedtools(
 # =============================================================================
 #  complexity
 # =============================================================================
-
-import numpy.typing as npt
 
 # def hash_dna(seq,alphabet_hash_dict:dict={dna:np.uint8(i) for i,dna in enumerate('ACGTN')}):
 #     for s in seq:

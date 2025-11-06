@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import multiprocessing as mp
 import pickle
 import shlex
 import subprocess
@@ -15,10 +16,8 @@ import cattrs
 from Bio import SeqIO
 from Bio.SeqRecord import Seq, SeqRecord
 from intervaltree import IntervalTree
-from pysam import AlignedSegment, AlignmentFile
+from pysam import AlignedSegment, AlignmentFile, AlignmentHeader
 from tqdm import tqdm
-
-log = logging.getLogger(__name__)
 
 from . import (
     SVpatterns,
@@ -28,6 +27,8 @@ from . import (
     datatypes,
     util,
 )
+
+log = logging.getLogger(__name__)
 
 
 def parse_crs_container_results(
@@ -468,9 +469,6 @@ def add_reference_sequence_to_svPatterns(
 #             consensusAlignment.core_reference_interval = (min(traced_back_ref_start, traced_back_ref_end), max(traced_back_ref_start, traced_back_ref_end))
 
 
-import multiprocessing as mp
-
-
 def _process_alignment_batch_serialized(
     serialized_batch_data: dict,
 ) -> list[tuple[str, int, tuple[int, int]]]:
@@ -674,9 +672,6 @@ def serialize_pysam_AlignedSegment(
     samdict = pysam_Aligned_segment.to_dict()
     headerdict = pysam_Aligned_segment.header.to_dict()
     return {"sam": samdict, "header": headerdict}
-
-
-from pysam import AlignmentHeader
 
 
 def deserialize_pysam_AlignedSegment(

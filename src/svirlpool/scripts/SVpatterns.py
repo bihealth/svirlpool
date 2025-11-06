@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import pickle
+import sqlite3
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
@@ -1183,11 +1184,6 @@ converter.register_structure_hook(SVpatternType, structure_svpattern)
 
 
 # ======== DATABASE FUNCTIONS ======== #
-
-import logging
-import sqlite3
-
-log = logging.getLogger(__name__)
 
 
 def create_svPatterns_db(database: Path):

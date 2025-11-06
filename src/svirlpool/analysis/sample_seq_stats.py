@@ -1,11 +1,9 @@
-# script to plot all sv sizes and letter compositions
-# %%
-import argparse
-import logging as log
+"""script to plot all sv sizes and letter compositions"""
 
-log.basicConfig(level=log.INFO)
+import argparse
 import gzip
 import json
+import logging as log
 import subprocess
 import tempfile
 from collections import Counter
@@ -21,7 +19,7 @@ from tqdm import tqdm
 from ..perform.seqomplexity import compute_complexity
 from ..scripts import datatypes
 
-# %%
+log.basicConfig(level=log.INFO)
 
 
 def heterogeneity_measure(S: str | Seq) -> float:

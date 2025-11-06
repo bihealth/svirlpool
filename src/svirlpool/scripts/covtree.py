@@ -7,9 +7,9 @@ import numpy as np
 from intervaltree import IntervalTree
 from tqdm import tqdm
 
-log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 from . import rafs_to_coverage
+
+log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def load_reference_data(path_db: Path | str) -> np.ndarray:

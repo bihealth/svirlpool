@@ -14,10 +14,10 @@ from typing import Union
 import attrs
 import cattrs
 
-log = logging.getLogger(__name__)
-
 # Import the base datatypes that these classes depend on
 from . import datatypes
+
+log = logging.getLogger(__name__)
 
 
 # Structure hook for handling str | int | float union types

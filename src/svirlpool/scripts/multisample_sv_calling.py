@@ -1,15 +1,24 @@
 # this script reads the svPrimitives of each provided sample's file and calls SVs from it
 # %%
 
+import argparse
 import logging
+import os
 import pickle
 import subprocess
 import tempfile
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 from itertools import groupby
 from pathlib import Path
+from shlex import split
 
+import attrs
 import numpy as np
 from intervaltree import Interval, IntervalTree
+from pandas import read_csv
+from scipy.stats import binom
 from tqdm import tqdm
 
 from . import SVpatterns, svirltile
@@ -1091,10 +1100,6 @@ def generate_svComposites_from_dbs(
     return svComposites
 
 
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
-
-
 def merge_svComposites_for_chromosome(
     chr_name: str,
     svComposites: list[SVcomposite],
@@ -1266,8 +1271,6 @@ def merge_svComposites(
 
 
 # %%
-
-import attrs
 
 
 @attrs.define
@@ -1617,10 +1620,6 @@ def get_svComposite_interval_on_reference(
 
 # %% VCF file stuff
 
-from datetime import datetime
-
-from pandas import read_csv
-
 
 def generate_header(
     reference: Path, samplenames: list[str], fasta_path: Path | None = None
@@ -1708,9 +1707,6 @@ def generate_header(
         + "\t".join(samplenames)
     )
     return header
-
-
-from scipy.stats import binom
 
 
 def genotype_likelihood(
@@ -1878,9 +1874,6 @@ def reference_bases_by_merged_svComposites(
     return dict_reference_bases
 
 
-from shlex import split
-
-
 def write_sequences_to_fasta(
     svCalls: list[SVcall], output_path: Path, symbolic_threshold: int
 ) -> None:
@@ -1974,9 +1967,6 @@ def write_svCalls_to_vcf(
 
 
 # %%
-
-import argparse
-import os
 
 
 def check_if_all_svtypes_are_supported(sv_types: list[str]) -> None:

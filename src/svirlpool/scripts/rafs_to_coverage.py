@@ -1,16 +1,15 @@
 # %%
+import argparse
 import logging as log
+import pickle
 import sqlite3
 import tempfile
 from pathlib import Path, PosixPath
 
-from . import util
+from . import datatypes, util
 
 log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-import argparse
-import pickle
 
-from . import datatypes
 
 # %%
 

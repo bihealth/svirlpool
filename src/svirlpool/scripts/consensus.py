@@ -10,10 +10,11 @@ consensus generation, and scoring.
 # IMPORTS AND CONFIGURATION
 # =============================================================================
 
-# Standard library imports
 import argparse
 import hashlib
 import json
+import logging
+import os
 import shlex
 import shutil
 import sqlite3
@@ -22,26 +23,21 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-# Third-party imports
 import attrs
 import cattrs
 import matplotlib
+import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import pysam
 from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
+from scipy.sparse import csr_matrix
+from sklearn.cluster import SpectralClustering
 from stopit import TimeoutException
 
-matplotlib.use("Agg")  # Use non-interactive backend
-# Configure logging
-import logging
-
-import matplotlib.pyplot as plt
-import networkx as nx
-
-# Local imports
 from . import (
     alignments_to_rafs,
     consensus_class,
@@ -50,6 +46,7 @@ from . import (
     util,
 )
 
+matplotlib.use("Agg")  # Use non-interactive backend
 log = logging.getLogger(__name__)
 
 
@@ -823,8 +820,6 @@ def make_consensus_with_lamassemble(
 # MAIN CONSENSUS PROCESSING ALGORITHMS
 # =============================================================================
 
-import os
-
 
 def final_consensus(
     samplename: str,
@@ -1155,10 +1150,6 @@ def assemble_consensus(
         if consensus_sequence is not None:
             return consensus_sequence
     return None
-
-
-from scipy.sparse import csr_matrix
-from sklearn.cluster import SpectralClustering
 
 
 def partition_reads_spectral(

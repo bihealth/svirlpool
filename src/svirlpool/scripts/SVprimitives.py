@@ -1,19 +1,19 @@
 import logging
+import multiprocessing as mp
 import time
 from datetime import datetime
+from typing import Iterator
 
 import attrs
 import cattrs
 from pysam import AlignedSegment
 from tqdm import tqdm
 
-log = logging.getLogger(__name__)
-
-from typing import Iterator
-
 from . import consensus_class, datatypes, genotyping
 from .minimizer_matching import MinimizerIndex
 from .util import Direction, get_read_position_on_ref
+
+log = logging.getLogger(__name__)
 
 
 @attrs.define
@@ -417,9 +417,6 @@ def generate_SVprimitives(
             # add adjacencies to the cached SVprimitives
             result.extend(add_adjacencies_to_svPrimitives(cache))
     return result
-
-
-import multiprocessing as mp
 
 
 def _process_consensus_batch_serialized(
