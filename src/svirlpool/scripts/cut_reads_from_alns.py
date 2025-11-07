@@ -200,7 +200,7 @@ def get_full_read_sequences_of_alignments(
     dict_positions = {
         chrom: []
         for chrom in {
-            chr for l in dict_supplementary_positions.values() for chr, pos in l
+            chr for _l in dict_supplementary_positions.values() for chr, pos in _l
         }
     }
     for _readname, alignments in dict_supplementary_positions.items():

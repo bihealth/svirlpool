@@ -2128,7 +2128,10 @@ def visualize_raf_score_graph(
     # Use spring layout for better visualization
     try:
         pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-    except:
+    except Exception as e:
+        log.warning(
+            f"Spring layout failed with exception: {e}. Using circular layout instead."
+        )
         # Fallback to circular layout if spring layout fails
         pos = nx.circular_layout(G)
 

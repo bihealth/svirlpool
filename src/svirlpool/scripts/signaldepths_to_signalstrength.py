@@ -462,24 +462,26 @@ def signaldepths_to_signalstrength(
     )
 
 
-def parse_signalstrengths_to_extendedSVsignal(l: list) -> datatypes.ExtendedSVsignal:
+def parse_signalstrengths_to_extendedSVsignal(
+    _l: list[object],
+) -> datatypes.ExtendedSVsignal:
     # 0      1          2        3        4           5         6     7         8           9        10   11        12        13
     # chrID, ref_start, ref_end, sv_type, read_start, read_end, size, readname, samplename, forward, chr, coverage, repeatID, strength
     return datatypes.ExtendedSVsignal(
-        chr=str(l[10]),
-        chrID=int(l[0]),
-        ref_start=int(l[1]),
-        ref_end=int(l[2]),
-        sv_type=int(l[3]),
-        read_start=int(l[4]),
-        read_end=int(l[5]),
-        size=int(l[6]),
-        readname=str(l[7]),
-        samplename=str(l[8]),
-        forward=int(l[9]),
-        coverage=int(l[11]) if len(l) > 11 else 0,
-        repeatID=int(l[12]) if len(l) > 12 else -1,
-        strength=float(l[13]) if len(l) > 13 else 0.0,
+        chr=str(_l[10]),
+        chrID=int(_l[0]),
+        ref_start=int(_l[1]),
+        ref_end=int(_l[2]),
+        sv_type=int(_l[3]),
+        read_start=int(_l[4]),
+        read_end=int(_l[5]),
+        size=int(_l[6]),
+        readname=str(_l[7]),
+        samplename=str(_l[8]),
+        forward=int(_l[9]),
+        coverage=int(_l[11]) if len(_l) > 11 else 0,
+        repeatID=int(_l[12]) if len(_l) > 12 else -1,
+        strength=float(_l[13]) if len(_l) > 13 else 0.0,
     )
 
 
