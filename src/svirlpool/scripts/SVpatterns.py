@@ -1055,10 +1055,11 @@ def unstructure_bytes_field(field_value):
         if isinstance(unpickled, np.ndarray):
             return unpickled.tolist()
         return unpickled
-    except:
+    except Exception as e:
         # If unpickling fails, encode as base64
         import base64
 
+        log.error(f"Failed to unpickle bytes field: {e}")
         return base64.b64encode(field_value).decode("utf-8")
 
 

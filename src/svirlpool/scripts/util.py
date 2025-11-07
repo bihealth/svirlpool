@@ -48,13 +48,15 @@ def yield_last_column(input: Path, dtype: type) -> typing.Iterable:
             reader = csv.reader(f, delimiter="\t", quotechar='"')
             for line in tqdm(reader):
                 yield cattrs.structure(json.loads(line[-1]), dtype)
-    except:
+    except Exception as e:
+        log.error(f"Error reading {input}: {e}")
         try:
             with open(input, "r") as f:
                 reader = csv.reader(f, delimiter="\t", quotechar='"')
                 for line in tqdm(reader):
                     yield cattrs.structure(json.loads(line[-1]), dtype)
-        except:
+        except Exception as e:
+            log.error(f"Error reading {input}: {e}")
             raise FileNotFoundError(
                 f"Could not open {input}. Make sure the file exists and is not corrupted."
             )
@@ -124,10 +126,9 @@ def load_consensus_sequences_from_db(
                 pickle.loads(row[1]), consensus_class.Consensus
             )
             results[row[0]] = consensus_object.consensus_sequence
-        except:
-            import pdb
-
-            pdb.set_trace()
+        except Exception as e:
+            log.error(f"Error loading consensus sequence for {row[0]}: {e}")
+            raise ValueError(f"Error loading consensus sequence for {row[0]}: {e}")
     c.close()
     conn.close()
     return results
@@ -415,7 +416,8 @@ def create_fai_if_not_exists(reference: Path) -> Path:
         try:
             cmd = shlex.split(f"samtools faidx {reference}")
             subprocess.check_call(cmd)
-        except:
+        except Exception as e:
+            log.error(f"Error creating .fai file for {reference}: {e}")
             raise FileNotFoundError(
                 f"{str(reference) + '.fai'} not found. And could not be created. Make sure to provide a path to a .fasta file for which a .fai file exists in the same directory."
             )
@@ -1184,7 +1186,8 @@ def display_ascii_alignments(
                     for a in alns
                     if a.reference_length
                 )
-            except:
+            except Exception as e:
+                log.error(f"Error calculating max_ref_len for {refname}: {e}")
                 continue
         print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
         for a in alns:

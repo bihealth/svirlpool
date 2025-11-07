@@ -38,8 +38,8 @@ def filter_signaldepths(
             if chrom not in data_dict[sampleID]:
                 data_dict[sampleID][chrom] = []
             data_dict[sampleID][chrom].append(depth)
-        except:
-            raise ValueError(f"Error in line: {line}")
+        except Exception as e:
+            raise ValueError(f"Error in line: {line}\n{e}")
     # now calc the stats from the data_dict
     for sampleID in data_dict.keys():
         for chrom in data_dict[sampleID].keys():

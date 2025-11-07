@@ -733,9 +733,9 @@ def make_consensus_with_racon(
             f"racon failed for {name} with command\n{cmd_racon}\nand error: {e}"
         )
         return None
-    except:
+    except Exception as e:
         log.warning(
-            f"racon failed to produce a consensus for {name} with command\n{cmd_racon}"
+            f"racon failed to produce a consensus for {name} with command\n{cmd_racon}\nand error: {e}"
         )
         return None
 
