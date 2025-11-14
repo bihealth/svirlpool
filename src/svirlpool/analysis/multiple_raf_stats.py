@@ -9,7 +9,7 @@ import pandas as pd
 from intervaltree import IntervalTree
 from tqdm import tqdm
 
-from ..scripts.util import yield_from_raf
+from ..util.util import yield_from_raf
 
 
 def load_mononucleotide_stretches(bed_file: Path) -> dict[str, IntervalTree]:

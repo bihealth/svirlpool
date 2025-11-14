@@ -159,7 +159,7 @@ rule signalprocessing_alignments_to_rafs:
         "envs/svirlpool.yml"
     shell:
         """set x
-        python3 -m svirlpool.scripts.alignments_to_rafs \
+        python3 -m svirlpool.signalprocessing.alignments_to_rafs \
         -a {input.alignments} \
         -s {params.samplename} \
         -r {input.regions} \
@@ -182,7 +182,7 @@ rule QC_rafs_indel_sizes:
         mem_mb=8*1024,
         runtime=10
     shell:
-        """python3 -m svirlpool.scripts.rafs_indel_histograms \
+        """python3 -m svirlpool.signalprocessing.rafs_indel_histograms \
         -i {input} \
         -f {output}"""
 
@@ -202,7 +202,7 @@ rule signalprocessing_filter_rafs_sv_signals:
         mem_mb=8*1024,
         runtime=15
     shell:
-        """python3 -m svirlpool.scripts.filter_rafs_sv_signals \
+        """python3 -m svirlpool.signalprocessing.filter_rafs_sv_signals \
         -i {input.file} \
         -r {params.reference} \
         -o {output.file} \
@@ -262,7 +262,7 @@ rule signalprocessing_filter_rafs_indels:
     log:
         "logs/signalprocessing_filter_rafs_indels.log"
     shell:
-        """python3 -m svirlpool.scripts.filter_rafs_indels \
+        """python3 -m svirlpool.signalprocessing.filter_rafs_indels \
         -i {input.file} \
         -o {output.file} \
         -r {params.reference} \
@@ -286,7 +286,7 @@ rule signalprocessing_rafs_to_coverage:
     log:
         "logs/signalprocessing_rafs_to_coverage.log"
     shell:
-        """python3 -m svirlpool.scripts.rafs_to_coverage \
+        """python3 -m svirlpool.signalprocessing.rafs_to_coverage \
         -i {input.file} \
         -o {output.file}"""
 
@@ -319,7 +319,7 @@ rule signalprocessing_generate_copynumber_tracks:
     shell:
         """
         set -x
-        python3 -m svirlpool.scripts.copynumber_tracks \
+        python3 -m svirlpool.signalprocessing.copynumber_tracks \
         --coverage-db {input.coverage_db} \
         --output-bed {params.bed_uncompressed} \
         --output-db {output.db} \
@@ -374,7 +374,7 @@ rule signalprocessing_rafs_to_signaldepths:
     log:
         "logs/signalprocessing_rafs_to_signaldepths.log"
     shell:
-        """python3 -m svirlpool.scripts.rafs_to_signaldepths \
+        """python3 -m svirlpool.signalprocessing.rafs_to_signaldepths \
         -i {input.file} \
         -o {output.file} \
         -t {threads} \
@@ -398,7 +398,7 @@ rule signalprocessing_filter_mononucleotides:
     threads:
         cores
     shell:
-        """python3 -m svirlpool.scripts.filter_signaldepths_mononucleotides \
+        """python3 -m svirlpool.signalprocessing.filter_signaldepths_mononucleotides \
         -m {params.mononucleotides} \
         -s {input.signaldepths} \
         -r {params.reference} \
@@ -427,7 +427,7 @@ rule signalprocessing_depth_of_coverage_to_signalstrength:
     conda:
         "envs/svirlpool.yml"
     shell:
-        """python3 -m svirlpool.scripts.signaldepths_to_signalstrength \
+        """python3 -m svirlpool.signalprocessing.signaldepths_to_signalstrength \
         -i {input.signaldepths} \
         -r {params.ref} \
         -o {output.out} \
@@ -467,7 +467,7 @@ rule candidate_regions_signalstrength_to_crs:
         "envs/svirlpool.yml"
     shell:
         """set -x
-        python3 -m svirlpool.scripts.signalstrength_to_crs \
+        python3 -m svirlpool.candidateregions.signalstrength_to_crs \
         -i {input.signalstrength} \
         -r {params.ref} \
         -o {output.out} \
@@ -495,7 +495,7 @@ rule candidate_regions_QC_crs_to_bed:
     conda:
         "envs/svirlpool.yml"
     shell:
-        """python3 -m svirlpool.scripts.crs_to_bed \
+        """python3 -m svirlpool.candidateregions.crs_to_bed \
         -i {input} \
         -o {output}"""
 
@@ -517,7 +517,7 @@ checkpoint candidate_regions_crs_to_containers:
     conda:
         "envs/svirlpool.yml"
     shell:
-        """python3 -m svirlpool.scripts.crs_to_containers_db \
+        """python3 -m svirlpool.candidateregions.crs_to_containers_db \
         -i {input.crs} \
         -o {output.containers} \
         --crIDs {output.crIDs_file}"""
@@ -549,7 +549,7 @@ rule consensus_consensus:
         "benchmarks/consensus/consensus.{crID}.{crIDdir}.txt"
     shell:
         """set -x
-        python3 -m svirlpool.scripts.consensus \
+        python3 -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
         -cn {input.copynumbertracks} \
         --lamassemble-mat {params.lamassemble_mat} \
@@ -603,7 +603,7 @@ rule consensus_align:
     shell:
         """
         set -x
-        python -m svirlpool.scripts.consensus_align \
+        python -m svirlpool.localassembly.consensus_align \
             --samplename {params.samplename} \
             --consensus {input.consensus} \
             --reference {params.ref} \
@@ -636,7 +636,7 @@ rule to_svirltile:
     shell:
         """
         set -x
-        python -m svirlpool.scripts.svirltile \
+        python -m svirlpool.localassembly.svirltile \
         --samplename {params.samplename} \
         --consensus {input.consensus} \
         --svpatterns-db {input.svpatterns} \

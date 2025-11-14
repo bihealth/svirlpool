@@ -6,9 +6,9 @@ import os
 from .scripts import (
     cut_reads_from_alns,
     get_consensus_sequences,
-    multisample_sv_calling,
     run_wf,
 )
+from .svcalling import multisample_sv_calling
 from .version import get_versions
 
 #: The executables required for running svirlpool
