@@ -39,7 +39,7 @@ def compress_and_index_bedlike(
         cmd_sort = f"sort -k1,1V -k2,2n -k3,3n {Path(input)}"
     if genome:
         cmd_sort = f"bedtools sort -g {str(genome)} -i {Path(input)}"
-    cmd_bgzip = f"bgzip -@ {max(1,threads)} -f -c"
+    cmd_bgzip = f"bgzip -@ {max(1, threads)} -f -c"
     cmd_index = f"tabix -0 -s 1 -b 2 -e 3 {Path(output)}"
     with open(Path(output), "wb") as file_out:
         p0 = subprocess.Popen(split(cmd_sort), stdout=subprocess.PIPE)
@@ -81,13 +81,11 @@ def parse_and_split_regions(
         chrom, start, end = region
         N_regions = (end - start) // desired_region_size
         for i in range(N_regions):
-            split_regions.append(
-                (
-                    chrom,
-                    start + i * desired_region_size,
-                    start + (i + 1) * desired_region_size,
-                )
-            )
+            split_regions.append((
+                chrom,
+                start + i * desired_region_size,
+                start + (i + 1) * desired_region_size,
+            ))
         # add the last region
         split_regions.append((chrom, start + N_regions * desired_region_size, end))
     # concatenate the smaller regions with the split regions
@@ -112,20 +110,26 @@ def get_indels(
     - insertions in read"""
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     x_read_starts, x_read_ends, x_ref_starts, x_ref_ends = util.get_starts_ends(
         t=t, x=x, is_reverse=is_reverse, reference_start=ref_start
     )
     # get deletion ref start, ref end tuples
-    deletions_ref = list(zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)]))
+    deletions_ref = list(zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)], strict=True))
     # get deletion read start, read end tuples
-    deletions_read = list(zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)]))
+    deletions_read = list(
+        zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)], strict=True)
+    )
     # get insertion ref start, ref end tuples
-    insertions_ref = list(zip(x_ref_starts[(t == 1)], x_ref_ends[(t == 1)]))
+    insertions_ref = list(
+        zip(x_ref_starts[(t == 1)], x_ref_ends[(t == 1)], strict=True)
+    )
     # get insertion read start, read end tuples
-    insertions_read = list(zip(x_read_starts[(t == 1)], x_read_ends[(t == 1)]))
+    insertions_read = list(
+        zip(x_read_starts[(t == 1)], x_read_ends[(t == 1)], strict=True)
+    )
     return deletions_ref, deletions_read, insertions_ref, insertions_read
 
 
@@ -142,7 +146,7 @@ def get_start_end(alignment: pysam.AlignedSegment):
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     m = sum(x[(t == 0) | (t == 1) | (t == 7) | (t == 8)])
@@ -225,7 +229,9 @@ def parse_SVsignals_from_alignment(
             size=int(abs(delr - dell)),
             sv_type=int(1),
         )
-        for ((dell, delr), (rdell, rdelr)) in zip(deletions_ref, deletions_read)
+        for ((dell, delr), (rdell, rdelr)) in zip(
+            deletions_ref, deletions_read, strict=True
+        )
         if abs(delr - dell) >= min_signal_size
     ]
     insertions = [
@@ -237,7 +243,9 @@ def parse_SVsignals_from_alignment(
             size=int(abs(rinsr - rinsl)),
             sv_type=int(0),
         )
-        for ((insl, insr), (rinsl, rinsr)) in zip(insertions_ref, insertions_read)
+        for ((insl, insr), (rinsl, rinsr)) in zip(
+            insertions_ref, insertions_read, strict=True
+        )
         if abs(rinsr - rinsl) >= min_signal_size
     ]
     if len(deletions):
@@ -255,7 +263,6 @@ def parse_ReadAlignmentFragment_from_alignment(
     filter_density_radius: int = 0,
     filter_density_min_bp: int = 0,
 ) -> datatypes.ReadAlignmentFragment:
-
     ref_start, ref_end, read_start, read_end = get_start_end(alignment)
 
     sv_signals = sorted(
@@ -387,7 +394,7 @@ def filter_signals_for_too_many_aligned_segments(lines: list, max_bnds: int) -> 
         else:
             counter[line[7]] += 1
     # count the number of values that are > max_bnds
-    large_values = sum([1 for value in counter.values() if value > max_bnds])
+    large_values = sum(1 for value in counter.values() if value > max_bnds)
     log.info(
         f"among {c} reads there are {large_values} reads with more than {max_bnds} BNDs which are filtered out."
     )
@@ -412,7 +419,6 @@ def process_bam(
     threads: int = 1,
     tmp_dir_path: Path | None = None,
 ):
-
     if threads < 1:
         threads = mp.cpu_count()
     if threads > mp.cpu_count():
@@ -481,14 +487,12 @@ def process_bam(
                 raf.reference_alignment_end,
             ),
         ):
-            writer.writerow(
-                [
-                    raf.reference_name,
-                    raf.reference_alignment_start,
-                    raf.reference_alignment_end,
-                    json.dumps(raf.unstructure()),
-                ]
-            )
+            writer.writerow([
+                raf.reference_name,
+                raf.reference_alignment_start,
+                raf.reference_alignment_end,
+                json.dumps(raf.unstructure()),
+            ])
     # compress and index the output file
     compress_and_index_bedlike(input=tmp_out.name, output=path_output, threads=threads)
     log.info(f"written tmp output of sample {samplename} to {path_output}")

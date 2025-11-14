@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import pickle
+import sqlite3
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
@@ -95,20 +96,18 @@ class SVpattern(ABC):
 
     def get_similar_sequence_intervals_from_svPrimitives(self) -> list[list[int, int]]:
         """gets all similar_sequence_intervals_on_consensus from the SVprimitives and merges them."""
-        l = sorted(
-            [
-                interval
-                for svp in self.SVprimitives
-                for interval in svp.similar_sequence_intervals_on_consensus
-            ]
-        )
+        intervals = sorted([
+            interval
+            for svp in self.SVprimitives
+            for interval in svp.similar_sequence_intervals_on_consensus
+        ])
         # since the intervals have different lengths, the merging window can only advance once the next interval starts after the previous one ends
-        if len(l) == 0:
+        if len(intervals) == 0:
             return [[svp.read_start, svp.read_end] for svp in self.SVprimitives]
-        current_start = l[0][0]
+        current_start = intervals[0][0]
         merged_intervals = []
-        current_end = l[0][1]
-        for start, end in l[1:]:
+        current_end = intervals[0][1]
+        for start, end in intervals[1:]:
             if start > current_end:
                 merged_intervals.append([current_start, current_end])
                 current_start = start
@@ -163,13 +162,11 @@ class SVpattern(ABC):
             if svp.sv_type == 1 or svp.sv_type == 2:
                 regions.append((svp.chr, svp.ref_start, svp.ref_end))
             else:
-                regions.append(
-                    (
-                        svp.chr,
-                        max(0, svp.ref_start - tolerance_radius),
-                        svp.ref_end + tolerance_radius,
-                    )
-                )
+                regions.append((
+                    svp.chr,
+                    max(0, svp.ref_start - tolerance_radius),
+                    svp.ref_end + tolerance_radius,
+                ))
         return regions
 
 
@@ -621,18 +618,18 @@ def two_relations_of_group(
 ) -> dict[tuple[int, int], set[TWORELATIONS]]:
     if len(group) < 2:
         return {}
-    assert all(
-        x.consensusID == group[0].consensusID for x in group
-    ), "Not all SVprimitives have the same consensusID"
-    assert all(
-        x.sv_type == 3 or x.sv_type == 4 for x in group
-    ), "Not all SVprimitives are of type BND"
+    assert all(x.consensusID == group[0].consensusID for x in group), (
+        "Not all SVprimitives have the same consensusID"
+    )
+    assert all(x.sv_type == 3 or x.sv_type == 4 for x in group), (
+        "Not all SVprimitives are of type BND"
+    )
     assert all(
         group[i].read_start <= group[i + 1].read_start for i in range(len(group) - 1)
     ), "SVprimitives are not sorted by read_start"
-    assert all(
-        x.consensus_aln_interval is not None for x in group
-    ), "Not all SVprimitives have an alignment_to_ref"
+    assert all(x.consensus_aln_interval is not None for x in group), (
+        "Not all SVprimitives have an alignment_to_ref"
+    )
 
     two_relations: dict[tuple[int, int], set[TWORELATIONS]] = {}
     for i in range(len(group) - 1):
@@ -661,12 +658,12 @@ def two_relations_of_group(
             a_it = Interval(a.consensus_aln_interval[1], a.consensus_aln_interval[2])
             b_it = Interval(b.consensus_aln_interval[1], b.consensus_aln_interval[2])
             # check if a_it really is an interval of two elements of type int
-            assert isinstance(a_it.begin, int) and isinstance(
-                a_it.end, int
-            ), f"Invalid interval for {str(a.consensus_aln_interval)}"
-            assert isinstance(b_it.begin, int) and isinstance(
-                b_it.end, int
-            ), f"Invalid interval for {str(b.consensus_aln_interval)}"
+            assert isinstance(a_it.begin, int) and isinstance(a_it.end, int), (
+                f"Invalid interval for {str(a.consensus_aln_interval)}"
+            )
+            assert isinstance(b_it.begin, int) and isinstance(b_it.end, int), (
+                f"Invalid interval for {str(b.consensus_aln_interval)}"
+            )
             # OVERLAP - two adjacent bnds overlap on the reference
             if a_it.overlap_size(b_it) >= distance_tolerance:
                 tags.add(TWORELATIONS.OVERLAP)
@@ -692,12 +689,12 @@ def four_relations_of_group(
 ) -> dict[tuple[int, int, int, int], set[FOURRELATIONS]]:
     if len(group) < 4:
         return {}
-    assert all(
-        x.consensusID == group[0].consensusID for x in group
-    ), "Not all SVprimitives have the same consensusID"
-    assert all(
-        x.sv_type == 3 or x.sv_type == 4 for x in group
-    ), "Not all SVprimitives are of type BND"
+    assert all(x.consensusID == group[0].consensusID for x in group), (
+        "Not all SVprimitives have the same consensusID"
+    )
+    assert all(x.sv_type == 3 or x.sv_type == 4 for x in group), (
+        "Not all SVprimitives are of type BND"
+    )
     assert all(
         group[i].read_start <= group[i + 1].read_start for i in range(len(group) - 1)
     ), "SVprimitives are not sorted by read_start"
@@ -863,9 +860,7 @@ def parse_SVprimitives_to_SVpatterns(
     """
     Parses Sv patterns from the SVprimitives of one consensus. All SVprimitives must have the same consensusID.
     """
-    if not all(
-        [svp.consensusID == SVprimitives[0].consensusID for svp in SVprimitives]
-    ):
+    if not all(svp.consensusID == SVprimitives[0].consensusID for svp in SVprimitives):
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )
@@ -1060,10 +1055,11 @@ def unstructure_bytes_field(field_value):
         if isinstance(unpickled, np.ndarray):
             return unpickled.tolist()
         return unpickled
-    except:
+    except Exception as e:
         # If unpickling fails, encode as base64
         import base64
 
+        log.error(f"Failed to unpickle bytes field: {e}")
         return base64.b64encode(field_value).decode("utf-8")
 
 
@@ -1190,11 +1186,6 @@ converter.register_structure_hook(SVpatternType, structure_svpattern)
 
 # ======== DATABASE FUNCTIONS ======== #
 
-import logging
-import sqlite3
-
-log = logging.getLogger(__name__)
-
 
 def create_svPatterns_db(database: Path):
     """Create database for storing SVpatterns."""
@@ -1245,14 +1236,12 @@ def write_svPatterns_to_db(
             else:
                 raise ValueError(f"SVpattern has no primitives: {svPattern}")
 
-            cache.append(
-                (
-                    svPatternID,
-                    consensusID,
-                    crID,
-                    pickle.dumps(converter.unstructure(svPattern)),
-                )
-            )
+            cache.append((
+                svPatternID,
+                consensusID,
+                crID,
+                pickle.dumps(converter.unstructure(svPattern)),
+            ))
 
             # Write batch when cache reaches batch_size
             if len(cache) >= batch_size:

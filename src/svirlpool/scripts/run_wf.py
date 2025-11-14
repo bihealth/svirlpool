@@ -33,7 +33,7 @@ def run_wf(args):
     cmd_wf = split(
         f"snakemake \
         {'--unlock' if args.snakemake_unlock else ''} \
-        {'--executor slurm --jobs '+str(args.executor_slurm_jobs) if args.executor_slurm_jobs > 0 else ''} \
+        {'--executor slurm --jobs ' + str(args.executor_slurm_jobs) if args.executor_slurm_jobs > 0 else ''} \
         --rerun-incomplete \
         --snakefile={str(path_base_wf)} \
         --configfile={Path(args.workdir) / 'config.json'} \

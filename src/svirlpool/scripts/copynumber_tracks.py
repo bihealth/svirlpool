@@ -72,8 +72,8 @@ def write_copynumber_trees_to_db(
             # Insert or replace the tree in the database
             conn.execute(
                 """
-                INSERT OR REPLACE INTO copynumber_tracks 
-                (chromosome, intervaltree) 
+                INSERT OR REPLACE INTO copynumber_tracks
+                (chromosome, intervaltree)
                 VALUES (?, ?)
             """,
                 (chromosome, serialized_tree),
@@ -82,7 +82,7 @@ def write_copynumber_trees_to_db(
         # Create index for faster lookups
         conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_copynumber_chromosome 
+            CREATE INDEX IF NOT EXISTS idx_copynumber_chromosome
             ON copynumber_tracks (chromosome)
         """
         )
@@ -155,15 +155,19 @@ def _parse_bed_file(bed_path: Path | str) -> dict[str, list[tuple[int, int]]]:
 
 
 def _to_numpy_per_base_coverage(
-    data: np.ndarray, chr_filterlist: list[str] = []
+    data: np.ndarray, chr_filterlist: list[str] = None
 ) -> dict[str, np.ndarray]:
     """Converts coverage data to per-base numpy arrays for each chromosome."""
+    if chr_filterlist is None:
+        chr_filterlist = []
     chrs = set(data[:, 0]) - set(chr_filterlist)
     cov_arrays = {}
     for chr in tqdm(chrs, desc="Converting to per-base coverage arrays"):
         chr = str(chr)
         data_chr_intervals = data[data[:, 0] == chr][:, 1:3].astype(int)
-        data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)
+        _data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(
+            str
+        )  # FIXME: unused?
         if len(data_chr_intervals) == 0:
             continue
         max_pos = np.max(data_chr_intervals)
@@ -179,9 +183,11 @@ def _to_numpy_per_base_coverage(
 def _to_numpy_per_base_coverage_with_regions(
     data: np.ndarray,
     regions: dict[str, list[tuple[int, int]]],
-    chr_filterlist: list[str] = [],
+    chr_filterlist: list[str] = None,
 ) -> dict[str, np.ndarray]:
     """Converts coverage data to per-base numpy arrays for specified regions only."""
+    if chr_filterlist is None:
+        chr_filterlist = []
     chrs = set(data[:, 0]) - set(chr_filterlist)
     cov_arrays = {}
 
@@ -226,7 +232,7 @@ def _bins_from_per_base_coverage(
 ) -> list[int]:
     """Bins per-base coverage arrays and returns a list of binned coverages."""
     all_bin_coverages = []
-    for chr, coverage_array in cov_arrays.items():
+    for _chr, coverage_array in cov_arrays.items():
         max_pos = len(coverage_array)
         num_bins = (max_pos + bin_size - 1) // bin_size  # Ceiling division
         for i in range(num_bins):
@@ -396,10 +402,12 @@ def _get_default_transition_matrix(stay_prob: float) -> np.ndarray:
 def median_binned_total_coverage(
     path_db: Path | str,
     bin_size: int,
-    chr_filterlist: list[str] = [],
+    chr_filterlist: list[str] = None,
     regions: Path | str | None = None,
 ) -> int:
     """Computes median coverage of all bins across all chromosomes, except those in chr_filterlist."""
+    if chr_filterlist is None:
+        chr_filterlist = []
     data = rafs_to_coverage.load_cov_from_db(path_db)
     data = np.array(data)
 
@@ -515,7 +523,7 @@ def generate_copynumber_tracks(
     threads: int,
     stay_prob: float,
     dispersion: float,
-    chr_filterlist: list[str] = [],
+    chr_filterlist: list[str] = None,
     regions_path: Path | None = None,
     transition_matrix=None,
 ) -> tuple[Path, Path]:
@@ -539,6 +547,8 @@ def generate_copynumber_tracks(
     Returns:
         Tuple of (bgzipped_bed_path, database_path)
     """
+    if chr_filterlist is None:
+        chr_filterlist = []
     log.info("Generating copy number tracks...")
 
     # step 1: use covtree to compute non-overlapping intervals of coverage
@@ -574,13 +584,13 @@ def generate_copynumber_tracks(
 
     # step 3: compute the genome-wide median coverage from all bins (intervals) across all chromosomes. An interval is of the form (start, end, coverage)
     all_coverages = []
-    for chr, tree in cov_trees.items():
+    for _chr, tree in cov_trees.items():
         all_coverages.extend([interval.data for interval in tree])
     median_cov = int(np.median(all_coverages))
 
     # step 4: compute the median read length from intervall_trees_reads
     all_read_lengths = []
-    for chr, tree in intervall_trees_reads.items():
+    for _chr, tree in intervall_trees_reads.items():
         all_read_lengths.extend([interval.end - interval.begin for interval in tree])
 
     # step 5: new bin size is 10 * median read length
@@ -660,7 +670,7 @@ def generate_copynumber_tracks(
             )
 
             # Combine positions with copy numbers
-            for (start, end, _), cn in zip(bins, copy_numbers):
+            for (start, end, _), cn in zip(bins, copy_numbers, strict=True):
                 cn_tracks[chr].append((start, end, cn))
 
     # Write to BED file
@@ -886,7 +896,7 @@ def plot_copynumber_tracks(
     ax.set_title(title, fontsize=14, fontweight="bold")
 
     # Format x-axis to show Mb
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{int(x/1e6)}"))
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"{int(x / 1e6)}"))
     ax.set_xlabel("Position (Mb)", fontsize=12)
 
     # Remove y-axis ticks (chromosome labels are on the left)

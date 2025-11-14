@@ -1,11 +1,9 @@
-# script to plot all sv sizes and letter compositions
-# %%
-import argparse
-import logging as log
+"""script to plot all sv sizes and letter compositions"""
 
-log.basicConfig(level=log.INFO)
+import argparse
 import gzip
 import json
+import logging as log
 import subprocess
 import tempfile
 from collections import Counter
@@ -21,7 +19,7 @@ from tqdm import tqdm
 from ..perform.seqomplexity import compute_complexity
 from ..scripts import datatypes
 
-# %%
+log.basicConfig(level=log.INFO)
 
 
 def heterogeneity_measure(S: str | Seq) -> float:
@@ -60,20 +58,26 @@ def get_indels(
     list[tuple[int, int]],
 ]:
     ref_start = alignment.reference_start
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     x_read_starts, x_read_ends, x_ref_starts, x_ref_ends = get_starts_ends(
         t=t, x=x, reference_start=ref_start
     )
     # get deletion ref start, ref end tuples
-    deletions_ref = list(zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)]))
+    deletions_ref = list(zip(x_ref_starts[(t == 2)], x_ref_ends[(t == 2)], strict=True))
     # get deletion read start, read end tuples
-    deletions_read = list(zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)]))
+    deletions_read = list(
+        zip(x_read_starts[(t == 2)], x_read_ends[(t == 2)], strict=True)
+    )
     # get insertion ref start, ref end tuples
-    insertions_ref = list(zip(x_ref_starts[(t == 1)], x_ref_ends[(t == 1)]))
+    insertions_ref = list(
+        zip(x_ref_starts[(t == 1)], x_ref_ends[(t == 1)], strict=True)
+    )
     # get insertion read start, read end tuples
-    insertions_read = list(zip(x_read_starts[(t == 1)], x_read_ends[(t == 1)]))
+    insertions_read = list(
+        zip(x_read_starts[(t == 1)], x_read_ends[(t == 1)], strict=True)
+    )
     return deletions_ref, deletions_read, insertions_ref, insertions_read
 
 
@@ -96,7 +100,9 @@ def parse_indels(
             samplename="",
             forward=aln.is_forward,
         )
-        for ((dell, delr), (rdell, rdelr)) in zip(deletions_ref, deletions_read)
+        for ((dell, delr), (rdell, rdelr)) in zip(
+            deletions_ref, deletions_read, strict=True
+        )
         if abs(delr - dell) >= min_signal_size
     ]
     insertions = [
@@ -114,7 +120,9 @@ def parse_indels(
             samplename="",
             forward=aln.is_forward,
         )
-        for ((insl, insr), (rinsl, rinsr)) in zip(insertions_ref, insertions_read)
+        for ((insl, insr), (rinsl, rinsr)) in zip(
+            insertions_ref, insertions_read, strict=True
+        )
         if abs(rinsr - rinsl) >= min_signal_size
     ]
     return insertions, deletions
@@ -197,7 +205,7 @@ def add_ref_seq_to_deletions(
         path_bed = Path(tmpdir) / "dels.bed"
         # write all deletions to a bed file
         with open(path_bed, "w") as bed:
-            for signal, seq in signals:
+            for signal, _seq in signals:
                 if signal.sv_type == 1:
                     print(f"{signal.chr}:{signal.ref_start}-{signal.ref_end}", file=bed)
         # use samtools faidx to extract all sequences defined in 'bed' from the reference sequence
@@ -221,7 +229,7 @@ def add_ref_seq_to_deletions(
 
 def create_intervaltrees(path_repeats: Path) -> dict[str, IntervalTree]:
     # construct dict of interval tree from repeats
-    it_repeats: dict[str, IntervalTree] = dict()
+    it_repeats: dict[str, IntervalTree] = {}
     with open(path_repeats, "r") as f:
         for i, line in enumerate(f):
             chr, start, end = line.strip().split("\t")
@@ -402,9 +410,9 @@ def extract_all_signals(
     log.info("parsing repeats..")
     intervaltrees = create_intervaltrees(path_repeats)
     all_signals: list[datatypes.ExtendedSVsignal] = []
-    dict_region_del_idx: dict[str:int] = (
-        dict()
-    )  # this dict links a region string (chr:start-end) to the index of the deletion in all_signals
+    dict_region_del_idx: dict[
+        str, int
+    ] = {}  # this dict links a region string (chr:start-end) to the index of the deletion in all_signals
     log.info("parsing SV signals..")
     with tempfile.TemporaryDirectory() as tmpdir:
         path_regions = Path(tmpdir) / "dels.regions"

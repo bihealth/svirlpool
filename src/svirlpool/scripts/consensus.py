@@ -10,10 +10,11 @@ consensus generation, and scoring.
 # IMPORTS AND CONFIGURATION
 # =============================================================================
 
-# Standard library imports
 import argparse
 import hashlib
 import json
+import logging
+import os
 import shlex
 import shutil
 import sqlite3
@@ -22,26 +23,21 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-# Third-party imports
 import attrs
 import cattrs
 import matplotlib
+import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import pysam
 from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
+from scipy.sparse import csr_matrix
+from sklearn.cluster import SpectralClustering
 from stopit import TimeoutException
 
-matplotlib.use("Agg")  # Use non-interactive backend
-# Configure logging
-import logging
-
-import matplotlib.pyplot as plt
-import networkx as nx
-
-# Local imports
 from . import (
     alignments_to_rafs,
     consensus_class,
@@ -50,6 +46,7 @@ from . import (
     util,
 )
 
+matplotlib.use("Agg")  # Use non-interactive backend
 log = logging.getLogger(__name__)
 
 
@@ -145,9 +142,9 @@ def get_full_read_sequences_of_alignments(
     """Retrieves all DNA sequences of all given read alignments. The read DNA is in original orientation, as it was given in the original fasta file."""
     # iterate all alignments of a sampleID across all crIDs
     crIDs = dict_alignments.keys()
-    dict_read_sequences: dict[str, SeqRecord] = (
-        dict()
-    )  # {(readname:(aln_reverse:bool,query_sequence:str))}
+    dict_read_sequences: dict[
+        str, SeqRecord
+    ] = {}  # {(readname:(aln_reverse:bool,query_sequence:str))}
     dict_supplementary_positions: dict[str, list[tuple[str, int]]] = {}
     for crID in crIDs:
         for aln in dict_alignments[crID]:
@@ -162,13 +159,15 @@ def get_full_read_sequences_of_alignments(
     # assort all supplementary_positions to a dict of the form {chromosome:[start,start+1]}
     dict_positions = {
         chrom: []
-        for chrom in set(
-            [chr for l in dict_supplementary_positions.values() for chr, pos in l]
-        )
+        for chrom in {
+            chr
+            for positions in dict_supplementary_positions.values()
+            for chr, pos in positions
+        }
     }
-    for readname, l in dict_supplementary_positions.items():
-        for chr, pos in l:
-            dict_positions[chr].append(pos)
+    for _readname, positions in dict_supplementary_positions.items():
+        for chr_, pos in positions:
+            dict_positions[chr_].append(pos)
     # then sort the list of start positions in each chromosome
     for chrom in dict_positions.keys():
         dict_positions[chrom] = sorted(dict_positions[chrom])
@@ -215,10 +214,8 @@ def get_full_read_sequences_of_alignments(
             # check if all keys of dict_read_sequences have a SeqRecord
             # if so, break this loop
             if all(
-                [
-                    readname in dict_read_sequences
-                    for readname in dict_supplementary_positions.keys()
-                ]
+                readname in dict_read_sequences
+                for readname in dict_supplementary_positions.keys()
             ):
                 break
     # check if for each readname in dict_supplementary_positions, there is a SeqRecord in dict_read_sequences
@@ -261,17 +258,17 @@ def get_read_alignments_for_crs(
     dict[int, list[pysam.AlignedSegment]], dict[int, list[pysam.AlignedSegment]]
 ]:
     """Returns a dict of the form crID:{sampleID:[alignments]}"""
-    dict_alignments: dict[int, list[pysam.AlignedSegment]] = dict()
-    dict_alignments_wt: dict[int, list[pysam.AlignedSegment]] = dict()
+    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {}
+    dict_alignments_wt: dict[int, list[pysam.AlignedSegment]] = {}
     readnames_in_signals: dict[str] = {
         signal.readname for cr in crs for signal in cr.sv_signals
     }
     # if no read alignments can be found for one sample,
     for cr in crs:
         # check if cr is of type datatypes.CandidateRegion
-        assert isinstance(
-            cr, datatypes.CandidateRegion
-        ), f"cr {cr} is not of type datatypes.CandidateRegion"
+        assert isinstance(cr, datatypes.CandidateRegion), (
+            f"cr {cr} is not of type datatypes.CandidateRegion"
+        )
         # crate a dict of sampleID:aug_readname
         with pysam.AlignmentFile(alignments, "rb") as f:
             for aln in f.fetch(cr.chr, max(cr.referenceStart, 0), cr.referenceEnd):
@@ -297,9 +294,9 @@ def get_read_alignment_intervals_in_region(
     """Extract read alignment intervals within a specific region."""
     # check if all elements in alignments are of type pysam.AlignedSegment
     for aln in alignments:
-        assert isinstance(
-            aln, pysam.AlignedSegment
-        ), f"aln {aln} is not a pysam.AlignedSegment"
+        assert isinstance(aln, pysam.AlignedSegment), (
+            f"aln {aln} is not a pysam.AlignedSegment"
+        )
     dict_intervals = {}
     for aln in alignments:
         cr_start, cr_end = region_start, regions_end
@@ -316,9 +313,13 @@ def get_read_alignment_intervals_in_region(
         if read_start is not None and read_end is not None and read_end > read_start:
             if aln.query_name not in dict_intervals:
                 dict_intervals[aln.query_name] = []
-            dict_intervals[aln.query_name].append(
-                (read_start, read_end, aln.reference_name, ref_start, ref_end)
-            )
+            dict_intervals[aln.query_name].append((
+                read_start,
+                read_end,
+                aln.reference_name,
+                ref_start,
+                ref_end,
+            ))
             # dict_intervals[read_aug_name].append((min(read_start,read_end),max(read_start,read_end),min(ref_start,ref_end),max(ref_start,ref_end)))
     return dict_intervals
 
@@ -339,13 +340,13 @@ def get_read_alignment_intervals_in_cr(
     for crID in dict_alignments.keys():
         assert isinstance(crID, int), f"crID {crID} is not an integer"
         # check if value is a list
-        assert isinstance(
-            dict_alignments[crID], list
-        ), f"value {dict_alignments[crID]} is not a list, but a {type(dict_alignments[crID])}"
+        assert isinstance(dict_alignments[crID], list), (
+            f"value {dict_alignments[crID]} is not a list, but a {type(dict_alignments[crID])}"
+        )
         for aln in dict_alignments[crID]:
-            assert isinstance(
-                aln, pysam.AlignedSegment
-            ), f"aln {aln} is not a pysam.AlignedSegment"
+            assert isinstance(aln, pysam.AlignedSegment), (
+                f"aln {aln} is not a pysam.AlignedSegment"
+            )
     dict_all_intervals: dict[str, tuple[int, int, str, int, int]] = {}
     cr_extents = {cr.crID: (cr.referenceStart, cr.referenceEnd) for cr in crs}
     # get the maximum insertion size of all original alignments in the candidate regions
@@ -373,16 +374,12 @@ def get_max_extents_of_read_alignments_on_cr(
     for readname in dict_all_intervals.keys():
         intervals = dict_all_intervals[readname]
         min_start = min(
-            [
-                (start, ref_start, ref_chr)
-                for (start, end, ref_chr, ref_start, ref_end) in intervals
-            ]
+            (start, ref_start, ref_chr)
+            for (start, end, ref_chr, ref_start, ref_end) in intervals
         )
         max_end = max(
-            [
-                (end, ref_end, ref_chr)
-                for (start, end, ref_chr, ref_start, ref_end) in intervals
-            ]
+            (end, ref_end, ref_chr)
+            for (start, end, ref_chr, ref_start, ref_end) in intervals
         )
         dict_max_extents[readname] = (
             min_start[0],
@@ -412,20 +409,20 @@ def trim_reads(
     for crID in dict_alignments.keys():
         assert isinstance(crID, int), f"crID {crID} is not an integer"
         for aln in dict_alignments[crID]:
-            assert isinstance(
-                aln, pysam.AlignedSegment
-            ), f"aln {aln} is not a pysam.AlignedSegment"
+            assert isinstance(aln, pysam.AlignedSegment), (
+                f"aln {aln} is not a pysam.AlignedSegment"
+            )
     # check if intervals is of the correct form
     for readname in intervals.keys():
         assert isinstance(readname, str), f"readname {readname} is not a string"
-        assert isinstance(
-            intervals[readname], tuple
-        ), f"intervals[readname] {intervals[readname]} is not a tuple"
-        assert (
-            len(intervals[readname]) == 6
-        ), f"intervals[readname] {intervals[readname]} is not of length 6"
+        assert isinstance(intervals[readname], tuple), (
+            f"intervals[readname] {intervals[readname]} is not a tuple"
+        )
+        assert len(intervals[readname]) == 6, (
+            f"intervals[readname] {intervals[readname]} is not of length 6"
+        )
         # check if each tuple is of types: int,int,str,int,str,int
-        for key, (
+        for _key, (
             read_start,
             read_end,
             ref_start_chr,
@@ -433,22 +430,22 @@ def trim_reads(
             ref_end_chr,
             ref_end,
         ) in intervals.items():
-            assert isinstance(
-                read_start, int
-            ), f"read_start {read_start} is not an integer"
+            assert isinstance(read_start, int), (
+                f"read_start {read_start} is not an integer"
+            )
             assert isinstance(read_end, int), f"read_end {read_end} is not an integer"
-            assert isinstance(
-                ref_start_chr, str
-            ), f"ref_start_chr {ref_start_chr} is not a string"
-            assert isinstance(
-                ref_start, int
-            ), f"ref_start {ref_start} is not an integer"
-            assert isinstance(
-                ref_end_chr, str
-            ), f"ref_end_chr {ref_end_chr} is not a string"
+            assert isinstance(ref_start_chr, str), (
+                f"ref_start_chr {ref_start_chr} is not a string"
+            )
+            assert isinstance(ref_start, int), (
+                f"ref_start {ref_start} is not an integer"
+            )
+            assert isinstance(ref_end_chr, str), (
+                f"ref_end_chr {ref_end_chr} is not a string"
+            )
             assert isinstance(ref_end, int), f"ref_end {ref_end} is not an integer"
 
-    cut_reads: dict[str, SeqRecord] = dict()
+    cut_reads: dict[str, SeqRecord] = {}
     for crID in dict_alignments.keys():
         for aln in dict_alignments[crID]:
             if aln.query_name in intervals:
@@ -554,7 +551,7 @@ def find_representing_read_per_cr(
         return (pool.pop(), 0)
     # check if all readnames of pool are in dict_max_extents
     sorted_pool = sorted(pool)
-    if not all([readname in dict_max_extents for readname in pool]):
+    if not all(readname in dict_max_extents for readname in pool):
         raise ValueError(
             f"not all readnames in pool are in dict_max_extents. pool={pool}, dict_max_extents={dict_max_extents}"
         )
@@ -564,28 +561,22 @@ def find_representing_read_per_cr(
     indel_sums = np.zeros(len(sorted_pool))
     for i, readname in enumerate(sorted_pool):
         indel_sums[i] = sum(
-            [
-                signal.size
-                for signal in candidate_region.sv_signals
-                if signal.readname == readname and signal.sv_type < 3
-            ]
+            signal.size
+            for signal in candidate_region.sv_signals
+            if signal.readname == readname and signal.sv_type < 3
         )
     # calculate the difference to the mean indel sum for each read
     mean_indel_sum = np.median(indel_sums)
     indel_differences = np.abs(indel_sums - mean_indel_sum)
     #   2) difference of the read coverage to the candidate region
-    distances_to_start = np.array(
-        [
-            abs(dict_max_extents[readname][2] - cr_reference_start)
-            for readname in sorted_pool
-        ]
-    )
-    distances_to_end = np.array(
-        [
-            abs(dict_max_extents[readname][3] - cr_reference_end)
-            for readname in sorted_pool
-        ]
-    )
+    distances_to_start = np.array([
+        abs(dict_max_extents[readname][2] - cr_reference_start)
+        for readname in sorted_pool
+    ])
+    distances_to_end = np.array([
+        abs(dict_max_extents[readname][3] - cr_reference_end)
+        for readname in sorted_pool
+    ])
     distances_to_start_end = distances_to_start + distances_to_end
     # concat the two distance arrays and the read indices
     # then rank the distances_to_start_end and then the indel_differences
@@ -595,9 +586,7 @@ def find_representing_read_per_cr(
     ranks_indel = np.argsort(np.argsort(indel_differences))
     sum_ranks = ranks_start_end + ranks_indel
     chosen = np.argmin(sum_ranks)
-    if (
-        verbose
-    ):  ## print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
+    if verbose:  # print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
         log.info(
             f"rank sum order for candidate region {candidate_region.crID} ({candidate_region.chr}:{candidate_region.referenceStart}-{candidate_region.referenceEnd}):"
         )
@@ -619,8 +608,8 @@ def find_representing_read(
     """Find the best representative read across multiple candidate regions. Returns the name of the representative read."""
     # construct dict of intervaltrees for all intervals
     dict_interval_trees = {cr.chr: IntervalTree() for cr in crs.values()}
-    for readname, l in all_intervals.items():
-        for start, end, ref_chr, ref_start, ref_end in l:
+    for readname, intervals in all_intervals.items():
+        for start, end, ref_chr, ref_start, ref_end in intervals:
             acutal_ref_start = min(ref_start, ref_end)
             actural_ref_end = max(ref_start, ref_end)
             actual_read_start = min(start, end)
@@ -661,7 +650,7 @@ def find_representing_read(
         raise ValueError("no representative read could be found")
     # if there are more than 1 different representatives, choose the one that is most often. If two are equally often, choose the one with the smallest ranks sum
     dict_chosen_reads = {readname: 0 for readname, score in chosen_reads}
-    for readname, score in chosen_reads:
+    for readname, _score in chosen_reads:
         dict_chosen_reads[readname] += 1
     max_count = max(dict_chosen_reads.values())
     chosen_read = sorted(
@@ -744,9 +733,9 @@ def make_consensus_with_racon(
             f"racon failed for {name} with command\n{cmd_racon}\nand error: {e}"
         )
         return None
-    except:
+    except Exception as e:
         log.warning(
-            f"racon failed to produce a consensus for {name} with command\n{cmd_racon}"
+            f"racon failed to produce a consensus for {name} with command\n{cmd_racon}\nand error: {e}"
         )
         return None
 
@@ -833,8 +822,6 @@ def make_consensus_with_lamassemble(
 # MAIN CONSENSUS PROCESSING ALGORITHMS
 # =============================================================================
 
-import os
-
 
 def final_consensus(
     samplename: str,
@@ -850,7 +837,6 @@ def final_consensus(
     verbose: bool,
     tmp_dir_path: Path | None = None,
 ) -> consensus_class.Consensus | None:
-
     # check if the consensus_fasta_path or reads_fasta are empty. if so, raise an exception
     if os.path.getsize(consensus_fasta_path) == 0:
         raise ValueError(
@@ -1152,7 +1138,7 @@ def assemble_consensus(
     verbose: bool = False,
 ) -> str | None:
     # create a temporary fasta file with the read sequences filtered by chosen reads. only the chosen reads can be kept.
-    with tempfile.TemporaryDirectory() as tmp_dir:
+    with tempfile.TemporaryDirectory():
         # ====== try lamassemble first ====== #
         consensus_sequence: str | None = make_consensus_with_lamassemble(
             lamassemble_mat=lamassemble_mat,
@@ -1166,10 +1152,6 @@ def assemble_consensus(
         if consensus_sequence is not None:
             return consensus_sequence
     return None
-
-
-from scipy.sparse import csr_matrix
-from sklearn.cluster import SpectralClustering
 
 
 def partition_reads_spectral(
@@ -1214,7 +1196,7 @@ def partition_reads_spectral(
     )
 
     labels = clustering.fit_predict(similarity_matrix)
-    return {read: int(label) for read, label in zip(all_reads, labels)}
+    return {read: int(label) for read, label in zip(all_reads, labels, strict=True)}
 
 
 def handle_isolated_reads(
@@ -1311,13 +1293,11 @@ def consensus_while_clustering(
             #  - find all reference names in the alignments
             #  - for each reference name in the alignments, do scoring
             all_raf_scores: dict[str, dict[str, float]] = {}
-            for reference_name in set(
-                [
-                    aln.reference_name
-                    for aln in all_vs_all_alignments
-                    if not aln.is_unmapped
-                ]
-            ):
+            for reference_name in {
+                aln.reference_name
+                for aln in all_vs_all_alignments
+                if not aln.is_unmapped
+            }:
                 raf_alignments = [
                     aln
                     for aln in all_vs_all_alignments
@@ -1354,13 +1334,11 @@ def consensus_while_clustering(
                     print(f"+++ {reference_name} +++")
                     for read, value in raf_scores.items():
                         print(read, value, sep="\t")
-                penalty_matrix.update(
-                    {
-                        (reference_name, read): score
-                        for read, score in raf_scores.items()
-                        if score <= dynamic_cutoff
-                    }
-                )
+                penalty_matrix.update({
+                    (reference_name, read): score
+                    for read, score in raf_scores.items()
+                    if score <= dynamic_cutoff
+                })
 
             if verbose:
                 # print penalty matrix as a matrix with rows and columns sorted by read names
@@ -1405,7 +1383,6 @@ def consensus_while_clustering(
 
             # 3. Proceed with consensus generation for each cluster
             for cluster_id in set(clustering_result.values()):
-
                 chosen_reads = [
                     read for read, cid in clustering_result.items() if cid == cluster_id
                 ]
@@ -1557,9 +1534,9 @@ def add_unaligned_reads_to_consensuses_inplace(
 ) -> None:
     """Inplace: Add all reads that are not used in any consensus object to the consensus object that they align best to."""
     """A read is not added to a consensus if its SV signals are significantly more than all already added reads."""
-    assert (
-        len(consensus_objects) > 0
-    ), "consensus_sequences must contain at least one consensus object"
+    assert len(consensus_objects) > 0, (
+        "consensus_sequences must contain at least one consensus object"
+    )
     if len(pool) == 0:
         return consensus_objects
     # write consensus sequences to a fasta file
@@ -1698,12 +1675,10 @@ def probability_of_sv_presence_with_neighbors(
         # aplly distance function to score close signals higher than distant signals
         # pick one signal per sample that fits best
         neighbors_selected = neighbors[mask_similar_size]
-        proximities = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors_selected[:, 0] - svSignal.ref_start
-            ]
-        )
+        proximities = np.array([
+            closeness_function(x, radius)
+            for x in neighbors_selected[:, 0] - svSignal.ref_start
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(neighbors_selected[:, 5]):
@@ -1718,18 +1693,14 @@ def probability_of_sv_presence_with_neighbors(
         # aplly distance function to score close signals higher than distant signals
         # pick one signal per sample that fits best
         neighbors_selected = neighbors[mask_similar_size]
-        proximities_left = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors_selected[:, 0] - svSignal.ref_start
-            ]
-        )
-        proximities_right = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors_selected[:, 1] - (svSignal.ref_start + svSignal.size)
-            ]
-        )
+        proximities_left = np.array([
+            closeness_function(x, radius)
+            for x in neighbors_selected[:, 0] - svSignal.ref_start
+        ])
+        proximities_right = np.array([
+            closeness_function(x, radius)
+            for x in neighbors_selected[:, 1] - (svSignal.ref_start + svSignal.size)
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(neighbors_selected[:, 5]):
@@ -1738,12 +1709,9 @@ def probability_of_sv_presence_with_neighbors(
             sum_signal += np.max(proximities_right[mask_sample]) * 0.5
         return sum_signal / N_samples
     if svSignal.sv_type == 3 or svSignal.sv_type == 4:  # break end
-        proximities = np.array(
-            [
-                closeness_function(x, radius)
-                for x in neighbors[:, 0] - svSignal.ref_start
-            ]
-        )
+        proximities = np.array([
+            closeness_function(x, radius) for x in neighbors[:, 0] - svSignal.ref_start
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(neighbors[:, 5]):
@@ -1775,9 +1743,9 @@ def probability_of_sv_with_similar_svs(
         mask = (signals[:, 3] == 0) & (abs(signals[:, 2] - svSignal.size) <= margin)
         candidates = signals[mask]
         # apply closeness_function to the size difference of the candidates
-        similarities = np.array(
-            [closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size]
-        )
+        similarities = np.array([
+            closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(candidates[:, 5]):
@@ -1790,9 +1758,9 @@ def probability_of_sv_with_similar_svs(
         mask = (signals[:, 3] == 1) & (abs(signals[:, 2] - svSignal.size) <= margin)
         candidates = signals[mask]
         # apply closeness_function to the size difference of the candidates
-        similarities = np.array(
-            [closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size]
-        )
+        similarities = np.array([
+            closeness_function(x, radius) for x in candidates[:, 2] - svSignal.size
+        ])
         # pick the best matching signal for each sample
         sum_signal = 0.0
         for rn_ID in np.unique(candidates[:, 5]):
@@ -1909,7 +1877,7 @@ def calc_ras_scores(
     bias: float = 0.5,
 ) -> np.ndarray:
     # calc a score for each raf. The score of a raf is the sum of probabilities of each sv signal in the raf
-    N_samples = len(set([ras.read_name for ras in rass]))
+    N_samples = len({ras.read_name for ras in rass})
     signals = extract_signals(rass=rass)
     # generate regions with repeats / low complexity
     # For each
@@ -2031,8 +1999,8 @@ def score_ras_from_alignments(
     # return dict of {read_name: score}
     # always pick the highest scoring raf for each read_name
     rass_scores = calc_ras_scores(rass=rass, reflen=reflen)
-    rafs_scores_dict = dict()
-    for ras, score in zip(rass, rass_scores):
+    rafs_scores_dict = {}
+    for ras, score in zip(rass, rass_scores, strict=True):
         if ras.read_name in rafs_scores_dict:
             if rafs_scores_dict[ras.read_name] < score:
                 rafs_scores_dict[ras.read_name] = score
@@ -2137,7 +2105,7 @@ def visualize_raf_score_graph(
     edge_colors = []
     edge_widths = []
 
-    for u, v, data in G.edges(data=True):
+    for _u, _v, data in G.edges(data=True):
         weight = data["weight"]
 
         # Color: red if weight > weighted_median, black otherwise
@@ -2160,7 +2128,10 @@ def visualize_raf_score_graph(
     # Use spring layout for better visualization
     try:
         pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-    except:
+    except Exception as e:
+        log.warning(
+            f"Spring layout failed with exception: {e}. Using circular layout instead."
+        )
         # Fallback to circular layout if spring layout fails
         pos = nx.circular_layout(G)
 
@@ -2339,7 +2310,7 @@ def _get_padding_sizes_per_read(
     for readname, (
         start,
         end,
-        cutread_length,
+        _cutread_length,
         read_length,
         forward,
     ) in read_paddings_for_consensus.items():
@@ -2390,14 +2361,14 @@ def _create_padding_object(
         padding_intervals[0][0] : padding_intervals[0][1]
     ]
     # needs to be reverse complimented if the cutread alignment is reverse
-    if read_paddings_for_consensus[padding_reads[0]][4] == False:
+    if not read_paddings_for_consensus[padding_reads[0]][4]:
         left_padding = left_padding.reverse_complement()
 
     right_padding: Seq = read_records[padding_reads[1]].seq[
         padding_intervals[1][0] : padding_intervals[1][1]
     ]
     # needs to be reverse complimented if the cutread alignment is reverse
-    if read_paddings_for_consensus[padding_reads[1]][4] == False:
+    if not read_paddings_for_consensus[padding_reads[1]][4]:
         right_padding = right_padding.reverse_complement()
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
@@ -2443,10 +2414,10 @@ def load_crs_containers_from_db(
         raise ValueError(f"{path_db} is not a file.")
     if crIDs is not None:
         assert type(crIDs) == list, "crIDs must be a list of integers."
-        assert (
-            len(crIDs) > 0
-        ), "crIDs must be a list of integers with at least one element."
-        if not all([isinstance(crID, int) for crID in crIDs]):
+        assert len(crIDs) > 0, (
+            "crIDs must be a list of integers with at least one element."
+        )
+        if not all(isinstance(crID, int) for crID in crIDs):
             raise ValueError(f"crIDs must be a list of integers. Instead got {crIDs}")
 
     conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)
@@ -2459,7 +2430,7 @@ def load_crs_containers_from_db(
         )
     else:
         c.execute("SELECT crID, data FROM containers")
-    containers = dict()
+    containers = {}
     for crID, data in c.fetchall():
         crs_container = json.loads(data)
         crs_container = deserialize_crs_container(crs_container)
@@ -2473,7 +2444,7 @@ def summed_indel_distribution(
     alns: dict[int, list[pysam.AlignedSegment]],
 ) -> dict[str, list[int]]:
     rafs: list[datatypes.ReadAlignmentFragment] = []
-    for crID, alnlist in alns.items():
+    for _crID, alnlist in alns.items():
         for aln in alnlist:
             rafs.append(
                 alignments_to_rafs.parse_ReadAlignmentFragment_from_alignment(
@@ -2577,7 +2548,7 @@ def process_consensus_container(
         )
         # parse unused reads to datatypes.SequenceObject
         dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: set([signal.readname for signal in cr.sv_signals])
+            cr.crID: {signal.readname for signal in cr.sv_signals}
             for cr in crs_dict.values()
         }
         dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
@@ -2601,7 +2572,7 @@ def process_consensus_container(
                             ),
                         )
                         dict_unused_reads[crID].append(read_sequence_object)
-        return dict(), dict_unused_reads
+        return {}, dict_unused_reads
 
     alns, alns_wt = get_read_alignments_for_crs(
         crs=list(crs_dict.values()), alignments=path_alignments
@@ -2632,7 +2603,7 @@ def process_consensus_container(
 
     # =========================================== CONSENSUS BUILDING =========================================== #
 
-    consensus_objects: dict[str, consensus_class.Consensus] = dict()
+    consensus_objects: dict[str, consensus_class.Consensus] = {}
 
     res: dict[str, consensus_class.Consensus] | None = None
     res = consensus_while_clustering(
@@ -2660,7 +2631,7 @@ def process_consensus_container(
         )
         # parse unused reads to datatypes.SequenceObject
         dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: set([signal.readname for signal in cr.sv_signals])
+            cr.crID: {signal.readname for signal in cr.sv_signals}
             for cr in crs_dict.values()
         }
         dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
@@ -2681,7 +2652,7 @@ def process_consensus_container(
                     ),
                 )
                 dict_unused_reads[crID].append(read_sequence_object)
-        return dict(), dict_unused_reads
+        return {}, dict_unused_reads
         # TODO: implement assembly for regions without representatives
 
     # ================================ ADDING UNUSED READS TO CONSENSUS OBJECTS ================================ #
@@ -2729,7 +2700,7 @@ def process_consensus_container(
         f"Found {len(set_unused_readnames)} unused reads after consensus building."
     )
 
-    unused_seqobjects: dict[str, datatypes.SequenceObject] = dict()
+    unused_seqobjects: dict[str, datatypes.SequenceObject] = {}
     for readname in set_unused_readnames:
         read_seqRecord = cutreads[readname]
         unused_seqobjects[readname] = datatypes.SequenceObject(
@@ -2743,10 +2714,10 @@ def process_consensus_container(
                 else None
             ),
         )
-    dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = dict()
+    dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
     for crID, cr in crs_dict.items():
         # save all reads to dict_unused_reads that are in the cr and in set_unused_readnames
-        readnames_in_cr = set([signal.readname for signal in cr.sv_signals])
+        readnames_in_cr = {signal.readname for signal in cr.sv_signals}
         dict_unused_reads[crID] = []
         for readname, seqobject in unused_seqobjects.items():
             if readname in readnames_in_cr:
@@ -2786,38 +2757,38 @@ def crs_containers_to_consensus(
     tmp_dir_path: Path | str | None = None,
     verbose: bool = False,
 ) -> None:
-    assert Path(
-        lamassemble_mat
-    ).exists(), f"lamassemble matrix file {lamassemble_mat} does not exist."
+    assert Path(lamassemble_mat).exists(), (
+        f"lamassemble matrix file {lamassemble_mat} does not exist."
+    )
     assert input.exists(), f"Input file {input} does not exist."
     assert input.is_file(), f"Input file {input} is not a file."
     assert output.parent.exists(), f"Output directory {output.parent} does not exist."
     assert threads > 0, "threads must be greater than 0."
     if crIDs:
         assert type(crIDs) == list, "crIDs must be a list of integers."
-        assert (
-            len(crIDs) > 0
-        ), "crIDs must be a list of integers with at least one element."
-        assert all(
-            [isinstance(crID, int) for crID in crIDs]
-        ), "crIDs must be a list of integers."
+        assert len(crIDs) > 0, (
+            "crIDs must be a list of integers with at least one element."
+        )
+        assert all(isinstance(crID, int) for crID in crIDs), (
+            "crIDs must be a list of integers."
+        )
     log.info("load data")
     if crIDs:
         existing_crIDs = load_crIDs_from_containers_db(path_db=input)
         # log all crIDs that are missing in a warning
-        if not all([crID in existing_crIDs for crID in crIDs]):
+        if not all(crID in existing_crIDs for crID in crIDs):
             log.warning(
                 f"crIDs {set(crIDs) - set(existing_crIDs)} are not in the database. They are skipped."
             )
         # if no real crIDs are left, return with warning
-        if not any([crID in existing_crIDs for crID in crIDs]):
+        if not any(crID in existing_crIDs for crID in crIDs):
             log.error("No crIDs to process. Exiting.")
             return
     log.info(f"Loading crs containers from database at {input}.")
     containers = load_crs_containers_from_db(path_db=input, crIDs=crIDs)
     log.info("loaded data")
-    all_consensuses: dict[str, consensus_class.Consensus] = dict()
-    all_unused_reads: dict[int, list[datatypes.SequenceObject]] = dict()
+    all_consensuses: dict[str, consensus_class.Consensus] = {}
+    all_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
     for crID, container in containers.items():
         log.info(f"Processing crID {crID}.")
         crs_dict = {cr.crID: cr for cr in container["crs"]}

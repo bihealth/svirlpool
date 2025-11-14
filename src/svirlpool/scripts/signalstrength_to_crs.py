@@ -1,4 +1,3 @@
-# %%
 #!/usr/bin/env python
 import argparse
 import csv
@@ -15,10 +14,7 @@ from intervaltree import IntervalTree
 from logzero import logger
 from tqdm import tqdm
 
-# %%
 from . import datatypes, util
-
-# %%
 
 # # find stretches, accepts a np array of ints, returns a list of tuples
 # def find_stretches(arr:np.ndarray) -> typing.List[typing.Tuple[int,int]]:
@@ -59,11 +55,13 @@ windowingFunction=mean smoothingWindow=off"
             ):
                 print(signal.chr, signal.ref_start, signal.ref_end, str(val), file=f)
     with open(bedgraph.with_suffix(".normalized.bedgraph"), "w") as f:
-        trackdef = "track type=bedGraph name=values_normalized description=values_normalized \
+        trackdef = (
+            "track type=bedGraph name=values_normalized description=values_normalized \
 visibility=display_mode altColor=150,20,255 color=20,150,255 \
 priority=10 autoScale=on alwaysZero=off gridDefault=on \
 maxHeightPixels=max:default:min graphType=bar|points viewLimits=lower:upper \
 windowingFunction=mean smoothingWindow=off"
+        )
         print(trackdef, file=f)
         for i, signal in tqdm(enumerate(signals)):
             val = float(values_normalized[i])
@@ -75,11 +73,13 @@ windowingFunction=mean smoothingWindow=off"
             ):
                 print(signal.chr, signal.ref_start, signal.ref_end, str(val), file=f)
     with open(bedgraph.with_suffix(".masked.bedgraph"), "w") as f:
-        trackdef = "track type=bedGraph name=values_signal_masked description=values_signal_masked \
+        trackdef = (
+            "track type=bedGraph name=values_signal_masked description=values_signal_masked \
 visibility=display_mode altColor=150,50,50 color=250,150,150 \
 priority=10 autoScale=on alwaysZero=off gridDefault=on \
 maxHeightPixels=max:default:min graphType=bar|points viewLimits=lower:upper \
 windowingFunction=mean smoothingWindow=off"
+        )
         print(trackdef, file=f)
         for i, signal in tqdm(enumerate(signals)):
             val = float(values_masked[i])
@@ -417,9 +417,9 @@ windowingFunction=mean smoothingWindow=off"
 def create_crs_db(path_db: Path, timeout: float) -> None:
     # create sqlite3 database with primary key crID and pickled json.dumps(CandidateRegion.unstructure()) as vales named candidate_region
     assert timeout > 0.0, f"timeout must be > 0.0. It is {timeout}"
-    assert (
-        type(path_db) == PosixPath or type(path_db) == str
-    ), f"path_db must be a Path or str. It is {type(path_db)}"
+    assert type(path_db) == PosixPath or type(path_db) == str, (
+        f"path_db must be a Path or str. It is {type(path_db)}"
+    )
 
     if path_db.exists():
         logger.warning(f"Database {path_db} exists. Overwriting it.")
@@ -431,22 +431,22 @@ def create_crs_db(path_db: Path, timeout: float) -> None:
         """CREATE TABLE IF NOT EXISTS candidate_regions
         (crID INTEGER PRIMARY KEY, candidate_region TEXT)"""
     )
-    c.execute(f"pragma busy_timeout={str(int(timeout*1000))}")
+    c.execute(f"pragma busy_timeout={str(int(timeout * 1000))}")
     conn.commit()
     c.close()
     conn.close()
 
 
 def write_crs_to_db(path_db: Path, crs: list[datatypes.CandidateRegion]) -> None:
-    assert (
-        type(path_db) == PosixPath or type(path_db) == str
-    ), f"path_db must be a Path or str. It is {type(path_db)}"
+    assert type(path_db) == PosixPath or type(path_db) == str, (
+        f"path_db must be a Path or str. It is {type(path_db)}"
+    )
     assert path_db.exists(), f"Database {path_db} does not exist"
     assert path_db.is_file(), f"Database {path_db} is not a file"
     assert type(crs) == list, "crs is not a list"
-    assert all(
-        [type(cr) == datatypes.CandidateRegion for cr in crs]
-    ), "crs is not a list of datatypes.CandidateRegion"
+    assert all(type(cr) == datatypes.CandidateRegion for cr in crs), (
+        "crs is not a list of datatypes.CandidateRegion"
+    )
 
     conn = sqlite3.connect(path_db)
     c = conn.cursor()
@@ -462,12 +462,12 @@ def load_crs_from_db(
 ) -> list[datatypes.CandidateRegion]:
     if crIDs:
         assert type(crIDs) == list, "crIDs is not a list"
-        assert all(
-            [type(crID) == int for crID in crIDs]
-        ), "crIDs is not a list of integers"
-    assert (
-        type(path_db) == PosixPath or type(path_db) == str
-    ), f"path_db must be a Path or str. It is {type(path_db)}"
+        assert all(type(crID) == int for crID in crIDs), (
+            "crIDs is not a list of integers"
+        )
+    assert type(path_db) == PosixPath or type(path_db) == str, (
+        f"path_db must be a Path or str. It is {type(path_db)}"
+    )
     assert path_db.exists(), f"Database {path_db} does not exist"
 
     conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)

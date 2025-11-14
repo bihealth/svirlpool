@@ -48,7 +48,7 @@ def construct_final_database(path_database: Path) -> None:
     # - unused_reads [readname,crIDs,SequenceObject] (from crsContainerResult) # crIDs is a list of INTs
     conn = sqlite3.connect("file:" + str(path_database) + "?mode=rwc", uri=True)
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS consensuses 
+        """CREATE TABLE IF NOT EXISTS consensuses
         (id VARCHAR(200) PRIMARY KEY,
         consensus BLOB)"""
     )
@@ -78,13 +78,11 @@ def write_consensus_crsContainerResult_to_database(
             if len(list_sequenceObjects) > 0:
                 crIDs_unused_reads.append(crID)
             for sequenceObject in list_sequenceObjects:
-                unused_reads_data.append(
-                    [
-                        f"{sequenceObject.name}.{crID}",
-                        int(crID),
-                        pickle.dumps(sequenceObject.unstructure()),
-                    ]
-                )
+                unused_reads_data.append([
+                    f"{sequenceObject.name}.{crID}",
+                    int(crID),
+                    pickle.dumps(sequenceObject.unstructure()),
+                ])
         c = conn.cursor()
         c.executemany(
             "INSERT OR REPLACE INTO unused_reads (readname_crID,crID,sequenceObject) VALUES (?,?,?)",

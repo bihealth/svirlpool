@@ -21,6 +21,7 @@ from pathlib import Path
 
 import cattrs
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pysam
 from Bio import SeqIO
@@ -47,13 +48,15 @@ def yield_last_column(input: Path, dtype: type) -> typing.Iterable:
             reader = csv.reader(f, delimiter="\t", quotechar='"')
             for line in tqdm(reader):
                 yield cattrs.structure(json.loads(line[-1]), dtype)
-    except:
+    except Exception as e:
+        log.error(f"Error reading {input}: {e}")
         try:
             with open(input, "r") as f:
                 reader = csv.reader(f, delimiter="\t", quotechar='"')
                 for line in tqdm(reader):
                     yield cattrs.structure(json.loads(line[-1]), dtype)
-        except:
+        except Exception as e:
+            log.error(f"Error reading {input}: {e}")
             raise FileNotFoundError(
                 f"Could not open {input}. Make sure the file exists and is not corrupted."
             )
@@ -123,10 +126,9 @@ def load_consensus_sequences_from_db(
                 pickle.loads(row[1]), consensus_class.Consensus
             )
             results[row[0]] = consensus_object.consensus_sequence
-        except:
-            import pdb
-
-            pdb.set_trace()
+        except Exception as e:
+            log.error(f"Error loading consensus sequence for {row[0]}: {e}")
+            raise ValueError(f"Error loading consensus sequence for {row[0]}: {e}")
     c.close()
     conn.close()
     return results
@@ -138,7 +140,10 @@ def load_alignments(path: Path) -> typing.List[pysam.AlignedSegment]:
 
 def load_crs_connections(input: Path) -> dict:
     reader = csv.reader(input.open("r"), delimiter="\t")
-    return {tuple(json.loads(l[0])): [set(k) for k in json.loads(l[1])] for l in reader}
+    return {
+        tuple(json.loads(record[0])): [set(k) for k in json.loads(record[1])]
+        for record in reader
+    }
 
 
 def execute_to_df(cmd: list, sep="\t", header=None, index_col=None) -> pd.DataFrame:
@@ -407,13 +412,14 @@ def bed_chr_to_chrID(
 
 def create_fai_if_not_exists(reference: Path) -> Path:
     if not Path(str(reference) + ".fai").exists():
-        log.warning(f"{str(reference)+'.fai'} not found. Trying to create one..")
+        log.warning(f"{str(reference) + '.fai'} not found. Trying to create one..")
         try:
             cmd = shlex.split(f"samtools faidx {reference}")
             subprocess.check_call(cmd)
-        except:
+        except Exception as e:
+            log.error(f"Error creating .fai file for {reference}: {e}")
             raise FileNotFoundError(
-                f"{str(reference)+'.fai'} not found. And could not be created. Make sure to provide a path to a .fasta file for which a .fai file exists in the same directory."
+                f"{str(reference) + '.fai'} not found. And could not be created. Make sure to provide a path to a .fasta file for which a .fai file exists in the same directory."
             )
     return Path(str(reference) + ".fai")
 
@@ -430,7 +436,7 @@ def genome_file_for_bedtools(
     reference: Path, output: Path | None = None
 ) -> dict[str, int]:
     create_fai_if_not_exists(reference=reference)
-    rdict = dict()
+    rdict = {}
     if output:
         with open(output, "w") as f:
             for line in open(Path(str(reference) + ".fai"), "r"):
@@ -446,8 +452,6 @@ def genome_file_for_bedtools(
 # =============================================================================
 #  complexity
 # =============================================================================
-
-import numpy.typing as npt
 
 # def hash_dna(seq,alphabet_hash_dict:dict={dna:np.uint8(i) for i,dna in enumerate('ACGTN')}):
 #     for s in seq:
@@ -485,7 +489,7 @@ def kmers_on_dna5(seq: npt.NDArray[np.float16], k: int) -> npt.NDArray[np.float1
 def complexity_local_track(
     dna_iter: typing.Iterator,
     w: int = 11,
-    K: list[int] = [1, 2, 3, 4, 5],
+    K: list[int] = None,
     padding: bool = False,
 ) -> npt.NDArray[np.float16]:
     """
@@ -502,6 +506,8 @@ def complexity_local_track(
     """
     # Set up alphabet based on use_5letter flag
     # 5-letter alphabet: A=0, C=1, G=2, T=3, N=4, unknown=4
+    if K is None:
+        K = [1, 2, 3, 4, 5]
     alphabet_hash_dict = {
         "A": np.uint8(0),
         "a": np.uint8(0),
@@ -524,12 +530,10 @@ def complexity_local_track(
     # init iteration
     try:
         dna_window = np.array(
-            list(
-                map(
-                    lambda x: alphabet_hash_dict.get(x, default_value),
-                    [next(dna_iter) for _ in range(w)],
-                )
-            ),
+            [
+                alphabet_hash_dict.get(x, default_value)
+                for x in [next(dna_iter) for _ in range(w)]
+            ],
             dtype=np.uint8,
         )
     except StopIteration:
@@ -572,7 +576,7 @@ def complexity_local_track(
     if padding:
         # Append padding values at the end
         pad_count = int(floor(w / 2))
-        for i in range(pad_count):
+        for _ in range(pad_count):
             track.append(track[-1])
     return np.array(track, dtype=np.float16)
 
@@ -667,14 +671,16 @@ def delete_interval(seq: list, a: int, b: int):
 
 
 def insertion(
-    seq: list, pos: int, size: int = 0, sequence: list = [], seed: int = 0
+    seq: list, pos: int, size: int = 0, sequence: list = None, seed: int = 0
 ) -> typing.List[str]:
+    if sequence is None:
+        sequence = []
     if sequence == [] and size == 0:
         return seq
     if sequence == []:
         sequence = generate_sequence(size=size, seed=seed)
     r = [*seq[:pos], *sequence, *seq[pos:]]
-    return [*seq[:pos], *sequence, *seq[pos:]]
+    return r
 
 
 def duplication(
@@ -693,7 +699,7 @@ def duplication(
 
 def complement(seq: list) -> typing.List[str]:
     d = {"A": "T", "T": "A", "G": "C", "C": "G"}
-    return list(map(lambda s: d[s], seq))
+    return [d[s] for s in seq]
 
 
 def reverse_complement(seq: list, _=None, __=None) -> typing.List[str]:
@@ -886,7 +892,7 @@ def get_alignments_to_reference(
 def get_samplenames_from_samfile(samfile: pysam.Samfile) -> typing.List[str]:
     """returns a list of unique sample names from the RG tags in the samfile header."""
     try:
-        return list(set([item["SM"] for item in samfile.header.to_dict()["RG"]]))
+        return list({item["SM"] for item in samfile.header.to_dict()["RG"]})
     except KeyError:
         return []
 
@@ -944,7 +950,9 @@ def load_sampledicts(input: Path) -> typing.List[dict]:
 
 # plot to terminal a quick visualization that works like imshow with a provided list
 # of ascii letters as shades from light to dark.
-def plot_to_terminal(data: list, shades: list = [".", "-", "+", "#"]):
+def plot_to_terminal(data: list, shades: list = None):
+    if shades is None:
+        shades = [".", "-", "+", "#"]
     ndata = preprocessing.normalize(data)
     for row in ndata:
         for col in row:
@@ -1010,10 +1018,8 @@ def get_unaligned_intervals(
     # 0 to a and end to total_length are handled separately
     sorted_intervals = sorted(covered_intervals, key=lambda x: (x[0], x[1]))
     assert all(
-        [
-            sorted_intervals[i][1] <= sorted_intervals[i + 1][0]
-            for i in range(len(sorted_intervals) - 1)
-        ]
+        sorted_intervals[i][1] <= sorted_intervals[i + 1][0]
+        for i in range(len(sorted_intervals) - 1)
     )
 
     unaligned_intervals = []
@@ -1022,9 +1028,10 @@ def get_unaligned_intervals(
         unaligned_intervals.append(first_interval)
     for i in range(len(sorted_intervals) - 1):
         if sorted_intervals[i][1] < sorted_intervals[i + 1][0]:
-            unaligned_intervals.append(
-                (sorted_intervals[i][1], sorted_intervals[i + 1][0])
-            )
+            unaligned_intervals.append((
+                sorted_intervals[i][1],
+                sorted_intervals[i + 1][0],
+            ))
     last_interrval = (sorted_intervals[-1][1], total_length)
     if last_interrval[0] < total_length:
         unaligned_intervals.append(last_interrval)
@@ -1059,8 +1066,8 @@ def add_clipped_tails_to_alignments(
         "%s is deprecated and will be removed in the future. It has no use anymore since aligned virtual fragments are now padded with read sequence."
     )
     """adds clipped tails to alignments. The clipped tails are aligned to the reference and added to the original alignment. Known issue: hard clips are missing on the added tails."""
-    read_covered_intervals: dict[str, list[tuple]] = dict()
-    readlengths: dict[str, int] = dict()
+    read_covered_intervals: dict[str, list[tuple]] = {}
+    readlengths: dict[str, int] = {}
     # selected_readalignments = dict()
     for aln in pysam.AlignmentFile(
         alignments, "rb"
@@ -1090,7 +1097,7 @@ def add_clipped_tails_to_alignments(
         suffix=".fasta", dir=tmp_dir.name, delete=False
     )
     # sort each read's intervals and process
-    unaligned_intervals: dict[str, list[tuple]] = dict()
+    unaligned_intervals: dict[str, list[tuple]] = {}
     with open(tmp_fasta_unaligned_tails.name, "w") as f:
         for aln in pysam.AlignmentFile(alignments, "rb"):
             # check if the alignment is primary (has no hard clippings)
@@ -1175,13 +1182,12 @@ def display_ascii_alignments(
         if max_ref_len < 1:
             try:
                 max_ref_len = max(
-                    [
-                        a.reference_start + a.reference_length
-                        for a in alns
-                        if a.reference_length
-                    ]
+                    a.reference_start + a.reference_length
+                    for a in alns
+                    if a.reference_length
                 )
-            except:
+            except Exception as e:
+                log.error(f"Error calculating max_ref_len for {refname}: {e}")
                 continue
         print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
         for a in alns:
@@ -1336,7 +1342,7 @@ Forward or backward orientation of the aligned query sequence is respected.
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     aln_length = int(
@@ -1457,7 +1463,7 @@ def get_read_pitx_on_ref(
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
-    t, x = zip(*alignment.cigartuples)
+    t, x = zip(*alignment.cigartuples, strict=True)
     x = np.array(x)
     t = np.array(t)
     read_start = 0
@@ -1473,9 +1479,7 @@ def get_read_pitx_on_ref(
         if is_reverse:
             last_matching_block = np.where((t == 0) | (t == 1) | (t == 7) | (t == 8))[
                 0
-            ][
-                -1
-            ]  # maybe not with 8 (sequence mismatch)
+            ][-1]  # maybe not with 8 (sequence mismatch)
             return int(ref_end), last_matching_block, t, x
         else:
             last_matching_block = 0
@@ -1489,9 +1493,7 @@ def get_read_pitx_on_ref(
         else:
             last_matching_block = np.where((t == 0) | (t == 1) | (t == 7) | (t == 8))[
                 0
-            ][
-                -1
-            ]  # maybe not with 8 (sequence mismatch
+            ][-1]  # maybe not with 8 (sequence mismatch
             return int(ref_end), last_matching_block, t, x
     x_read_starts, x_read_ends, x_ref_starts, x_ref_ends = get_starts_ends(
         t=t, x=x, is_reverse=is_reverse, reference_start=ref_start
@@ -1592,7 +1594,7 @@ def get_interval_on_consensus_in_region(
 
 def query_start_end_on_read(aln: pysam.AlignedSegment) -> typing.Tuple[int, int]:
     """This function returns the position of the start and end of the query alignment on the read, following the alignment orientation."""
-    t, x = list(zip(*aln.cigartuples))
+    t, x = list(zip(*aln.cigartuples, strict=True))
     t = np.array(t)
     x = np.array(x)
     s = int(x[0]) if t[0] in (4, 5) else int(0)
@@ -1606,7 +1608,7 @@ def query_start_end_on_read(aln: pysam.AlignedSegment) -> typing.Tuple[int, int]
 
 def query_total_length(aln: pysam.AlignedSegment) -> int:
     """This function returns the total length of the query alignment on the read."""
-    t, x = list(zip(*aln.cigartuples))
+    t, x = list(zip(*aln.cigartuples, strict=True))
     t = np.array(t)
     x = np.array(x)
     return int(
@@ -1628,9 +1630,9 @@ def compute_letter_dict(alphabet) -> dict[str, int]:
         raise ValueError("alphabet must not be empty")
     if type(alphabet) != str:
         raise ValueError("alphabet must be a string")
-    d = {c: i for i, c in enumerate(sorted(list(set(map(str.upper, alphabet)))))}
+    d = {c: i for i, c in enumerate(sorted(set(map(str.upper, alphabet))))}
     d.setdefault("N", len(d))
-    return {c: i for i, c in enumerate(sorted(list(set(map(str.upper, alphabet)))))}
+    return {c: i for i, c in enumerate(sorted(set(map(str.upper, alphabet))))}
 
 
 def get_hash_of_kmer(kmer: str, letter_dict: dict) -> int:
@@ -1639,17 +1641,15 @@ def get_hash_of_kmer(kmer: str, letter_dict: dict) -> int:
     n_letters = len(letter_dict)
     k = len(kmer)
     hash_a = sum(
-        [
-            letter_dict.get(kmer[i], len(letter_dict)) * n_letters ** (k - i - 1)
-            for i in range(k)
-        ]
+        letter_dict.get(kmer[i], len(letter_dict)) * n_letters ** (k - i - 1)
+        for i in range(k)
     )
     # kmer_rc = str(Seq(kmer).reverse_complement())
     # hash_b = sum([letter_dict.get(kmer_rc[i],len(letter_dict)) * n_letters**(k-i-1) for i in range(k)])
     return hash_a  # min(hash_a,hash_b)
 
 
-## BEWARE: only computes positive kmers, no rev comp respected
+# BEWARE: only computes positive kmers, no rev comp respected
 def rolling_hashes(string: str, letter_dict: dict, k: int) -> list[int]:
     if len(string) < k:
         return []
@@ -1672,7 +1672,7 @@ def rolling_hashes(string: str, letter_dict: dict, k: int) -> list[int]:
 def kmer_counter_from_string(string: str, letter_dict: dict, k: int) -> Counter:
     hashes_a = rolling_hashes(string, letter_dict, k)
     hashes_b = rolling_hashes(str(Seq(string).complement()), letter_dict, k)
-    hashes = [min(a, b) for a, b in zip(hashes_a, hashes_b)]
+    hashes = [min(a, b) for a, b in zip(hashes_a, hashes_b, strict=True)]
     return Counter(hashes)
 
 
@@ -1699,21 +1699,21 @@ def kmer_sketch_from_strings(
     )
     # filter the merged counter dict
     sum_letters = sum(map(len, strings))
-    return set(
-        [
-            k
-            for k, v in summed_counter_dict.items()
-            if v >= min_abs and v >= min_rel * sum_letters
-        ]
-    )
+    return {
+        k
+        for k, v in summed_counter_dict.items()
+        if v >= min_abs and v >= min_rel * sum_letters
+    }
 
 
 def kmer_similarity(
     string_a: str,
     string_b: str,
-    letter_dict: dict = {"A": 0, "C": 1, "G": 2, "T": 3},
+    letter_dict: dict = None,
     k: int = 9,
 ) -> float:
+    if letter_dict is None:
+        letter_dict = {"A": 0, "C": 1, "G": 2, "T": 3}
     a: dict[int, int] = dict(
         kmer_counter_from_string(string=string_a.upper(), letter_dict=letter_dict, k=k)
     )
@@ -1737,10 +1737,12 @@ def kmer_similarity(
 def kmer_similarity_of_groups(
     group_a: list[str],
     group_b: list[str],
-    letter_dict: dict = {"A": 0, "C": 1, "G": 2, "T": 3},
+    letter_dict: dict = None,
     k: int = 9,
 ) -> float:
     # construct kmer counter dicts for each group and combine them. Combining them means is summing their values
+    if letter_dict is None:
+        letter_dict = {"A": 0, "C": 1, "G": 2, "T": 3}
     combined_counter_a = Counter()
     for seq in group_a:
         assert isinstance(seq, str), f"seq {seq} is not a string"
@@ -1864,9 +1866,9 @@ def get_read_alignment_intervals_in_region(
 ) -> dict[str, tuple[int, int, int, int]]:
     # check if all elements in alignments are of type pysam.AlignedSegment
     for aln in alignments:
-        assert isinstance(
-            aln, pysam.AlignedSegment
-        ), f"aln {aln} is not a pysam.AlignedSegment"
+        assert isinstance(aln, pysam.AlignedSegment), (
+            f"aln {aln} is not a pysam.AlignedSegment"
+        )
     dict_intervals = {}
     for aln in alignments:
         cr_start, cr_end = region_start, regions_end
@@ -1883,9 +1885,12 @@ def get_read_alignment_intervals_in_region(
         if read_start is not None and read_end is not None and read_end > read_start:
             if aln.query_name not in dict_intervals:
                 dict_intervals[aln.query_name] = []
-            dict_intervals[aln.query_name].append(
-                (read_start, read_end, ref_start, ref_end)
-            )
+            dict_intervals[aln.query_name].append((
+                read_start,
+                read_end,
+                ref_start,
+                ref_end,
+            ))
             # dict_intervals[read_aug_name].append((min(read_start,read_end),max(read_start,read_end),min(ref_start,ref_end),max(ref_start,ref_end)))
     return dict_intervals
 
@@ -1898,43 +1903,6 @@ def cut_pysam_alignment_to_region(
     if aln.reference_start > end or aln.reference_end < start:
         raise ValueError("alignment does not overlap with region")
     # shorten the cigar string
-
-
-# cut alignments given a single region
-def cut_alignments(
-    alignments: list[pysam.AlignedSegment], region: tuple[str, int, int]
-) -> list[pysam.AlignedSegment]:
-    """cuts alignments such that they seem to come from a read with the max extents of the region"""
-    """As a result, all alignments start and end within the region."""
-    chr, start, end = region
-    # verify that all alignments are on the same chromosome
-    assert all(
-        [a.reference_name == chr for a in alignments]
-    ), "all alignments must be on the same chromosome"
-    cut_alns: list[pysam.AlignedSegment] = []
-    for alignment in alignments:
-        # find the positions on the ref on the read
-        start_final_pos, start_block, start_t, start_x = get_ref_pitx_on_read(
-            alignment=alignment,
-            position=region[1],
-            direction=Direction.BOTH,
-            buffer_clipped_length=0,
-        )
-        end_final_pos, end_block, end_t, end_x = get_ref_pitx_on_read(
-            alignment=alignment,
-            position=region[2],
-            direction=Direction.BOTH,
-            buffer_clipped_length=0,
-        )
-        # find the positions of the read on the reference
-        ref_start, ref_start_block, ref_start_t, ref_start_x = get_read_pitx_on_ref(
-            alignment=alignment, position=start_final_pos, direction=Direction.BOTH
-        )
-        ref_end, ref_end_block, ref_end_t, ref_end_x = get_read_pitx_on_ref(
-            alignment=alignment, position=end_final_pos, direction=Direction.BOTH
-        )
-        # cut the cigar string. it should be cut in the ref_start_block and ref_end_block
-        # but what is the exact offset? i.e. the match block would need to be changed.
 
 
 def cigartuples_to_cigarstring(cigartuples: list[tuple[int, int]]) -> str:
@@ -2106,8 +2074,8 @@ def get_all_table_metadata(path_database: str) -> dict[str, str]:
         # Check if metadata table exists
         cursor.execute(
             """
-            SELECT name 
-            FROM sqlite_master 
+            SELECT name
+            FROM sqlite_master
             WHERE type='table' AND name=?;
         """,
             (metadata_table,),
@@ -2125,7 +2093,7 @@ def get_all_table_metadata(path_database: str) -> dict[str, str]:
             FROM {metadata_table}
         """
         )
-        return {k: v for k, v in cursor.fetchall()}
+        return dict(cursor.fetchall())
 
 
 # =============================================================================

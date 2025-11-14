@@ -35,19 +35,17 @@ def serialize_crs_container(crs_container: dict) -> str:
     #     raise(ValueError(f"Could not serialize connecting_reads: {crs_container['connecting_reads']}"))
 
     # each cr can be serialized
-    return json.dumps(
-        {
-            "crs": [cr.unstructure() for cr in crs_container["crs"]],
-            "connecting_reads": crs_container["connecting_reads"],
-        }
-    )
+    return json.dumps({
+        "crs": [cr.unstructure() for cr in crs_container["crs"]],
+        "connecting_reads": crs_container["connecting_reads"],
+    })
 
 
 def create_containers_db(path_db: Path, timeout: float):
     assert timeout > 0.0, f"timeout must be > 0.0. It is {timeout}"
-    assert (
-        type(path_db) == PosixPath or type(path_db) == str
-    ), f"path_db must be a Path or str. It is {type(path_db)}"
+    assert type(path_db) == PosixPath or type(path_db) == str, (
+        f"path_db must be a Path or str. It is {type(path_db)}"
+    )
 
     if path_db.exists():
         log.warning(f"Database {path_db} exists. Overwriting it.")
@@ -58,21 +56,21 @@ def create_containers_db(path_db: Path, timeout: float):
         """CREATE TABLE IF NOT EXISTS containers
         (crID INTEGER PRIMARY KEY, data TEXT)"""
     )
-    conn.execute(f"pragma busy_timeout={str(int(timeout*1000))}")
+    conn.execute(f"pragma busy_timeout={str(int(timeout * 1000))}")
     conn.commit()
     conn.close()
 
 
 def write_containers_to_db(path_db: Path, crs_containers: list[dict[str, object]]):
-    assert (
-        type(path_db) == PosixPath or type(path_db) == str
-    ), f"path_db must be a Path or str. It is {type(path_db)}"
+    assert type(path_db) == PosixPath or type(path_db) == str, (
+        f"path_db must be a Path or str. It is {type(path_db)}"
+    )
     assert path_db.exists(), f"Database {path_db} does not exist"
     assert path_db.is_file(), f"Database {path_db} is not a file"
     assert type(crs_containers) == list, "crs_containers is not a list"
-    assert all(
-        [type(crs_container) == dict for crs_container in crs_containers]
-    ), "crs_containers is not a list of dicts"
+    assert all(type(crs_container) == dict for crs_container in crs_containers), (
+        "crs_containers is not a list of dicts"
+    )
 
     conn = sqlite3.connect(path_db)
     c = conn.cursor()
@@ -132,10 +130,10 @@ def get_crs_containers(
     }
     # all keys (crID tuples) in dict_connections_filtered are connected crIDs.
     # flat set of all connected crIDs:
-    set_connected_crIDs: set[int] = set(
-        [int(crID) for crIDs in dict_connections_filtered.keys() for crID in crIDs]
-    )
-    set_singleton_crIDs: set[int] = set(list(crs_dict.keys())) - set_connected_crIDs
+    set_connected_crIDs: set[int] = {
+        int(crID) for crIDs in dict_connections_filtered.keys() for crID in crIDs
+    }
+    set_singleton_crIDs: set[int] = set(crs_dict.keys()) - set_connected_crIDs
 
     # create connected components
     UF = datastructures.UnionFind(sorted(set_connected_crIDs))
@@ -147,13 +145,15 @@ def get_crs_containers(
 
     crs_containers: list[dict[str, object]] = []
     for crID in set_singleton_crIDs:
-        crs_containers.append(
-            {"crID": crID, "crs": [crs_dict[crID]], "connecting_reads": dict()}
-        )
+        crs_containers.append({
+            "crID": crID,
+            "crs": [crs_dict[crID]],
+            "connecting_reads": {},
+        })
 
     for cc in CC:
         # find the connecting reads. They need to be in dict_connections_filtered
-        connecting_reads: dict[str, list[int]] = dict()
+        connecting_reads: dict[str, list[int]] = {}
         for crIDa, crIDb in combinations(cc, 2):
             if (crIDa, crIDb) in dict_connections_filtered:
                 for readname in dict_connections_filtered[(crIDa, crIDb)]:
@@ -165,13 +165,11 @@ def get_crs_containers(
         for readname in connecting_reads.keys():
             connecting_reads[readname] = list(set(connecting_reads[readname]))
         crID_representative = min(cc)
-        crs_containers.append(
-            {
-                "crID": crID_representative,
-                "crs": [crs_dict[crID] for crID in cc],
-                "connecting_reads": connecting_reads,
-            }
-        )
+        crs_containers.append({
+            "crID": crID_representative,
+            "crs": [crs_dict[crID] for crID in cc],
+            "connecting_reads": connecting_reads,
+        })
 
     return crs_containers
 
@@ -183,16 +181,16 @@ def crs_containers_QC(
         raise ValueError(f"path_histogram must end with .png. It is {path_histogram}")
     # validate crs_containers
     assert type(crs_containers) == list, "crs_containers is not a list"
-    assert all(
-        [type(crs_container) == dict for crs_container in crs_containers]
-    ), "crs_containers is not a list of dicts"
+    assert all(type(crs_container) == dict for crs_container in crs_containers), (
+        "crs_containers is not a list of dicts"
+    )
     # check if all crs_containers have the keys 'crID', 'crs' and 'connecting_reads'
-    assert all(
-        ["crs" in crs_container for crs_container in crs_containers]
-    ), "crs_containers does not contain the key 'crs'"
+    assert all("crs" in crs_container for crs_container in crs_containers), (
+        "crs_containers does not contain the key 'crs'"
+    )
 
     # create a histogram of the number of crs per crs container
-    data = [len(cr["crs"]) for cr in crs_containers]
+    _data = [len(cr["crs"]) for cr in crs_containers]  # FIXME: unused?
     # import seaborn as sns
     # # # create histogram with seaborn
     # sns.histplot(data,bins=range(1,max(data)+1),discrete=True)

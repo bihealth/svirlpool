@@ -55,7 +55,7 @@ def write_consensus_sequences(
             records_written = 0
             batch = []
 
-            for consensus_id, consensus_data in tqdm(
+            for _consensus_id, consensus_data in tqdm(
                 svirltile.get_consensus_sequences(db_path, consensus_ids=consensus_ids),
                 total=total,
                 desc="Writing consensus sequences",

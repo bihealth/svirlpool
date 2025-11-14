@@ -38,8 +38,8 @@ def filter_signaldepths(
             if chrom not in data_dict[sampleID]:
                 data_dict[sampleID][chrom] = []
             data_dict[sampleID][chrom].append(depth)
-        except:
-            raise ValueError(f"Error in line: {line}")
+        except Exception as e:
+            raise ValueError(f"Error in line: {line}\n{e}")
     # now calc the stats from the data_dict
     for sampleID in data_dict.keys():
         for chrom in data_dict[sampleID].keys():
@@ -73,9 +73,9 @@ def filter_signaldepths(
             else:
                 counter_filtered += 1
     if counter_total == 0:
-        raise ("No signals found in signaldepth file.")
+        raise ValueError("No signals found in signaldepth file.")
     log.info(
-        f"Filtered {counter_filtered} signals from {counter_total} total signals. Ratio: {counter_filtered/counter_total}"
+        f"Filtered {counter_filtered} signals from {counter_total} total signals. Ratio: {counter_filtered / counter_total}"
     )
 
 

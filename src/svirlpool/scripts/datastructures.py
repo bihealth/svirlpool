@@ -9,7 +9,7 @@ class UnionFind:
         #: Size of the set (_sz[_id[v]] is the size of the set that contains v)
         self._sz = [1] * len(vertex_names)
         #: Node id to name mapping
-        self.id_to_name = {i: v for i, v in enumerate(vertex_names)}
+        self.id_to_name = dict(enumerate(vertex_names))
 
     def name_of_id(self, i):
         return self.id_to_name[self.find(i)]
@@ -46,11 +46,15 @@ class UnionFind:
         self, IDs=None, allow_singletons: bool = False
     ) -> list[set[int]]:
         """computes lists of sets of connected components"""
-        ccomponents = dict()
-        for id in IDs if IDs else self._name_to_id.keys():
-            union = self.name_of_id(self.find_by_name(id))
+        ccomponents = {}
+        for id_ in IDs if IDs else self._name_to_id.keys():
+            union = self.name_of_id(self.find_by_name(id_))
             if union not in ccomponents:
-                ccomponents[union] = {id}
+                ccomponents[union] = {id_}
             else:
-                ccomponents[union].add(id)
-        return [l for l in list(ccomponents.values()) if len(l) > 1 or allow_singletons]
+                ccomponents[union].add(id_)
+        return [
+            component
+            for component in list(ccomponents.values())
+            if len(component) > 1 or allow_singletons
+        ]

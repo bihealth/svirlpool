@@ -58,16 +58,14 @@ class SVsignal:
         )
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.ref_start,
-                self.ref_end,
-                self.read_start,
-                self.read_end,
-                self.size,
-                self.sv_type,
-            )
-        )
+        return hash((
+            self.ref_start,
+            self.ref_end,
+            self.read_start,
+            self.read_end,
+            self.size,
+            self.sv_type,
+        ))
 
 
 @attrs.define
@@ -134,7 +132,7 @@ class ReadAlignmentFragment:
         # check if any SV signal is not equal
         if len(self.SV_signals) != len(__value.SV_signals):
             return False
-        if not all([s in __value.SV_signals for s in self.SV_signals]):
+        if not all(s in __value.SV_signals for s in self.SV_signals):
             return False
         return (
             self.samplename == __value.samplename
@@ -238,8 +236,8 @@ class CandidateRegion:
             raise ValueError("Cannot create CandidateRegion from empty sv_signals list")
         chr = sv_signals[0].chr
         referenceID = sv_signals[0].chrID
-        referenceStart = max(0, min([s.ref_start for s in sv_signals]) - buffer)
-        referenceEnd = max([s.ref_end for s in sv_signals]) + buffer
+        referenceStart = max(0, min(s.ref_start for s in sv_signals) - buffer)
+        referenceEnd = max(s.ref_end for s in sv_signals) + buffer
         return cls(
             crID=crID,
             chr=chr,
@@ -259,7 +257,7 @@ class CandidateRegion:
         return f"{self.chr}:{self.referenceStart}-{self.referenceEnd}"
 
     def get_read_names(self) -> set[str]:
-        return set([s.readname for s in self.sv_signals])
+        return {s.readname for s in self.sv_signals}
 
     def get_ReadAlignmentSignals(self) -> list[ReadAlignmentSignals]:
         # construct a ReadAlignmentSignals object from the sv_signals list
@@ -370,15 +368,13 @@ class Alignment:
         cattrs.unstructure(self)
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.readname,
-                self.reference_name,
-                self.reference_ID,
-                self.samplename,
-                self.samdict["cigar"],
-            )
-        )
+        return hash((
+            self.readname,
+            self.reference_name,
+            self.reference_ID,
+            self.samplename,
+            self.samdict["cigar"],
+        ))
 
 
 # given this object and a reference, the original query sequence can be reconstructed

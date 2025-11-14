@@ -56,7 +56,7 @@ class SVcomposite:
         if len(svPatterns) == 1:
             return cls(sv_type=svPatterns[0].get_sv_type(), svPatterns=svPatterns)
         sv_type = svPatterns[0].get_sv_type()
-        all_sv_types = set(sv.get_sv_type() for sv in svPatterns)
+        all_sv_types = {sv.get_sv_type() for sv in svPatterns}
         if all_sv_types == {
             "INS",
             "DEL",
@@ -99,7 +99,7 @@ class SVcomposite:
         sizes = [sv.get_size() for sv in self.svPatterns]
         weights = [len(sv.get_supporting_reads()) for sv in self.svPatterns]
         weighted_mean_size = sum(
-            size * weight for size, weight in zip(sizes, weights)
+            size * weight for size, weight in zip(sizes, weights, strict=True)
         ) / sum(weights)
         return int(round(weighted_mean_size))
 
@@ -290,7 +290,7 @@ class SVcomposite:
             intervaltrees[region[0]].addi(
                 region[1], region[2], {1}
             )  # add 1 as it is the identifier for the second SVcomposite
-        for chr, tree in intervaltrees.items():
+        for _chr, tree in intervaltrees.items():
             tree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
             # then iterate all merged intervals in the tree. If data is {0,1}, then there is an overlap
             for interval in tree:

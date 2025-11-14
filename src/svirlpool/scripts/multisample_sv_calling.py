@@ -1,15 +1,24 @@
 # this script reads the svPrimitives of each provided sample's file and calls SVs from it
 # %%
 
+import argparse
 import logging
+import os
 import pickle
 import subprocess
 import tempfile
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 from itertools import groupby
 from pathlib import Path
+from shlex import split
 
+import attrs
 import numpy as np
 from intervaltree import Interval, IntervalTree
+from pandas import read_csv
+from scipy.stats import binom
 from tqdm import tqdm
 
 from . import SVpatterns, svirltile
@@ -207,7 +216,7 @@ def svPatterns_to_horizontally_merged_svComposites(
         _svPatterns, key=lambda x: (x.consensusID, get_sv_group_key(x.get_sv_type()))
     )
     # loop svPatterns of each group and connect them if they share at least one repeatID
-    for (consensusID, sv_type), group in groups:
+    for (_consensusID, _sv_type), group in groups:
         group = list(group)
         if len(group) == 1:
             result.append(SVcomposite.from_SVpatterns(group))
@@ -430,7 +439,6 @@ def can_merge_svComposites_deletions(
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
-
     # throroughly check the input svComposites
     # 1) test if they have svPatterns
     if (
@@ -1092,10 +1100,6 @@ def generate_svComposites_from_dbs(
     return svComposites
 
 
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
-
-
 def merge_svComposites_for_chromosome(
     chr_name: str,
     svComposites: list[SVcomposite],
@@ -1268,8 +1272,6 @@ def merge_svComposites(
 
 # %%
 
-import attrs
-
 
 @attrs.define
 class Genotype:
@@ -1394,20 +1396,18 @@ class SVcall:
             ref_str = refbase + ref_seq
             alt_str = refbase + alt_seq
 
-        return "\t".join(
-            [
-                str(self.chrname),
-                str(self.start + ONE_BASED),
-                str(vcfID),  # ID
-                ref_str,  # REF
-                alt_str,  # ALT
-                str(60),  # QUAL
-                "PASS" if self.passing else "LowQual",  # FILTER
-                info_line,
-                FORMAT_field,
-                *format_line,
-            ]
-        )
+        return "\t".join([
+            str(self.chrname),
+            str(self.start + ONE_BASED),
+            str(vcfID),  # ID
+            ref_str,  # REF
+            alt_str,  # ALT
+            str(60),  # QUAL
+            "PASS" if self.passing else "LowQual",  # FILTER
+            info_line,
+            FORMAT_field,
+            *format_line,
+        ])
 
 
 def SVcalls_from_SVcomposite(
@@ -1432,14 +1432,9 @@ def SVcalls_from_SVcomposite(
         )
         svlen: int = abs(svComposite.get_size())
         svtype: str = svComposite.sv_type
-        consensusIDs: list[str] = list(
-            set(
-                [
-                    svPattern.samplenamed_consensusID
-                    for svPattern in svComposite.svPatterns
-                ]
-            )
-        )
+        consensusIDs: list[str] = list({
+            svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
+        })
         # TODO: add precise / imprecise flag: precise: all regions are near; imprecise: all regions are farther than X bp apart
         # add genotypes: for each samplename collect supporting reads and max total coverage (from genotype measurements)
         genotypes: dict[str, Genotype] = {}
@@ -1614,7 +1609,9 @@ def get_svComposite_interval_on_reference(
         weighted_regions.append((region, weight))
     # pick the winning region
     if find_leftmost_reference_position:
-        return min(weighted_regions, key=lambda x: x[1])[
+        return min(
+            weighted_regions, key=lambda x: x[1]
+        )[
             0
         ]  # reports the leftmost SVpattern, instead of the one with most supporting reads * size. This might be better aligned with the giab SV benchmark, but should be discussed in the paper.
     else:
@@ -1622,10 +1619,6 @@ def get_svComposite_interval_on_reference(
 
 
 # %% VCF file stuff
-
-from datetime import datetime
-
-from pandas import read_csv
 
 
 def generate_header(
@@ -1651,7 +1644,7 @@ def generate_header(
     # add contigs to header
     for i in range(ref_index.shape[0]):
         header.append(
-            f"##contig=<ID={str(ref_index.iloc[i,0])},length={ref_index.iloc[i,1]}>"
+            f"##contig=<ID={str(ref_index.iloc[i, 0])},length={ref_index.iloc[i, 1]}>"
         )
     header.append(
         '##FILTER=<ID=LowQual,Description="Poor quality and insufficient number of informative reads.">'
@@ -1714,9 +1707,6 @@ def generate_header(
         + "\t".join(samplenames)
     )
     return header
-
-
-from scipy.stats import binom
 
 
 def genotype_likelihood(
@@ -1884,9 +1874,6 @@ def reference_bases_by_merged_svComposites(
     return dict_reference_bases
 
 
-from shlex import split
-
-
 def write_sequences_to_fasta(
     svCalls: list[SVcall], output_path: Path, symbolic_threshold: int
 ) -> None:
@@ -1923,7 +1910,6 @@ def write_svCalls_to_vcf(
     output: Path,
     symbolic_threshold: int,
 ) -> None:
-
     # Determine FASTA output path
     if str(output).endswith(".vcf.gz"):
         fasta_path = Path(str(output).replace(".vcf.gz", ".variants.fasta"))
@@ -1982,9 +1968,6 @@ def write_svCalls_to_vcf(
 
 # %%
 
-import argparse
-import os
-
 
 def check_if_all_svtypes_are_supported(sv_types: list[str]) -> None:
     unsupported_sv_types = []
@@ -2013,7 +1996,9 @@ def load_copynumber_tracks_from_svirltiles(
     from .copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
-    for i, (path, samplename) in enumerate(zip(svirltile_paths, samplenames)):
+    for _i, (path, samplename) in enumerate(
+        zip(svirltile_paths, samplenames, strict=True)
+    ):
         try:
             cn_tracks[samplename] = load_copynumber_trees_from_db(Path(path))
             log.info(f"Loaded copy number tracks for sample {samplename} from {path}")
@@ -2171,7 +2156,7 @@ def multisample_sv_calling(
         for svComposite in merged
         if abs(svComposite.get_size()) >= min_sv_size
     ]
-    ## if tmp dir is provided, dump all merged svComposites to a pickle file
+    # if tmp dir is provided, dump all merged svComposites to a pickle file
     if tmp_dir_path is not None:
         save_svComposites_to_pickle(data=merged, output_path=tmp_dir_path)
     svCalls: list[SVcall] = [

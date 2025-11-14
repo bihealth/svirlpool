@@ -21,7 +21,6 @@ def filter_rafs_sv_signals(
     threads: int = 1,
     filter_threshold: float = 1.0,
 ):
-
     log.info(f"counting deletions and insertions in {input} ...")
     counts, n_rafs, sum_bp = rafs_indel_histograms.get_indel_counts(input=input)
 
@@ -63,14 +62,12 @@ def filter_rafs_sv_signals(
                 or sv.sv_type <= 2
                 and sv.size >= min_deletion_size
             ]
-            writer.writerow(
-                [
-                    raf.reference_name,
-                    raf.reference_alignment_start,
-                    raf.reference_alignment_end,
-                    json.dumps(raf.unstructure()),
-                ]
-            )
+            writer.writerow([
+                raf.reference_name,
+                raf.reference_alignment_start,
+                raf.reference_alignment_end,
+                json.dumps(raf.unstructure()),
+            ])
 
     # compress and index bedlike
     tmp_genome = tempfile.NamedTemporaryFile(

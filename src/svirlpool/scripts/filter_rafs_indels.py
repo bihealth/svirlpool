@@ -22,22 +22,16 @@ def get_n_indels_signals(
     raf: datatypes.ReadAlignmentFragment, min_size: int, max_size: int
 ) -> int:
     return sum(
-        [
-            1
-            for sv in raf.SV_signals
-            if (
-                min_size <= sv.size <= max_size
-                and sv.sv_type < 2
-                and (
-                    raf.effective_interval[1]
-                    <= sv.ref_start
-                    <= raf.effective_interval[2]
-                    or raf.effective_interval[1]
-                    <= sv.ref_end
-                    <= raf.effective_interval[2]
-                )
+        1
+        for sv in raf.SV_signals
+        if (
+            min_size <= sv.size <= max_size
+            and sv.sv_type < 2
+            and (
+                raf.effective_interval[1] <= sv.ref_start <= raf.effective_interval[2]
+                or raf.effective_interval[1] <= sv.ref_end <= raf.effective_interval[2]
             )
-        ]
+        )
     )
 
 
@@ -83,18 +77,16 @@ def filter_rafs_by_excessive_indel_counts_per_chr(
 
     for idx, raf in enumerate(read_rafs_per_chr(input, chr)):
         # Count deletions (sv_type == 1)
-        n_deletions = sum([1 for sv in raf.SV_signals if sv.sv_type == 1])
-        rafs_data.append(
-            {
-                "chr": raf.reference_name,
-                "start": raf.effective_interval[1],
-                "end": raf.effective_interval[2],
-                "read_name": raf.read_name,
-                "n_deletions": n_deletions,
-                "raf": raf,
-                "original_index": idx,
-            }
-        )
+        n_deletions = sum(1 for sv in raf.SV_signals if sv.sv_type == 1)
+        rafs_data.append({
+            "chr": raf.reference_name,
+            "start": raf.effective_interval[1],
+            "end": raf.effective_interval[2],
+            "read_name": raf.read_name,
+            "n_deletions": n_deletions,
+            "raf": raf,
+            "original_index": idx,
+        })
 
     # Step 2: Sort by chr, start, end
     log.info(f"Sorting {len(rafs_data)} rafs for {chr}.")
@@ -141,7 +133,7 @@ def filter_rafs_by_excessive_indel_counts_per_chr(
     )
     with open(output, "w") as f:
         writer = csv.writer(f, delimiter="\t")
-        if dropped != None:
+        if dropped is not None:
             dropped_file_handle = open(dropped, "w")
             writer_dropped = csv.writer(dropped_file_handle, delimiter="\t")
 
@@ -153,13 +145,16 @@ def filter_rafs_by_excessive_indel_counts_per_chr(
 
             if i in filtered_indices:
                 if dropped:
-                    writer_dropped.writerow(
-                        [chr, start, end, json.dumps(raf.unstructure())]
-                    )
+                    writer_dropped.writerow([
+                        chr,
+                        start,
+                        end,
+                        json.dumps(raf.unstructure()),
+                    ])
             else:
                 writer.writerow([chr, start, end, json.dumps(raf.unstructure())])
 
-        if dropped != None:
+        if dropped is not None:
             dropped_file_handle.close()
 
 
@@ -285,7 +280,7 @@ def filter_rafs_by_excessive_indel_counts(
         log.warning(
             "multiplier is lower than 2.0. This will result in a lot of dropped rafs."
         )
-    keep_dropped = dropped_path != None
+    keep_dropped = dropped_path is not None
     # get chr names
     chr_names = get_chr_names(reference)
     # run filter_rafs_by_excessive_indel_counts_per_chr in parallel

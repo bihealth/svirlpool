@@ -39,10 +39,8 @@ def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> li
         return []
     # check if list is sorted
     if not all(
-        [
-            svSignals[i].ref_start <= svSignals[i + 1].ref_start
-            for i in range(len(svSignals) - 1)
-        ]
+        svSignals[i].ref_start <= svSignals[i + 1].ref_start
+        for i in range(len(svSignals) - 1)
     ):
         raise ValueError("List of SVsignals is not sorted by ref_start.")
 
@@ -64,7 +62,7 @@ def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> li
         # left is now the first signal that is in the radius
         # sum all signals sizes of the same type as midSvSignal that are in the radius
         mask[mid] = sum(
-            [s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type]
+            s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type
         )
     # filter all signals that have a mask value below min_signal_bp
     return mask
@@ -130,8 +128,8 @@ def create_raf_starts_ends_bed(
             with open(tmp_ends.name, "w") as out_ends:
                 for line in f:
                     chr, start, end, _ = line.strip().split("\t")
-                    out_starts.write(f"{chr}\t{start}\t{int(start)+1}\n")
-                    out_ends.write(f"{chr}\t{int(end)-1}\t{end}\n")
+                    out_starts.write(f"{chr}\t{start}\t{int(start) + 1}\n")
+                    out_ends.write(f"{chr}\t{int(end) - 1}\t{end}\n")
     # the ends file is not necessarily sorted. Sort it.
     if genome:
         cmd_sort = f"bedtools sort -g {str(genome)} -i {tmp_ends.name}"
@@ -246,21 +244,21 @@ and for each RAF end the closest unique upstream region and report their distanc
     # log.info(f"parsing distance from RAF start end RAF end to list..")
     starts_distances = [
         (
-            abs(int(l.strip().split("\t")[-1]))
-            if l.strip().split("\t")[-2] != "-1"
+            abs(int(line.strip().split("\t")[-1]))
+            if line.strip().split("\t")[-2] != "-1"
             else None
         )
-        for l in open(tmp_closest_starts.name, "r").readlines()
+        for line in open(tmp_closest_starts.name, "r").readlines()
     ]
     ends_distances = [
         (
-            abs(int(l.strip().split("\t")[-1]))
-            if l.strip().split("\t")[-2] != "-1"
+            abs(int(line.strip().split("\t")[-1]))
+            if line.strip().split("\t")[-2] != "-1"
             else None
         )
-        for l in open(tmp_closest_ends.name, "r").readlines()
+        for line in open(tmp_closest_ends.name, "r").readlines()
     ]
-    return list(zip(starts_distances, ends_distances))
+    return list(zip(starts_distances, ends_distances, strict=True))
 
 
 #  6) reduce each RAF effective region to start+distance_to_closest_downstream_unique_region and end-distance_to_closest_upstream_unique_region
@@ -335,7 +333,7 @@ output_rafs is sorted, bgzip compressed, and tabix indexed"""
     with open(tmp_output_starts.name, "w") as out:
         writer = csv.writer(out, delimiter="\t")
         for raf, (start_distance, _) in zip(
-            util.yield_from_raf(Path(input_rafs)), distances
+            util.yield_from_raf(Path(input_rafs)), distances, strict=True
         ):
             chr: str = str(raf.reference_name)
             start: int = int(raf.reference_alignment_start)
@@ -376,7 +374,9 @@ output_rafs is sorted, bgzip compressed, and tabix indexed"""
         if rafs_filtered_handle:
             writer_rafs_filtered = csv.writer(rafs_filtered_handle, delimiter="\t")
         for raf, (_, end_distance) in zip(
-            util.yield_from_raf(Path(tmp_output_starts_sorted.name)), distances
+            util.yield_from_raf(Path(tmp_output_starts_sorted.name)),
+            distances,
+            strict=True,
         ):
             chr: str = str(raf.reference_name)
             start: int = int(raf.reference_alignment_start)
@@ -391,9 +391,12 @@ output_rafs is sorted, bgzip compressed, and tabix indexed"""
                 counter_passed_rafs += 1
             else:
                 if writer_rafs_filtered:
-                    writer_rafs_filtered.writerow(
-                        [chr, start, end, json.dumps(raf.unstructure())]
-                    )
+                    writer_rafs_filtered.writerow([
+                        chr,
+                        start,
+                        end,
+                        json.dumps(raf.unstructure()),
+                    ])
                 counter_filtered_rafs += 1
                 continue
     # file will get sorted by alignments_to_rafs.compress_and_index_bedlike
@@ -507,7 +510,7 @@ def adjust_rafs_effective_intervals(
     rafs_dropped: Path | None = None,
 ) -> None:
     custom_tmp_dir: bool = True
-    if tmp_dir_path == None:
+    if tmp_dir_path is None:
         custom_tmp_dir = False
         tmp_dir = tempfile.TemporaryDirectory()
         tmp_dir_path = Path(tmp_dir.name)
@@ -551,6 +554,7 @@ def adjust_rafs_effective_intervals(
         zip(
             split_paths,
             [tmp_dir_path / f"split.{i}.output.bed" for i in range(threads)],
+            strict=True,
         )
     )
     jobs_args = [

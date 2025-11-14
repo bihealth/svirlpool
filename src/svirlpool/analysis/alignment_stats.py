@@ -53,7 +53,7 @@ def process_region(bam_path: Path, region: tuple[str, int, int], min_mapq: int) 
 
     # Divide region into 2Mb sub-regions
     sub_region_size = 2_000_000
-    region_length = end - start
+    _region_length = end - start  # FIXME: unused?
 
     # Process sub-regions sequentially
     for sub_start in range(start, end, sub_region_size):
@@ -175,7 +175,7 @@ def run(args):
 
     # Process each sample
     sample_results = []
-    for bam_path, sample_name in zip(bam_files, sample_names):
+    for bam_path, sample_name in zip(bam_files, sample_names, strict=True):
         result = process_sample(
             bam_path, sample_name, regions, args.min_mapq, args.threads
         )
@@ -188,24 +188,22 @@ def run(args):
         for i, label in enumerate(SIZE_BIN_LABELS):
             ins_count = result["total_insertions"].get(i, 0)
             del_count = result["total_deletions"].get(i, 0)
-            all_stats.append(
-                {
-                    "sample": result["sample_name"],
-                    "size_bin": label,
-                    "insertions": ins_count,
-                    "deletions": del_count,
-                    "insertions_per_mb": (
-                        (ins_count / total_aligned_bases * 1_000_000)
-                        if total_aligned_bases > 0
-                        else 0
-                    ),
-                    "deletions_per_mb": (
-                        (del_count / total_aligned_bases * 1_000_000)
-                        if total_aligned_bases > 0
-                        else 0
-                    ),
-                }
-            )
+            all_stats.append({
+                "sample": result["sample_name"],
+                "size_bin": label,
+                "insertions": ins_count,
+                "deletions": del_count,
+                "insertions_per_mb": (
+                    (ins_count / total_aligned_bases * 1_000_000)
+                    if total_aligned_bases > 0
+                    else 0
+                ),
+                "deletions_per_mb": (
+                    (del_count / total_aligned_bases * 1_000_000)
+                    if total_aligned_bases > 0
+                    else 0
+                ),
+            })
 
     stats_df = pd.DataFrame(all_stats)
     stats_df.to_csv(args.output, sep="\t", index=False)
@@ -260,7 +258,7 @@ def run(args):
                 fontsize=9,
                 verticalalignment="top",
                 horizontalalignment="right",
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
             )
 
         # Plot 2: Indel counts by size bin

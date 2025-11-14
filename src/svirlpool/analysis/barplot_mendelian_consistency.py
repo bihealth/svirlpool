@@ -47,7 +47,7 @@ def create_plot(df: pd.DataFrame, title: str) -> go.Figure:
                 ],  # Format to 1 decimal place
                 textposition="inside",  # Position text inside the bar
                 textangle=0,  # Prevent rotation
-                textfont=dict(color="white", size=11),  # Fixed font size
+                textfont={"color": "white", "size": 11},  # Fixed font size
                 insidetextanchor="middle",  # Anchor text in the middle
                 constraintext="none",  # Don't constrain text size
                 legendgroup=status,
@@ -59,15 +59,15 @@ def create_plot(df: pd.DataFrame, title: str) -> go.Figure:
     fig.update_layout(
         title=title,
         barmode="stack",  # Stacked bars
-        yaxis=dict(title="Percentage (%)", range=[0, 105]),
-        xaxis=dict(title="File Group - Sample", tickangle=-45),
-        legend=dict(
-            x=1.02,
-            y=1,
-            xanchor="left",
-            yanchor="top",
-            font=dict(size=12, family="Arial", color="black"),
-        ),
+        yaxis={"title": "Percentage (%)", "range": [0, 105]},
+        xaxis={"title": "File Group - Sample", "tickangle": -45},
+        legend={
+            "x": 1.02,
+            "y": 1,
+            "xanchor": "left",
+            "yanchor": "top",
+            "font": {"size": 12, "family": "Arial", "color": "black"},
+        },
     )
     return fig
 
@@ -150,7 +150,7 @@ def plot_mendelian(
         names = [input_file.stem for input_file in inputs]
 
     all_dfs = []
-    for input_file, group_name in zip(inputs, names):
+    for input_file, group_name in zip(inputs, names, strict=True):
         df = pd.read_csv(input_file, sep="\t")
 
         # Keep only required columns and ignore others

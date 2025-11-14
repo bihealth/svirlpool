@@ -7,9 +7,9 @@ import numpy as np
 from intervaltree import IntervalTree
 from tqdm import tqdm
 
-log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 from . import rafs_to_coverage
+
+log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def load_reference_data(path_db: Path | str) -> np.ndarray:
@@ -31,11 +31,16 @@ def construct_interval_trees(
         data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)
         tree = IntervalTree()
         tree = IntervalTree.from_tuples(
-            zip(data_chr_intervals[:, 0], data_chr_intervals[:, 1], data_chr_readnames)
+            zip(
+                data_chr_intervals[:, 0],
+                data_chr_intervals[:, 1],
+                data_chr_readnames,
+                strict=True,
+            )
         )
         intervall_trees[chr] = tree
         all_positions[chr] = sorted(
-            list(set(data_chr_intervals[:, 0]) | set(data_chr_intervals[:, 1]))
+            set(data_chr_intervals[:, 0]) | set(data_chr_intervals[:, 1])
         )
     return intervall_trees, all_positions
 

@@ -1,19 +1,19 @@
 import logging
+import multiprocessing as mp
 import time
 from datetime import datetime
+from typing import Iterator
 
 import attrs
 import cattrs
 from pysam import AlignedSegment
 from tqdm import tqdm
 
-log = logging.getLogger(__name__)
-
-from typing import Iterator
-
 from . import consensus_class, datatypes, genotyping
 from .minimizer_matching import MinimizerIndex
 from .util import Direction, get_read_position_on_ref
+
+log = logging.getLogger(__name__)
 
 
 @attrs.define
@@ -42,9 +42,9 @@ class SVprimitive(datatypes.MergedSVSignal):  # can be ins,del,bndl,bndr
         None  # samplename: GenotypeMeasurement
     )
     adjacent_bnd: None | Adjacency = None
-    similar_sequence_intervals_on_consensus: list[list[int, int]] = (
-        []
-    )  # in core sequence coords
+    similar_sequence_intervals_on_consensus: list[
+        list[int, int]
+    ] = []  # in core sequence coords
 
     @classmethod
     def from_merged_sv_signal(
@@ -131,7 +131,6 @@ def add_adjacencies_to_svPrimitives(
             and A.sv_type >= 3
             and B.sv_type >= 3
         ):
-
             tp_str_A = ""
             tp_str_B = ""
             # if A and B are BNDs, add the adjacency to both
@@ -177,7 +176,6 @@ def add_genotypeMeasurements_to_SVprimitives(
     core_interval_start: int,
 ) -> None:
     for svp in svps:
-
         start_on_consensus = get_read_position_on_ref(
             position=svp.read_start, alignment=pysam_aln, direction=Direction.LEFT
         )
@@ -185,7 +183,7 @@ def add_genotypeMeasurements_to_SVprimitives(
         # find all reads that support this SV signal. This means to find all overlapping intervals_cutread_alignments
         supporting_reads_start = []
         svp_start = svp.read_start - core_interval_start
-        for start, end, readname, forward in intervals_cutread_alignments:
+        for start, end, readname, _forward in intervals_cutread_alignments:
             start, end = (end, start) if start > end else (start, end)
             if start <= svp_start <= end:
                 supporting_reads_start.append(readname)
@@ -205,7 +203,7 @@ def add_genotypeMeasurements_to_SVprimitives(
         )
         supporting_reads_end = []
         svp_end = svp.read_end - core_interval_start
-        for start, end, readname, forward in intervals_cutread_alignments:
+        for start, end, readname, _forward in intervals_cutread_alignments:
             if start <= svp_end <= end:
                 supporting_reads_end.append(readname)
         svp.genotypeMeasurement = genotyping.GenotypeMeasurement(
@@ -362,14 +360,12 @@ def generate_SVprimitives(
                         consensus.consensus_sequence
                     )
                     debug_performance__sum_svPrimitive_sizes = sum(
-                        [
-                            (
-                                svp.size
-                                if svp.sv_type == 0
-                                else (50 if svp.sv_type == 1 else 200)
-                            )
-                            for svp in svp_cache
-                        ]
+                        (
+                            svp.size
+                            if svp.sv_type == 0
+                            else (50 if svp.sv_type == 1 else 200)
+                        )
+                        for svp in svp_cache
                     )
                     debug_performance__num_svPrimitives = len(svp_cache)
 
@@ -421,9 +417,6 @@ def generate_SVprimitives(
             # add adjacencies to the cached SVprimitives
             result.extend(add_adjacencies_to_svPrimitives(cache))
     return result
-
-
-import multiprocessing as mp
 
 
 def _process_consensus_batch_serialized(
@@ -639,14 +632,12 @@ def process_consensus_batch(
                     consensus.consensus_sequence
                 )
                 debug_performance__sum_svPrimitive_sizes = sum(
-                    [
-                        (
-                            svp.size
-                            if svp.sv_type == 0
-                            else (50 if svp.sv_type == 1 else 200)
-                        )
-                        for svp in svp_cache
-                    ]
+                    (
+                        svp.size
+                        if svp.sv_type == 0
+                        else (50 if svp.sv_type == 1 else 200)
+                    )
+                    for svp in svp_cache
                 )
                 debug_performance__num_svPrimitives = len(svp_cache)
 

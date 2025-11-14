@@ -186,7 +186,7 @@ def pseudo_convolve(
             if k > last_warned_index:
                 last_warned_index = k
                 log.info(
-                    f"High-density region {str(j)} to {str(k)} ({str(np_signals[j,:4])} to {str(np_signals[k-1,:4])}) with {str(region_size)} signals. Assigned score {high_density_score}."
+                    f"High-density region {str(j)} to {str(k)} ({str(np_signals[j, :4])} to {str(np_signals[k - 1, :4])}) with {str(region_size)} signals. Assigned score {high_density_score}."
                 )
             # Skip to end of this region
             i = k
@@ -198,10 +198,10 @@ def pseudo_convolve(
             if k > last_warned_index:
                 last_warned_index = k
                 log.warning(
-                    f"region {str(j)} to {str(k)} ({str(np_signals[j,:4])} to {str(np_signals[k-1,:4])}) is very large ({str(region_size)}). (>{str(warning_collapsed_region_size)})."
+                    f"region {str(j)} to {str(k)} ({str(np_signals[j, :4])} to {str(np_signals[k - 1, :4])}) is very large ({str(region_size)}). (>{str(warning_collapsed_region_size)})."
                 )
 
-        for l in range(j, k):
+        for l in range(j, k):  # noqa: E741
             if l == i:
                 continue
             next_val = delta(subj=np_signals[i], obj=np_signals[l], flatness=flatness)
@@ -253,7 +253,7 @@ def parse_signaldepths_to_npsignals(input: Path) -> npt.NDArray[np.int32]:
     # compute hash value of each sampleID
     # readHashes = pd.read_csv(tmp_signals_indexed,sep='\t',usecols=[7],header=None,dtype=str).iloc[:,0].apply(lambda x: hash(x))
     # add readHashes to np_signals
-    readHashes = np.array(list(map(lambda x: readnames_dict[x], readnames)))
+    readHashes = np.array([readnames_dict[x] for x in readnames])
     return np.hstack((np_signals, np.array(readHashes).reshape(-1, 1)))
 
 
@@ -438,9 +438,9 @@ def signaldepths_to_signalstrength(
                 pool.map(process_func, jobs_args, chunksize=1)
             )
     else:
-        values_signal = np.concatenate(
-            [pseudo_convolve(**kwargs) for kwargs in jobs_args]
-        )
+        values_signal = np.concatenate([
+            pseudo_convolve(**kwargs) for kwargs in jobs_args
+        ])
     # add values_signal to signaldepths. Open signals and to each row add the value_signal and write to output
     log.info("write output..")
     tmp_output = tempfile.NamedTemporaryFile(delete=True, suffix=".tsv")
@@ -462,24 +462,26 @@ def signaldepths_to_signalstrength(
     )
 
 
-def parse_signalstrengths_to_extendedSVsignal(l: list) -> datatypes.ExtendedSVsignal:
+def parse_signalstrengths_to_extendedSVsignal(
+    _l: list[object],
+) -> datatypes.ExtendedSVsignal:
     # 0      1          2        3        4           5         6     7         8           9        10   11        12        13
     # chrID, ref_start, ref_end, sv_type, read_start, read_end, size, readname, samplename, forward, chr, coverage, repeatID, strength
     return datatypes.ExtendedSVsignal(
-        chr=str(l[10]),
-        chrID=int(l[0]),
-        ref_start=int(l[1]),
-        ref_end=int(l[2]),
-        sv_type=int(l[3]),
-        read_start=int(l[4]),
-        read_end=int(l[5]),
-        size=int(l[6]),
-        readname=str(l[7]),
-        samplename=str(l[8]),
-        forward=int(l[9]),
-        coverage=int(l[11]) if len(l) > 11 else 0,
-        repeatID=int(l[12]) if len(l) > 12 else -1,
-        strength=float(l[13]) if len(l) > 13 else 0.0,
+        chr=str(_l[10]),
+        chrID=int(_l[0]),
+        ref_start=int(_l[1]),
+        ref_end=int(_l[2]),
+        sv_type=int(_l[3]),
+        read_start=int(_l[4]),
+        read_end=int(_l[5]),
+        size=int(_l[6]),
+        readname=str(_l[7]),
+        samplename=str(_l[8]),
+        forward=int(_l[9]),
+        coverage=int(_l[11]) if len(_l) > 11 else 0,
+        repeatID=int(_l[12]) if len(_l) > 12 else -1,
+        strength=float(_l[13]) if len(_l) > 13 else 0.0,
     )
 
 

@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import multiprocessing as mp
 import pickle
 import shlex
 import subprocess
@@ -15,10 +16,8 @@ import cattrs
 from Bio import SeqIO
 from Bio.SeqRecord import Seq, SeqRecord
 from intervaltree import IntervalTree
-from pysam import AlignedSegment, AlignmentFile
+from pysam import AlignedSegment, AlignmentFile, AlignmentHeader
 from tqdm import tqdm
-
-log = logging.getLogger(__name__)
 
 from . import (
     SVpatterns,
@@ -28,6 +27,8 @@ from . import (
     datatypes,
     util,
 )
+
+log = logging.getLogger(__name__)
 
 
 def parse_crs_container_results(
@@ -88,9 +89,9 @@ def alignments_to_consensusAlignments(
     Returns:
         dict[str,list[consensus_class.ConsensusAlignment]]: dict of ConsensusAlignment objects
     """
-    dict_results: dict[str, list[consensus_class.ConsensusAlignment]] = (
-        {}
-    )  # dict consensusID:list[ConsensusAlignment]
+    dict_results: dict[
+        str, list[consensus_class.ConsensusAlignment]
+    ] = {}  # dict consensusID:list[ConsensusAlignment]
     current_uid: int = 0
     for consensusID, alns in alignments.items():
         if consensusID not in dict_results:
@@ -137,17 +138,16 @@ def align_padded_consensus_sequences(
     tmp_dir_path: Path | None = None,
 ) -> tuple[dict[str, bytes], dict[str, tuple[int, int]]]:
     # iterate all CrsContainerResults and write the padded DNA sequences to a fasta file
-    core_sequences: dict[str, bytes] = (
-        {}
-    )  # save key = consensusID, value = sequence (compressed with pickle and simplified padding parts)
-    core_intervals: dict[str, tuple[int, int]] = (
-        {}
-    )  # save key = consensusID, value = (start,end) of the core sequence
+    core_sequences: dict[
+        str, bytes
+    ] = {}  # save key = consensusID, value = sequence (compressed with pickle and simplified padding parts)
+    core_intervals: dict[
+        str, tuple[int, int]
+    ] = {}  # save key = consensusID, value = (start,end) of the core sequence
 
     with tempfile.TemporaryDirectory(
         dir=tmp_dir_path, delete=False if tmp_dir_path else True
     ) as tmp_dir:
-
         log.debug(
             f"Writing core sequences and intervals to fasta file: {str(path_fastaout)} "
         )
@@ -242,7 +242,7 @@ def svPrimitives_to_svPatterns(
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
         return []
-    current_consensusID = SVprimitives[0].consensusID
+    _current_consensusID = SVprimitives[0].consensusID  # FIXME: unused?
 
     # Group SVprimitives by consensusID
     grouped_svprimitives = {}
@@ -253,7 +253,7 @@ def svPrimitives_to_svPatterns(
 
     # Process each group of SVprimitives
     svpatterns = []
-    for consensusID, group in grouped_svprimitives.items():
+    for _consensusID, group in grouped_svprimitives.items():
         svpatterns.extend(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
                 SVprimitives=group, max_del_size=max_del_size
@@ -337,7 +337,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 log.debug(
                     f"Size distortions for SVpattern {processed_svp.consensusID} in consensus {consensusID}: {size_distortions}"
                 )
-                if size_distortions != None and len(size_distortions) > 0:
+                if size_distortions is not None and len(size_distortions) > 0:
                     processed_svp.size_distortions = size_distortions
                 else:
                     raise ValueError(
@@ -421,7 +421,7 @@ def add_reference_sequence_to_svPatterns(
             regions_file = Path(tmp_dir) / "regions.bed"
             with open(regions_file, "w") as f:
                 for region_key, svps in regions.items():
-                    for svp in svps:
+                    for _svp in svps:  # FIXME: unused?
                         print(region_key, file=f)
             cmd_faidx = (
                 f"samtools faidx --region-file {regions_file} {reference_sequence}"
@@ -467,9 +467,6 @@ def add_reference_sequence_to_svPatterns(
 #                 start=core_start,
 #                 end=core_end)
 #             consensusAlignment.core_reference_interval = (min(traced_back_ref_start, traced_back_ref_end), max(traced_back_ref_start, traced_back_ref_end))
-
-
-import multiprocessing as mp
 
 
 def _process_alignment_batch_serialized(
@@ -677,9 +674,6 @@ def serialize_pysam_AlignedSegment(
     return {"sam": samdict, "header": headerdict}
 
 
-from pysam import AlignmentHeader
-
-
 def deserialize_pysam_AlignedSegment(
     serialized_data: dict[str, dict],
 ) -> AlignedSegment:
@@ -788,7 +782,7 @@ def svPatterns_from_consensus_sequences(
             path_alignments=output_consensus_to_reference_alignments, parse_DNA=False
         )
         n_alignments = sum(
-            [len(alignments) for alignments in consensus_alignments.values()]
+            len(alignments) for alignments in consensus_alignments.values()
         )
         if n_alignments == 0:
             raise ValueError(
@@ -801,13 +795,13 @@ def svPatterns_from_consensus_sequences(
             alignments_to_consensusAlignments(alignments=consensus_alignments)
         )
         log.info(
-            f"{sum([len(alignments) for alignments in dict_alignments.values()])} consensus alignments converted to ConsensusAlignment objects."
+            f"{sum(len(alignments) for alignments in dict_alignments.values())} consensus alignments converted to ConsensusAlignment objects."
         )
 
         log.info("Caching pysam alignments for tracing back core intervals...")
         pysam_cache: dict[int, AlignedSegment] = {}
         # fill the pysam cache
-        for consensusID, consensusAlignments in tqdm(dict_alignments.items()):
+        for _consensusID, consensusAlignments in tqdm(dict_alignments.items()):
             for consensusAlignment in consensusAlignments:
                 # Cache the pysam alignment using the alignment hash
                 if consensusAlignment.uid not in pysam_cache:
@@ -835,7 +829,7 @@ def svPatterns_from_consensus_sequences(
             dict_alignments=dict_alignments,
             trf_intervals=trf_to_interval_tree(input_trf),
         )
-        consensus_alignments = dict()  # has no real use anymore, free memory
+        consensus_alignments = {}  # has no real use anymore, free memory
 
         unaligned_consensusIDs = set(sequences_core.keys()) - set(
             dict_alignments.keys()
@@ -874,7 +868,7 @@ def svPatterns_from_consensus_sequences(
         dict_alignments_processed: dict[
             str, list[consensus_class.ConsensusAlignment]
         ] = {}
-        consensusIDs = list(dict_alignments.keys())
+        _consensusIDs = list(dict_alignments.keys())  # FIXME: unused?
         for consensusID, consensusAlignments in tqdm(dict_alignments.items()):
             if last_consensus is None or last_consensus.consensusID != consensusID:
                 last_consensus = LastConsensus(
@@ -994,7 +988,7 @@ def svPatterns_from_consensus_sequences(
             )
         )  # TODO: fix parallelization and change this parameter to threads
         # debug: print all types of svPrimitives that occurr in svPrimitives
-        svp_types = set([svp.sv_type for svp in svPrimitives])
+        svp_types = {svp.sv_type for svp in svPrimitives}
         log.warning(f"{len(svPrimitives)} SV primitives of types found: {svp_types}")
 
         # svPrimitives = [svp for svp in svPrimitives if len(svp.genotypeMeasurements.supporting_reads_start) > 0]
@@ -1007,7 +1001,7 @@ def svPatterns_from_consensus_sequences(
         svPatterns = svPrimitives_to_svPatterns(
             SVprimitives=svPrimitives, max_del_size=max_del_size
         )
-        svp_types = set([svp.get_sv_type() for svp in svPatterns])
+        svp_types = {svp.get_sv_type() for svp in svPatterns}
         log.warning(
             f"After svPrimitives_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
         )
@@ -1018,7 +1012,7 @@ def svPatterns_from_consensus_sequences(
             distance_scale=distance_scale,
             falloff=falloff,
         )
-        svp_types = set([svp.get_sv_type() for svp in svPatterns])
+        svp_types = {svp.get_sv_type() for svp in svPatterns}
         log.warning(
             f"After add_consensus_sequence_and_size_distortions_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
         )
@@ -1026,7 +1020,7 @@ def svPatterns_from_consensus_sequences(
         svPatterns = add_reference_sequence_to_svPatterns(
             svPatterns=svPatterns, reference_sequence=input_reference
         )
-        svp_types = set([svp.get_sv_type() for svp in svPatterns])
+        svp_types = {svp.get_sv_type() for svp in svPatterns}
         log.warning(
             f"After add_reference_sequence_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
         )
