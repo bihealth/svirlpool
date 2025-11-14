@@ -1,4 +1,4 @@
-# module to cut reads from alignments in region and write to fasta output file
+# One of the modules of svirlpool to be used in the command line interface
 
 import argparse
 import gzip
@@ -11,7 +11,7 @@ from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
 from logzero import logger as log
 
-from . import util
+from ..util import util
 
 
 def cut_reads(

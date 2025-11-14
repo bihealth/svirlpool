@@ -17,7 +17,7 @@ from intervaltree import Interval, IntervalTree
 from tqdm import tqdm
 
 from ..perform.seqomplexity import compute_complexity
-from ..scripts import datatypes
+from ..util import datatypes
 
 log.basicConfig(level=log.INFO)
 

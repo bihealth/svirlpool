@@ -11,7 +11,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from tqdm import tqdm
 
-from . import svirltile
+from ..localassembly import svirltile
 
 
 def write_consensus_sequences(

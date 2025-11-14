@@ -8,7 +8,8 @@ from pathlib import Path, PosixPath
 import pysam
 from intervaltree import Interval
 
-from ..scripts import alignments_to_rafs, datatypes
+from ..signalprocessing import alignments_to_rafs
+from ..util import datatypes
 
 
 def parse_region(region: str) -> tuple[str, int, int]:
