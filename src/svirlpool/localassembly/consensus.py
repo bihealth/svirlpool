@@ -26,8 +26,6 @@ from pathlib import Path
 import attrs
 import cattrs
 import matplotlib
-import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
 import pysam
 from Bio import SeqIO, SeqUtils
@@ -36,7 +34,6 @@ from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
 from scipy.sparse import csr_matrix
 from sklearn.cluster import SpectralClustering
-from stopit import TimeoutException
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import (
@@ -1274,7 +1271,7 @@ def consensus_while_clustering(
                     tech="ava-ont",
                     threads=threads,
                 )
-            except TimeoutException:
+            except (TimeoutError, subprocess.TimeoutExpired):
                 log.error(f"Alignment with minimap2 timed out after {timeout} seconds.")
                 return None
 
@@ -2014,197 +2011,6 @@ def score_ras_from_alignments(
         print_str = "\n".join([f"{read}:\t{score}" for read, score in sorted_scores])
         log.info(f"scoring results:\n{print_str}")
     return rafs_scores_dict  # ,handicap
-
-
-# =======================================================================================================================================================
-#  Visualization functions
-# =======================================================================================================================================================
-
-
-def visualize_raf_score_graph(
-    all_raf_scores: dict[str, dict[str, float]],
-    output_filepath: Path | str | None = None,
-    figsize: tuple[float, float] = (5.12, 5.12),
-    node_size: int = 300,
-    font_size: int = 8,
-    edge_width_scale: float = 2.0,
-) -> None:
-    """
-    Visualize a weighted graph based on RAF (Read Alignment Fragment) scores.
-
-    This function creates a graph where:
-    - Nodes represent reference sequences (from all_raf_scores keys)
-    - Edges represent alignment scores between references and reads
-    - Edge colors: red if weight > weighted_median, black otherwise
-    - Edge thickness is proportional to the weight
-
-    Args:
-        all_raf_scores: Dictionary mapping reference names to dictionaries of
-                       {read_name: score} pairs. The structure is:
-                       {reference_name: {read_name: alignment_score}}
-        output_filepath: Path to save the figure as PNG. If None, no figure is saved.
-        figsize: Figure size in inches (width, height). Default (5.12, 5.12) = 512x512 pixels at 100 DPI.
-        node_size: Size of the nodes in the graph.
-        font_size: Font size for node labels.
-        edge_width_scale: Scaling factor for edge widths based on weights.
-
-    Returns:
-        None. Saves a PNG file if output_filepath is provided.
-
-    Example:
-        >>> all_raf_scores = {
-        ...     'ref1': {'read1': 10.5, 'read2': 5.2},
-        ...     'ref2': {'read1': 3.1, 'read3': 12.0}
-        ... }
-        >>> visualize_raf_score_graph(all_raf_scores, 'output.png')
-    """
-
-    # Input validation
-    if not all_raf_scores:
-        log.warning("all_raf_scores is empty. No graph to visualize.")
-        return
-
-    # Calculate weighted median across all scores
-    weights = []
-    values = []
-    for ref_scores in all_raf_scores.values():
-        if len(ref_scores) > 0:
-            weights.append(len(ref_scores))
-            values.append(float(np.median(list(ref_scores.values()))))
-
-    if not weights:
-        log.warning("No valid scores found in all_raf_scores. No graph to visualize.")
-        return
-
-    weighted_median = float(np.average(values, weights=weights))
-
-    # Create directed graph
-    G = nx.DiGraph()
-
-    # Add nodes and edges
-    for reference_name, read_scores in all_raf_scores.items():
-        # Add reference node if not already present
-        if not G.has_node(reference_name):
-            G.add_node(reference_name, node_type="reference")
-
-        # Add edges from reference to reads with scores as weights
-        for read_name, score in read_scores.items():
-            # Add read node if not already present
-            if not G.has_node(read_name):
-                G.add_node(read_name, node_type="read")
-
-            # Add edge with weight
-            G.add_edge(reference_name, read_name, weight=score)
-
-    if G.number_of_nodes() == 0:
-        log.warning("Graph has no nodes. No graph to visualize.")
-        return
-
-    # Prepare edge colors and widths based on weighted_median threshold
-    edge_colors = []
-    edge_widths = []
-
-    for _u, _v, data in G.edges(data=True):
-        weight = data["weight"]
-
-        # Color: red if weight > weighted_median, black otherwise
-        if weight > weighted_median:
-            edge_colors.append("red")
-        else:
-            edge_colors.append("black")
-
-        # Width proportional to weight (normalized)
-        # Avoid zero or negative widths
-        normalized_weight = max(
-            0.5, weight / max(1.0, weighted_median) * edge_width_scale
-        )
-        edge_widths.append(normalized_weight)
-
-    # Create figure with specified DPI to ensure 512x512 pixel resolution
-    dpi = 100
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-
-    # Use spring layout for better visualization
-    try:
-        pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-    except Exception as e:
-        log.warning(
-            f"Spring layout failed with exception: {e}. Using circular layout instead."
-        )
-        # Fallback to circular layout if spring layout fails
-        pos = nx.circular_layout(G)
-
-    # Separate nodes by type for different visual styles
-    reference_nodes = [
-        node
-        for node, attr in G.nodes(data=True)
-        if attr.get("node_type") == "reference"
-    ]
-    read_nodes = [
-        node for node, attr in G.nodes(data=True) if attr.get("node_type") == "read"
-    ]
-
-    # Draw reference nodes (larger, different color)
-    if reference_nodes:
-        nx.draw_networkx_nodes(
-            G,
-            pos,
-            nodelist=reference_nodes,
-            node_color="lightblue",
-            node_size=node_size * 1.5,
-            node_shape="s",  # square
-            ax=ax,
-            label="References",
-        )
-
-    # Draw read nodes (smaller)
-    if read_nodes:
-        nx.draw_networkx_nodes(
-            G,
-            pos,
-            nodelist=read_nodes,
-            node_color="lightgreen",
-            node_size=node_size,
-            node_shape="o",  # circle
-            ax=ax,
-            label="Reads",
-        )
-
-    # Draw edges with colors and widths
-    nx.draw_networkx_edges(
-        G,
-        pos,
-        edge_color=edge_colors,
-        width=edge_widths,
-        alpha=0.6,
-        arrows=True,
-        arrowsize=10,
-        ax=ax,
-    )
-
-    # Draw labels
-    nx.draw_networkx_labels(G, pos, font_size=font_size, font_weight="bold", ax=ax)
-
-    # Add title and legend
-    ax.set_title(
-        f"RAF Score Graph\n(Weighted Median: {weighted_median:.2f})",
-        fontsize=font_size + 2,
-        fontweight="bold",
-    )
-    ax.legend(loc="upper right", fontsize=font_size)
-    ax.axis("off")
-
-    plt.tight_layout()
-
-    # Save figure if filepath provided
-    if output_filepath is not None:
-        output_path = Path(output_filepath)
-        # Create parent directory if it doesn't exist
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=dpi, bbox_inches="tight", format="png")
-        log.info(f"Graph visualization saved to {output_path}")
-
-    plt.close(fig)
 
 
 # =======================================================================================================================================================

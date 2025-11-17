@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import csv
+import logging
 import multiprocessing as mp
 import pickle
 import sqlite3
@@ -11,10 +12,11 @@ import cattrs
 import numpy as np
 import numpy.typing as npt
 from intervaltree import IntervalTree
-from logzero import logger
 from tqdm import tqdm
 
 from ..util import datatypes, util
+
+log = logging.getLogger(__name__)
 
 # # find stretches, accepts a np array of ints, returns a list of tuples
 # def find_stretches(arr:np.ndarray) -> typing.List[typing.Tuple[int,int]]:
@@ -37,7 +39,7 @@ def write_to_bedgraphs(
     bedgraph: Path,
 ) -> None:
     bedgraph = Path(bedgraph)
-    logger.info("write bedgraph of signals..")
+    log.info("write bedgraph of signals..")
     with open(bedgraph.with_suffix(".signal.bedgraph"), "w") as f:
         trackdef = "track type=bedGraph name=values_signal description=values_signal \
 visibility=display_mode color=150,20,255 altColor=20,150,255 \
@@ -96,7 +98,7 @@ windowingFunction=mean smoothingWindow=off"
                     str(float(values_masked[i])),
                     file=f,
                 )
-    logger.info("Finished bedgraphs.")
+    log.info("Finished bedgraphs.")
 
 
 # def effective_intervals_intervaltrees(rafs:list[Path], readnames_dict, chromosomes) -> dict[str,IntervalTree]:
@@ -105,7 +107,7 @@ windowingFunction=mean smoothingWindow=off"
 #     get_read_id = readnames_dict.get
 
 #     for path_raf in rafs:
-#         logger.info(f"Load all rafs from {path_raf}..")
+#         log.info(f"Load all rafs from {path_raf}..")
 #         all_rafs = list(util.yield_from_raf(input=path_raf))
 #         for raf in all_rafs:
 #             rid = get_read_id(raf.read_name)
@@ -422,7 +424,7 @@ def create_crs_db(path_db: Path, timeout: float) -> None:
     )
 
     if path_db.exists():
-        logger.warning(f"Database {path_db} exists. Overwriting it.")
+        log.warning(f"Database {path_db} exists. Overwriting it.")
         path_db.unlink()
 
     conn = sqlite3.connect(path_db)
@@ -546,14 +548,14 @@ def load_crs_from_db(
 #                 min_anchor_size=300)
 #             # if a cr has no valid intervals, left and right, skip it
 #         if len(cr.valid_intervals) == 0:
-#             logger.debug(f"removed CrSeed on interval {cr.chr}:{cr.start}-{cr.end} because it has no valid intervals left or right.")
+#             log.debug(f"removed CrSeed on interval {cr.chr}:{cr.start}-{cr.end} because it has no valid intervals left or right.")
 #             dropped_intervals[interval.begin:interval.end] = interval.data
 #             tree.remove(interval)
 #             continue
 #             # check if valid intervals are present left and righht of cr.start,cr.end
 #         valid_intervals_tree = IntervalTree(cr.valid_intervals)
 #         if len(valid_intervals_tree[0:cr.start]) == 0 and len(valid_intervals_tree[cr.end:]) == 0:
-#             logger.debug(f"removed CrSeed on interval {cr.chr}:{cr.start}-{cr.end} because it has no valid intervals left and right.")
+#             log.debug(f"removed CrSeed on interval {cr.chr}:{cr.start}-{cr.end} because it has no valid intervals left and right.")
 #             dropped_intervals[interval.begin:interval.end] = cr
 #             interval.data.actual_extents = (cr.start,cr.end)
 #             tree.remove(interval)
@@ -780,12 +782,12 @@ def create_candidate_regions(
 
     # Load chromosome names
     chromosomes = list(util.create_ref_dict(reference).values())
-    logger.info("Loading tandem repeats to interval trees...")
+    log.info("Loading tandem repeats to interval trees...")
     tandem_repeat_trees = tandem_repeat_intervaltrees(
         tandem_repeats=tandem_repeats, chromosomes=chromosomes
     )
 
-    logger.info("Parsing signalstrengths...")
+    log.info("Parsing signalstrengths...")
     svsignals: list[datatypes.ExtendedSVsignal] = list(
         util.yield_from_extendedSVsignal(input=signalstrengths)
     )
@@ -803,7 +805,7 @@ def create_candidate_regions(
     mask_normalized_signal = signal_normalized > filter_normalized
     mask_final = mask_absolute_signal & mask_normalized_signal
 
-    logger.info(f"Signals passing filters: {np.sum(mask_final)}/{len(svsignals)}")
+    log.info(f"Signals passing filters: {np.sum(mask_final)}/{len(svsignals)}")
 
     # Optional bedgraph output
     if bedgraph is not None:
@@ -816,7 +818,7 @@ def create_candidate_regions(
         )
 
     # Create proto regions per chromosome
-    logger.info("Creating cr_proto_regions (batched)...")
+    log.info("Creating cr_proto_regions (batched)...")
     tmp_per_chr: dict[str, list[tuple[int, int, list[datatypes.ExtendedSVsignal]]]] = {
         c: [] for c in chromosomes
     }
@@ -826,7 +828,7 @@ def create_candidate_regions(
         s = svsignals[i]
         c = s.chr
         if c not in tmp_per_chr:
-            logger.warning(f"Signal chromosome {c} not in reference, skipping")
+            log.warning(f"Signal chromosome {c} not in reference, skipping")
             continue
         start = max(0, s.ref_start - buffer_region_radius)
         end = s.ref_end + buffer_region_radius
@@ -840,7 +842,7 @@ def create_candidate_regions(
         )
 
     # Prepare multiprocessing jobs
-    logger.info("Creating jobs for parallel processing of cr_seeds...")
+    log.info("Creating jobs for parallel processing of cr_seeds...")
     jobs_cr_seeds = [
         {
             "chromosome": chr,
@@ -852,9 +854,7 @@ def create_candidate_regions(
         if len(tree) > 0  # Skip empty chromosomes
     ]
 
-    logger.info(
-        f"Processing {len(jobs_cr_seeds)} chromosomes with {threads} threads..."
-    )
+    log.info(f"Processing {len(jobs_cr_seeds)} chromosomes with {threads} threads...")
 
     # Process in parallel - results is a list of lists
     results: list[list[datatypes.CandidateRegion]] = []
@@ -867,7 +867,7 @@ def create_candidate_regions(
         ):
             results.extend(result)
 
-    logger.info(f"Generated {len(results)} candidate regions")
+    log.info(f"Generated {len(results)} candidate regions")
 
     # Filter by read count
     if len(results) > 0:
@@ -875,34 +875,34 @@ def create_candidate_regions(
         median_read_count = np.median(read_counts)
         max_read_count = 4 * median_read_count
 
-        logger.info(
-            f"Median read count: {median_read_count:.1f}, "
-            f"max threshold: {max_read_count:.1f}"
-        )
+    log.info(
+        f"Median read count: {median_read_count:.1f}, "
+        f"max threshold: {max_read_count:.1f}"
+    )
 
-        filtered_results = []
-        filtered_regions = []
+    filtered_results = []
+    filtered_regions = []
 
-        for cr in results:
-            read_count = len(cr.get_read_names())
-            if read_count <= max_read_count:
-                filtered_results.append(cr)
-            else:
-                filtered_regions.append(cr)
+    for cr in results:
+        read_count = len(cr.get_read_names())
+        if read_count <= max_read_count:
+            filtered_results.append(cr)
+        else:
+            filtered_regions.append(cr)
 
-        logger.info(
-            f"Filtered {len(filtered_regions)} candidate regions with "
-            f"excessive read counts (>{max_read_count:.1f})"
-        )
+    log.info(
+        f"Filtered {len(filtered_regions)} candidate regions with "
+        f"excessive read counts (>{max_read_count:.1f})"
+    )
 
-        results = filtered_results
+    results = filtered_results
 
     # Reassign sequential crIDs
     for i, cr in enumerate(results):
         cr.crID = i
 
     # Write to database
-    logger.info(f"Writing {len(results)} candidate regions to database...")
+    log.info(f"Writing {len(results)} candidate regions to database...")
     create_crs_db(path_db=output, timeout=100.0)
     if len(results) > 0:
         write_crs_to_db(path_db=output, crs=results)
@@ -912,12 +912,11 @@ def create_candidate_regions(
         # assign sequential crIDs to filtered regions
         for i, cr in enumerate(filtered_regions):
             cr.crID = i
+    log.info(f"Writing {len(filtered_regions)} dropped regions to database...")
+    create_crs_db(path_db=dropped, timeout=100.0)
+    write_crs_to_db(path_db=dropped, crs=filtered_regions)
 
-        logger.info(f"Writing {len(filtered_regions)} dropped regions to database...")
-        create_crs_db(path_db=dropped, timeout=100.0)
-        write_crs_to_db(path_db=dropped, crs=filtered_regions)
-
-    logger.info(f"Done. Created {len(results)} candidate regions.")
+    log.info(f"Done. Created {len(results)} candidate regions.")
 
 
 def run(args, **kwargs):

@@ -17,17 +17,19 @@ import argparse
 import csv
 import gzip
 import json
+import logging
 import multiprocessing as mp
 import shlex
 import subprocess
 import tempfile
 from pathlib import Path
 
-from logzero import logger as log
 from tqdm import tqdm
 
 from ..signalprocessing import alignments_to_rafs
 from ..util import datatypes, util
+
+log = logging.getLogger(__name__)
 
 # %%
 

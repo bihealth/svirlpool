@@ -2,6 +2,7 @@
 
 import argparse
 import gzip
+import logging
 from pathlib import Path
 
 import pysam
@@ -9,9 +10,10 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
-from logzero import logger as log
 
 from ..util import util
+
+log = logging.getLogger(__name__)
 
 
 def cut_reads(

@@ -3,20 +3,21 @@
 import argparse
 import csv
 import json
+import logging
 import multiprocessing as mp
 import subprocess
 import tempfile
-import typing
 from pathlib import Path
 from shlex import split
 
 import numpy as np
 import pysam
-from logzero import logger as log
 from tqdm import tqdm
 
 from ..util import datatypes, util
 from . import filter_nonseparated, filter_rafs
+
+log = logging.getLogger(__name__)
 
 # %%
 
@@ -313,7 +314,7 @@ def parse_ReadAlignmentFragment_from_alignment(
 
 def process_region(
     path_alignments: Path,
-    region: typing.Tuple[str, int, int],
+    region: tuple[str, int, int],
     samplename: str,
     min_signal_size: int,
     min_bnd_size: int,
@@ -325,7 +326,7 @@ def process_region(
     filter_nonseparated__min_overlap: float,
     filter_nonseparated__min_fragment_size: int,
     filter_nonseparated__max_inversion_coverage: float,
-) -> typing.List[datatypes.ReadAlignmentFragment]:
+) -> list[datatypes.ReadAlignmentFragment]:
     """parse all alignments in a region and create from each alignment a ReadAlignmentFragment"""
     chrom, start, end = region
     N_alignments = 0
@@ -462,7 +463,7 @@ def process_bam(
     if threads > 1:
         with mp.Pool(threads) as pool:
             # adjust to saving the list outputs of all jobs
-            job_results: typing.List[datatypes.ReadAlignmentFragment] = [
+            job_results: list[datatypes.ReadAlignmentFragment] = [
                 raf
                 for chunk in tqdm(
                     pool.imap(mp_process_region, jobs, chunksize=1), total=len(jobs)

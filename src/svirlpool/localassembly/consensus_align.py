@@ -7,9 +7,9 @@ import shlex
 import subprocess
 import tempfile
 import time
+from collections.abc import Generator
 from copy import deepcopy
 from pathlib import Path, PosixPath
-from typing import Generator
 
 import attrs
 import cattrs

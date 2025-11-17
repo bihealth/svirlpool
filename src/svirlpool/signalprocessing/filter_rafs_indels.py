@@ -3,19 +3,21 @@
 import argparse
 import csv
 import json
+import logging
 import multiprocessing as mp
 import shlex
 import subprocess
 import tempfile
-import typing
+from collections.abc import Generator
 from pathlib import Path
 
 import cattrs
 import numpy as np
-from logzero import logger as log
 
 from ..signalprocessing import alignments_to_rafs
 from ..util import datatypes, util
+
+log = logging.getLogger(__name__)
 
 
 # %%
@@ -48,7 +50,7 @@ def get_indels_bp_per_1kb(
 
 def read_rafs_per_chr(
     filename: str, chr: str
-) -> typing.Generator[datatypes.ReadAlignmentFragment, None, None]:
+) -> Generator[datatypes.ReadAlignmentFragment, None, None]:
     cmd_tabix = f"tabix -0 -f -p bed {filename} {chr}"
     process = subprocess.Popen(shlex.split(cmd_tabix), stdout=subprocess.PIPE)
     for line in process.stdout:

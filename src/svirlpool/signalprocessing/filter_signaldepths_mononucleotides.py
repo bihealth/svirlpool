@@ -6,15 +6,16 @@
 # %%
 
 import argparse
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
 from shlex import split
 
-from logzero import logging as log
-
 from ..signalprocessing import alignments_to_rafs
 from ..util import util
+
+log = logging.getLogger(__name__)
 
 # %%
 

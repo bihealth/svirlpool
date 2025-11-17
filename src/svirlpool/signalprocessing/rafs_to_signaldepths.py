@@ -3,13 +3,12 @@
 # where depth of coverage counts all alignments of the corresponding sample in the effective interval.
 
 import argparse
+import logging
 import multiprocessing as mp
 import subprocess
 import tempfile
 from pathlib import Path
 from shlex import split
-
-import logzero
 
 from ..signalprocessing import alignments_to_rafs
 from ..util import datatypes, util
@@ -145,13 +144,22 @@ def create_combined_files(
 
 
 def setup_logging(args):
-    loglevel = logzero.INFO
+    loglevel = logging.INFO
     if args.debug:
-        loglevel = logzero.DEBUG
+        loglevel = logging.DEBUG
     if args.silent:
-        loglevel = logzero.ERROR
+        loglevel = logging.ERROR
+    # basic config to ensure handlers/format is set
+    logging.basicConfig(
+        level=loglevel, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+    )
     if args.log_file:
-        logzero.logfile(Path(args.log_file), loglevel=loglevel)
+        file_handler = logging.FileHandler(Path(args.log_file))
+        file_handler.setLevel(loglevel)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+        )
+        logging.getLogger().addHandler(file_handler)
 
 
 def run(args, **kwargs):
@@ -193,12 +201,12 @@ def get_parser():
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Set logzero logging level to logzero.DEBUG.",
+        help="Set logging level to DEBUG.",
     )
     parser.add_argument(
         "--silent",
         action="store_true",
-        help="Set logzero logging level to logzero.ERROR.",
+        help="Set logging level to ERROR.",
     )
     parser.add_argument(
         "--log-file", required=False, default=None, help="Path to an optional log file."

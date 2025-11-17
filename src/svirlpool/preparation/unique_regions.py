@@ -7,14 +7,15 @@
 # the final file is created with bedtools subtract -a reference.bed -b merged_slopped.bed
 # %%
 import argparse
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
 from shlex import split
 
-from logzero import logger as log
-
 from ..util import util
+
+log = logging.getLogger(__name__)
 
 # %%
 

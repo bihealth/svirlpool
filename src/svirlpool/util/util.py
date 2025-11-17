@@ -6,17 +6,20 @@
 import csv
 import gzip
 import json
+import logging
 import pickle
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import tempfile
-import typing
 from collections import Counter
+from collections.abc import Generator, Iterable, Iterator
 from enum import Enum
 from io import StringIO
 from math import floor
+from os import getpgid, killpg
 from pathlib import Path
 
 import cattrs
@@ -28,10 +31,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval
-from logzero import logger as log
 from sklearn import preprocessing
-from stopit import TimeoutException
-from stopit import threading_timeoutable as timeoutable
 from tqdm import tqdm
 
 from ..localassembly import consensus_class
@@ -40,10 +40,12 @@ from ..signalprocessing import alignments_to_rafs
 # %%
 from . import datatypes
 
+log = logging.getLogger(__name__)
+
 # %%
 
 
-def yield_last_column(input: Path, dtype: type) -> typing.Iterable:
+def yield_last_column(input: Path, dtype: type) -> Iterable[object]:
     csv.field_size_limit(2147483647)
     # open gzipped file if compressed, else open as text file
     try:
@@ -65,19 +67,19 @@ def yield_last_column(input: Path, dtype: type) -> typing.Iterable:
             )
 
 
-def yield_from_raf(input: Path) -> typing.Iterable[datatypes.ReadAlignmentFragment]:
+def yield_from_raf(input: Path) -> Iterable[datatypes.ReadAlignmentFragment]:
     yield from yield_last_column(input=input, dtype=datatypes.ReadAlignmentFragment)
 
 
 def yield_from_extendedSVsignal(
     input: Path,
-) -> typing.Iterable[datatypes.ExtendedSVsignal]:
+) -> Iterable[datatypes.ExtendedSVsignal]:
     yield from yield_last_column(input=input, dtype=datatypes.ExtendedSVsignal)
 
 
 def yield_consensus_objects(
     path_db: Path, consensusIDs: set[str] | None = None, silent: bool = True
-) -> typing.Generator[consensus_class.Consensus, None, None]:
+) -> Generator[consensus_class.Consensus, None, None]:
     """produces a dict consensusID:consensus_sequence"""
     # iterate all consensus objects in database and construct a dict consensusID:consensusObject
     if not silent:
@@ -137,7 +139,7 @@ def load_consensus_sequences_from_db(
     return results
 
 
-def load_alignments(path: Path) -> typing.List[pysam.AlignedSegment]:
+def load_alignments(path: Path) -> list[pysam.AlignedSegment]:
     return list(pysam.AlignmentFile(path, "rb"))
 
 
@@ -164,14 +166,14 @@ def execute_to_np(cmd: list, sep="\t"):
     return data
 
 
-def concat_txt_files(input_files: typing.List[Path], output: Path):
+def concat_txt_files(input_files: list[Path], output: Path):
     with open(output, "w") as o:
         for f in input_files:
             with open(f, "r") as i:
                 o.write(i.read())
 
 
-def concat_binary_files(input_files: typing.List[Path], output: Path):
+def concat_binary_files(input_files: list[Path], output: Path):
     with open(output, "wb") as o:
         for f in input_files:
             with open(f, "rb") as i:
@@ -209,7 +211,6 @@ def parse_alignment(
     return result
 
 
-@timeoutable()
 def align_reads_with_minimap(
     reference: Path | str,
     reads: Path | str,
@@ -218,31 +219,64 @@ def align_reads_with_minimap(
     threads: int = 3,
     aln_args: str = "",
     logfile: Path | None = None,
+    timeout: float | None = None,
 ) -> None:
+    """
+    Align reads with minimap2 and optionally time out.
+    If timeout is given (seconds), processes will be killed after timeout.
+    """
     try:
         cmd_align = shlex.split(
             f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads}"
         )
         cmd_sort = shlex.split(f"samtools sort -O BAM -o {bamout}")
         cmd_index = shlex.split(f"samtools index {bamout}")
-        if logfile:
-            log_handle = open(logfile, "wt")
+        log_handle = open(logfile, "wt") if logfile else None
+
         log.info(" ".join(cmd_align))
+        # start minimap2 in its own process group so we can kill the whole tree
         p_align = subprocess.Popen(
-            cmd_align, stdout=subprocess.PIPE, stderr=log_handle if logfile else None
+            cmd_align,
+            stdout=subprocess.PIPE,
+            stderr=log_handle if logfile else None,
+            start_new_session=True,
         )
         p_sort = subprocess.Popen(
-            cmd_sort, stdin=p_align.stdout, stderr=log_handle if logfile else None
+            cmd_sort,
+            stdin=p_align.stdout,
+            stderr=log_handle if logfile else None,
+            start_new_session=True,
         )
-        p_sort.communicate()
+        # Close parent's reference to the pipe output so p_sort gets EOF after p_align exits
+        if p_align.stdout:
+            p_align.stdout.close()
+
+        try:
+            # This communicate(timeout=...) will wait for p_sort; if timeout is reached a TimeoutExpired is raised
+            p_sort.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log.error("Alignment timed out, killing processes...")
+            # try to kill both process groups
+            for p in (p_sort, p_align):
+                try:
+                    killpg(getpgid(p.pid), signal.SIGTERM)
+                except Exception:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+            # raise a built-in timeout error
+            raise TimeoutError(
+                "Alignment with minimap2 timed out after the specified time limit."
+            )
+
+        # if we get here p_sort finished successfully; index BAM
         log.info(f"indexing {bamout}")
-        subprocess.check_call(cmd_index, stderr=log_handle if logfile else None)
-        if logfile:
+        # safe to use subprocess.run with timeout as well, reusing the same timeout if desired
+        subprocess.run(cmd_index, check=True, stderr=log_handle if logfile else None)
+    finally:
+        if logfile and log_handle:
             log_handle.close()
-    except TimeoutException:
-        raise TimeoutException(
-            "Alignment with minimap2 timed out after the specified time limit."
-        )
 
 
 # def align_reads_with_minimap(
@@ -353,7 +387,7 @@ def align_reads_with_winnowmap(
 # --- data loading --- #
 
 
-def load_crs(path_crs: Path) -> typing.List[datatypes.CandidateRegion]:
+def load_crs(path_crs: Path) -> list[datatypes.CandidateRegion]:
     csv.field_size_limit(2147483647)
     candidate_regions = []
     with open(path_crs, "r") as f:
@@ -366,7 +400,7 @@ def load_crs(path_crs: Path) -> typing.List[datatypes.CandidateRegion]:
     return candidate_regions
 
 
-def create_ref_dict(reference: Path) -> typing.Dict[int, str]:
+def create_ref_dict(reference: Path) -> dict[int, str]:
     """returns a dictionary that maps reference IDs to chromosome names"""
     return {
         i: str(line.rstrip().split("\t")[0])
@@ -490,7 +524,7 @@ def kmers_on_dna5(seq: npt.NDArray[np.float16], k: int) -> npt.NDArray[np.float1
 
 
 def complexity_local_track(
-    dna_iter: typing.Iterator,
+    dna_iter: Iterator,
     w: int = 11,
     K: list[int] = None,
     padding: bool = False,
@@ -626,7 +660,7 @@ def get_interval_on_read_in_region(
     start: int,
     end: int,
     buffer_clipped_length: int = 0,
-) -> typing.Tuple[int, int]:
+) -> tuple[int, int]:
     # find start and end position on ref on read
     start, end = (end, start) if start > end else (start, end)
     istart = get_ref_position_on_read(
@@ -646,7 +680,7 @@ def get_interval_on_read_in_region(
 
 def get_interval_on_ref_in_region(
     a: pysam.libcalignedsegment.AlignedSegment, start: int, end: int
-) -> typing.Tuple[int, int]:
+) -> tuple[int, int]:
     # find start and end position on ref
     start, end = (end, start) if start > end else (start, end)
     istart = get_read_position_on_ref(
@@ -664,7 +698,7 @@ def get_interval_on_ref_in_region(
 # =============================================================================
 
 
-def generate_sequence(size: int, seed: int = 0) -> typing.List[str]:
+def generate_sequence(size: int, seed: int = 0) -> list[str]:
     np.random.seed(seed)
     return [np.random.choice(list("ACGT"), p=[0.3, 0.2, 0.2, 0.3]) for _ in range(size)]
 
@@ -675,7 +709,7 @@ def delete_interval(seq: list, a: int, b: int):
 
 def insertion(
     seq: list, pos: int, size: int = 0, sequence: list = None, seed: int = 0
-) -> typing.List[str]:
+) -> list[str]:
     if sequence is None:
         sequence = []
     if sequence == [] and size == 0:
@@ -687,8 +721,12 @@ def insertion(
 
 
 def duplication(
-    seq: list, a: int = 0, b: int = 0, copynumber: int = 2, insertion_site: int = None
-) -> typing.List[str]:
+    seq: list,
+    a: int = 0,
+    b: int = 0,
+    copynumber: int = 2,
+    insertion_site: int | None = None,
+) -> list[str]:
     if b == 0:
         b = len(seq)
     if insertion_site:
@@ -700,30 +738,28 @@ def duplication(
     return [*seq[:a], *(seq[a:b] * copynumber), *seq[b:]]
 
 
-def complement(seq: list) -> typing.List[str]:
+def complement(seq: list) -> list[str]:
     d = {"A": "T", "T": "A", "G": "C", "C": "G"}
     return [d[s] for s in seq]
 
 
-def reverse_complement(seq: list, _=None, __=None) -> typing.List[str]:
+def reverse_complement(seq: list, _=None, __=None) -> list[str]:
     return complement(seq[::-1])
 
 
-def inversion(seq: list, a: int = 0, b: int = 0) -> typing.List[str]:
+def inversion(seq: list, a: int = 0, b: int = 0) -> list[str]:
     if b == 0:
         b = len(seq)
     return [*seq[:a], *complement(seq[a:b])[::-1], *seq[b:]]
 
 
-def translocation(
-    seq: list, gapStart: int, gapLength: int, fillPos: int
-) -> typing.List[str]:
+def translocation(seq: list, gapStart: int, gapLength: int, fillPos: int) -> list[str]:
     seqcache = seq[gapStart : (gapStart + gapLength)]
     seq = [*seq[:gapStart], *seq[(gapStart + gapLength) :]]
     return [*seq[:fillPos], *seqcache, *seq[fillPos:]]
 
 
-def add_noise(seq: list, noise_level: float = 0.1, seed: int = 0) -> typing.List[str]:
+def add_noise(seq: list, noise_level: float = 0.1, seed: int = 0) -> list[str]:
     np.random.seed(seed)
     return [
         (
@@ -742,7 +778,7 @@ def add_noise(seq: list, noise_level: float = 0.1, seed: int = 0) -> typing.List
 #          (inversion,80,110),
 #          (delete_interval,110,120)]
 # apply_seq_synth_rules(seq,rules)
-def apply_seq_synth_rules(seq: list, rules: typing.List[tuple]) -> typing.List[str]:
+def apply_seq_synth_rules(seq: list, rules: list[tuple]) -> list[str]:
     r = seq.copy()
     for t in rules[::-1]:
         r = t[0](r, *t[1:])
@@ -754,8 +790,8 @@ def apply_seq_synth_rules(seq: list, rules: typing.List[tuple]) -> typing.List[s
 # where function is one of the functions defined above and args are the arguments,
 # e.g. (duplication,20,50,2)
 def generate_read_from_rules(
-    refStart: int, refEnd: int, rules: typing.List[typing.Tuple], reference: list
-) -> typing.List[str]:
+    refStart: int, refEnd: int, rules: list[tuple], reference: list
+) -> list[str]:
     # calc final extends of read from rules
     # rules are applied to reference
     ref = apply_seq_synth_rules(reference, rules)
@@ -764,7 +800,7 @@ def generate_read_from_rules(
 
 
 def write_sequences_to_fasta(
-    seqs: typing.List[list],
+    seqs: list[list],
     path: Path,
     chrnames: bool = False,
     prefix: str = "seq",
@@ -892,7 +928,7 @@ def get_alignments_to_reference(
     return alns
 
 
-def get_samplenames_from_samfile(samfile: pysam.Samfile) -> typing.List[str]:
+def get_samplenames_from_samfile(samfile: pysam.Samfile) -> list[str]:
     """returns a list of unique sample names from the RG tags in the samfile header."""
     try:
         return list({item["SM"] for item in samfile.header.to_dict()["RG"]})
@@ -901,8 +937,8 @@ def get_samplenames_from_samfile(samfile: pysam.Samfile) -> typing.List[str]:
 
 
 def create_sample_dict_from_alignments(
-    alignments: typing.List[Path],
-) -> typing.Tuple[typing.Dict[str, Path], typing.Dict[str, Path]]:
+    alignments: list[Path],
+) -> tuple[dict[str, Path], dict[str, Path]]:
     """creates two dictionaries. The first one maps sample names to the path of the alignments file.
     The sample name is either taken from the RG tags in the alignment file's headers or
     if no RG tag is present, then the sample name is the file name stem."""
@@ -920,7 +956,7 @@ def create_sample_dict_from_alignments(
     return sample_dict
 
 
-def generate_sampledicts(alignments: typing.List[Path], output: Path):
+def generate_sampledicts(alignments: list[Path], output: Path):
     """creates three dictionaries. The first one maps sample names to the path of the alignments file.
     The second one maps sample names to sample IDs. The third maps sample IDs to the path of the alignments file.
     """
@@ -935,11 +971,11 @@ def generate_sampledicts(alignments: typing.List[Path], output: Path):
         json.dump([dict_samplename_to_path, dict_samplename_to_id, dict_id_to_bam], f)
 
 
-def load_sampledicts(input: Path) -> typing.List[dict]:
+def load_sampledicts(input: Path) -> list[dict]:
     """loads three dictionaries. The first one maps sample names to the path of the alignments file.
     The second one maps sample names to sample IDs. The third maps sample IDs to the path of the alignments file.
     Returns:
-        typing.Tuple[typing.Dict[str,Path],typing.Dict[str,int]]
+        tuple[dict[str, Path], dict[str, int]]
     """
     with open(input, "r") as f:
         dicts = json.load(f)
@@ -963,9 +999,7 @@ def plot_to_terminal(data: list, shades: list = None):
         print()
 
 
-def overlapping_interval(
-    A: typing.Tuple[int, int, int], B: typing.Tuple[int, int, int]
-) -> int:
+def overlapping_interval(A: tuple[int, int, int], B: tuple[int, int, int]) -> int:
     """A and B must be triples of format
     (referenceID,start,end) and of type int. returns size of overlap."""
     if A[0] != B[0]:
@@ -974,7 +1008,7 @@ def overlapping_interval(
     return max(0, min(A[2], B[2]) - max(A[1], B[1]))
 
 
-def overlap(a: typing.Tuple[int, int], b: typing.Tuple[int, int]) -> int:
+def overlap(a: tuple[int, int], b: tuple[int, int]) -> int:
     """returns the size of overlap. returns the the size of the overlap [1 to n] or the distance between the intervals [-1 to -n]"""
     # test if all values are positive and in order
     if a[0] < 0 or a[1] < 0 or b[0] < 0 or b[1] < 0:
@@ -1160,14 +1194,12 @@ def add_clipped_tails_to_alignments(
 # %%
 
 
-def scale_coords(
-    coords: typing.List[int], maxlen: int, line_width: int
-) -> typing.List[int]:
+def scale_coords(coords: list[int], maxlen: int, line_width: int) -> list[int]:
     return [int(floor((coord / maxlen) * line_width)) for coord in coords]
 
 
 def display_ascii_alignments(
-    alignments: typing.List[pysam.AlignedSegment],
+    alignments: list[pysam.AlignedSegment],
     terminal_width: int = 100,
     filter_density_min_bp: int = 30,
     filter_density_radius: int = 1000,
@@ -1330,7 +1362,7 @@ def get_ref_pitx_on_read(
     position: int,
     direction: Direction,
     buffer_clipped_length: int = 0,
-) -> typing.Tuple[int, int, int]:
+) -> tuple[int, int, np.ndarray, np.ndarray]:
     """Get the position on the query sequence that corresponds to a position on the reference. \
 Forward or backward orientation of the aligned query sequence is respected.
 
@@ -1340,7 +1372,7 @@ Forward or backward orientation of the aligned query sequence is respected.
         direction (Direction): pick from util.Direction.LEFT, util.Direction.RIGHT, util.Direction.NONE
 
     Returns:
-        typing.Tuple[int,int,int]: the position on the read, the block in which the position is located, the t,x arrays
+        tuple[int, int, np.ndarray, np.ndarray]: the position on the read, the block in which the position is located, the t,x arrays
     """
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
@@ -1461,7 +1493,7 @@ def get_ref_position_on_read(
 
 def get_read_pitx_on_ref(
     alignment: pysam.AlignedSegment, position: int, direction: Direction
-) -> typing.Tuple[int, int, int]:
+) -> tuple[int, int, np.ndarray, np.ndarray]:
     # compute a list of tuples of start and end positions for each cigar block
     is_reverse = alignment.is_reverse
     ref_start = alignment.reference_start
@@ -1585,7 +1617,7 @@ def get_read_position_on_ref(
 
 def get_interval_on_consensus_in_region(
     a: pysam.libcalignedsegment.AlignedSegment, start: int, end: int
-) -> typing.Tuple[int, int]:
+) -> tuple[int, int]:
     istart = get_ref_position_on_read(
         alignment=a, position=start, direction=Direction.LEFT
     )
@@ -1595,7 +1627,7 @@ def get_interval_on_consensus_in_region(
     return istart, iend
 
 
-def query_start_end_on_read(aln: pysam.AlignedSegment) -> typing.Tuple[int, int]:
+def query_start_end_on_read(aln: pysam.AlignedSegment) -> tuple[int, int]:
     """This function returns the position of the start and end of the query alignment on the read, following the alignment orientation."""
     t, x = list(zip(*aln.cigartuples, strict=True))
     t = np.array(t)
