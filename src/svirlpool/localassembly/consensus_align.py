@@ -19,10 +19,7 @@ from intervaltree import IntervalTree
 from pysam import AlignedSegment, AlignmentFile, AlignmentHeader
 from tqdm import tqdm
 
-from ..util import (
-    datatypes,
-    util,
-)
+from ..util import datatypes, util
 from . import SVpatterns, SVprimitives, consensus_align_lib, consensus_class
 
 log = logging.getLogger(__name__)
@@ -132,7 +129,7 @@ def align_padded_consensus_sequences(
     path_fastaout: Path | str,
     threads: int,
     overwrite_fasta: bool = False,
-    tmp_dir_path: Path | None = None,
+    tmp_dir_path: Path | str | None = None,
 ) -> tuple[dict[str, bytes], dict[str, tuple[int, int]]]:
     # iterate all CrsContainerResults and write the padded DNA sequences to a fasta file
     core_sequences: dict[
@@ -776,7 +773,7 @@ def svPatterns_from_consensus_sequences(
         )
         # consensusID (read name of aligned consensus) : list[Alignment]
         consensus_alignments: dict[str, list[datatypes.Alignment]] = load_alignments(
-            path_alignments=output_consensus_to_reference_alignments, parse_DNA=False
+            path_alignments=Path(output_consensus_to_reference_alignments), parse_DNA=False
         )
         n_alignments = sum(
             len(alignments) for alignments in consensus_alignments.values()
@@ -824,9 +821,9 @@ def svPatterns_from_consensus_sequences(
         )
         add_trf_annotations_to_consensusAlignments_inplace(
             dict_alignments=dict_alignments,
-            trf_intervals=trf_to_interval_tree(input_trf),
+            trf_intervals=trf_to_interval_tree(Path(input_trf)),
         )
-        consensus_alignments = {}  # has no real use anymore, free memory
+        del consensus_alignments
 
         unaligned_consensusIDs = set(sequences_core.keys()) - set(
             dict_alignments.keys()
@@ -865,7 +862,6 @@ def svPatterns_from_consensus_sequences(
         dict_alignments_processed: dict[
             str, list[consensus_class.ConsensusAlignment]
         ] = {}
-        _consensusIDs = list(dict_alignments.keys())  # FIXME: unused?
         for consensusID, consensusAlignments in tqdm(dict_alignments.items()):
             if last_consensus is None or last_consensus.consensusID != consensusID:
                 last_consensus = LastConsensus(
@@ -951,8 +947,7 @@ def svPatterns_from_consensus_sequences(
             dict_alignments_processed[consensusID] = consensusAlignments_copy
             consensusAlignments.clear()
 
-        # Clear the original dict to free memory
-        dict_alignments.clear()
+        del dict_alignments
 
         unprocessed_alignments = set(dict_alignments_processed.keys()) - set(
             sequences_core.keys()

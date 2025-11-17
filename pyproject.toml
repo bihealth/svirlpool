@@ -47,6 +47,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.14.1",
     "syrupy>=4.8.1",
+    "jupyter_core>=5.7.2"
 ]
 
 [tool.hatch.envs.quality]

@@ -16,12 +16,16 @@ from shlex import split
 
 import attrs
 import numpy as np
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
 from pandas import read_csv
 from scipy.stats import binom
 from tqdm import tqdm
 
 from ..localassembly import SVpatterns, svirltile
+from ..util import util
 from ..util.covtree import covtree
 from ..util.datastructures import UnionFind
 from ..util.util import kmer_similarity_of_groups
@@ -181,12 +185,92 @@ def binary_svpattern_index_mask(
     return mask, sv_type_to_index
 
 
-# def load_covtrees(input:list[str]) -> dict[str,dict[str,IntervalTree]]:
-#     covtrees = {}
-#     for path in input:
-#         samplename:str = svirltile.get_metadata(path)["samplename"]
-#         covtrees[samplename] = covtree(path_db=path)
-#     return covtrees
+def all_vs_all_consensus_cores(
+    sample_file_pairs:list[tuple[str, Path | str]],
+    output_alignments:Path,
+    banded_alignment_width:int=100,
+    threads:int=4) -> None:
+    """Aligns all-vs-all consensus core sequences and writes the alignments to output_alignments in bam format.
+
+    Args:
+        sample_file_pairs (list[tuple[str, Path  |  str]]): list of tuples of samplename and path to svPrimitives file
+        output_alignments (Path): path to the output alignments file in bam format
+        banded_alignment_width (int, optional): Equivalent to minimap2 parameter '-r'. Defaults to 100.
+        threads (int, optional): Number of threads to use. Defaults to 4.
+
+    Raises:
+        FileNotFoundError: Raised if the output file cannot be written to.
+    """
+    output_alignments = Path(output_alignments)
+    
+    # Create output directory if it doesn't exist
+    output_alignments.parent.mkdir(parents=True, exist_ok=True)
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = Path(tmp_dir)
+        
+        # Step 1: Extract and write consensus sequences to FASTA file on-the-fly
+        log.info(f"Extracting consensus sequences from {len(sample_file_pairs)} samples")
+        consensus_fasta_path = tmp_dir / "all_consensus_cores.fasta"
+        
+        # Write sequences directly to file as we read them
+        num_sequences = 0
+        with open(consensus_fasta_path, "w") as fasta_out:
+            for samplename, db_path in sample_file_pairs:
+                db_path = Path(db_path)
+                log.debug(f"Extracting consensus sequences from {samplename}")
+                
+                # Get all consensus sequences from this sample's database
+                try:
+                    for consensus_id, consensus_data in svirltile.get_consensus_sequences(db_path):
+                        # Decompress sequence
+                        sequence = svirltile.decompress_sequence(consensus_data["sequence"])
+                        
+                        # Create SeqRecord with sample name in the ID
+                        fasta_id = f"{samplename}:{consensus_id}"
+                        record = SeqRecord(
+                            Seq(sequence),
+                            id=fasta_id,
+                            description="",
+                        )
+                        # Write record directly to file
+                        SeqIO.write(record, fasta_out, "fasta")
+                        num_sequences += 1
+                except Exception as e:
+                    log.warning(f"Error extracting consensus sequences from {db_path}: {e}")
+                    continue
+        
+        if num_sequences == 0:
+            log.warning("No consensus sequences found in any database. Skipping alignment.")
+            return
+        
+        log.info(f"Extracted {num_sequences} consensus sequences")
+        
+        # Step 2: Align all consensus sequences against themselves using minimap2
+        log.info(f"Aligning {num_sequences} consensus sequences with minimap2")
+        
+        # Use util.align_reads_with_minimap for assembly-to-assembly alignment
+        # -x asm20: assembly-to-assembly mode (better for long sequences)
+        # -r: banded alignment width
+        aln_args = f" -r{banded_alignment_width},{banded_alignment_width}"
+        
+        try:
+            util.align_reads_with_minimap(
+                reference=consensus_fasta_path,
+                reads=consensus_fasta_path,
+                bamout=output_alignments,
+                tech="ava-ont",
+                threads=threads,
+                aln_args=aln_args,
+            )
+            if not output_alignments.exists() or output_alignments.stat().st_size == 0:
+                raise RuntimeError(f"Alignment with minimap2 produced empty output: {output_alignments}")
+        except Exception as e:
+            log.error(f"Alignment with minimap2 failed: {e}")
+            raise RuntimeError(f"Alignment with minimap2 failed: {e}")
+        
+        log.info(f"All-vs-all consensus alignment complete: {output_alignments}")
+    
 
 
 # the horizontal merge allows to merge inter with intra alignment SVpatterns
@@ -641,6 +725,20 @@ def vertically_merged_svComposites_from_group(
         verbose=verbose,
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
+    # it could be wise to align all-vs-all cpx-associated svComposites to get a similarity matrix. This matrix could be used to guide the merging of complex re-arrangements.
+    # The samplename-consenusID pairs could be retireved from the svComposites to write all consensus sequences to fasta files (appending the sample names or indices)
+    # and then use minimap2 to align all-vs-all and parse the output to get similarity scores. Parameters in minimap are chosen to have a very narrow banded alignment
+    # for better performance but also for quick parsing of the aligned segments. Each segment is then a conflict-free overlap between two svComposites' original consensus sequences.
+    # all overlapping intervals need to be stored in a container for fast queries. Based on the container, two SV composites can quickly query if all their break ends (on the genome reference)
+    # overlap within the same conflict-free overlapping segment between their consensus sequences. If that is true, then the two can be considered equal and can be merged.
+    merged_cpx = merge_complex_svtypes(
+        complex_svs=others,
+        d=d,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+        verbose=verbose,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+    )
 
     return merged_insertions + merged_deletions + merged_inversions + others
 
@@ -1057,6 +1155,36 @@ def merge_inversions(
             )
         )
     return result
+
+
+def merge_complex_svtypes(
+    complex_svs: list[SVcomposite],
+    d: int,
+    near: int,
+    min_kmer_overlap: float,
+    apriori_size_difference_fraction_tolerance: float,
+    verbose: bool = False,
+    ) -> list[SVcomposite]:
+    """merges SVcomposites of arbitrary break end compositions.
+
+    Args:
+        complex_svs (list[SVcomposite]): list of SVcomposites to merge
+        d (int): Cohen's d threshold for size similarity
+        near (int): tolerance radius for spatial proximity
+        min_kmer_overlap (float): minimum k-mer similarity for merging
+        apriori_size_difference_fraction_tolerance (float): fractional size difference tolerance
+        verbose (bool, optional): whether to print detailed logs. Defaults to False.
+    Returns:
+        list[SVcomposite]: merged SVcomposites
+    """
+    # there are different merging strategies for complex SVs, depending on their composition.
+    # Complex patterns are similar if the break end patterns are similar.
+    # or they are similar if the consensus sequences align across the break end positions without breakends.
+    # this would need pairwise consensus sequence alignments to determine similarity.
+    # The svirltiles could be queried to get the consensus sequences of each consensusID and sample name  pair.
+    # similar patters could be defined as the reference intervals they connect. However, homologous regions generate deviating localizations of break ends and thus,
+    # this is very error-prone.
+    # Another 
 
 
 # %%
@@ -1993,7 +2121,8 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import \
+        load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(
@@ -2101,88 +2230,93 @@ def multisample_sv_calling(
     candidate_regions_file: Path | str | None = None,
     skip_covtrees: bool = False,
 ) -> None:
-    check_if_all_svtypes_are_supported(sv_types=sv_types)
-    samplenames = [svirltile.get_metadata(path)["samplename"] for path in input]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        check_if_all_svtypes_are_supported(sv_types=sv_types)
+        samplenames = [svirltile.get_metadata(path)["samplename"] for path in input]
 
-    # Create covtrees - either real or dummy uniform coverage
-    if skip_covtrees:
-        log.info("Skipping covtree computation, using uniform coverage of 30")
-        covtrees: dict[str, dict[str, IntervalTree]] = (
-            create_dummy_covtrees_from_reference(
-                reference=reference, samplenames=samplenames, default_coverage=30
+        # align all vs all consensus core sequences
+        sample_file_pairs:list[tuple[str, Path | str]] = list(zip(samplenames, input))
+        
+
+        # Create covtrees - either real or dummy uniform coverage
+        if skip_covtrees:
+            log.info("Skipping covtree computation, using uniform coverage of 30")
+            covtrees: dict[str, dict[str, IntervalTree]] = (
+                create_dummy_covtrees_from_reference(
+                    reference=reference, samplenames=samplenames, default_coverage=30
+                )
+            )
+        else:
+            log.info("Computing covtrees from sample data")
+            covtrees: dict[str, dict[str, IntervalTree]] = {
+                samplenames[i]: covtree(path_db=input[i]) for i in range(len(input))
+            }
+
+        # Load copy number tracks from svirltile databases
+        log.info("Loading copy number tracks from svirltile databases")
+        cn_tracks: dict[str, dict[str, IntervalTree]] = (
+            load_copynumber_tracks_from_svirltiles(
+                svirltile_paths=input, samplenames=samplenames
             )
         )
-    else:
-        log.info("Computing covtrees from sample data")
-        covtrees: dict[str, dict[str, IntervalTree]] = {
-            samplenames[i]: covtree(path_db=input[i]) for i in range(len(input))
-        }
 
-    # Load copy number tracks from svirltile databases
-    log.info("Loading copy number tracks from svirltile databases")
-    cn_tracks: dict[str, dict[str, IntervalTree]] = (
-        load_copynumber_tracks_from_svirltiles(
-            svirltile_paths=input, samplenames=samplenames
-        )
-    )
+        # Parse candidate regions file if provided
+        candidate_regions_filter = None
+        if candidate_regions_file is not None:
+            candidate_regions_filter = parse_candidate_regions_file(
+                Path(candidate_regions_file)
+            )
+            log.info(
+                f"Filtering SVpatterns to candidate regions from {candidate_regions_file}."
+            )
 
-    # Parse candidate regions file if provided
-    candidate_regions_filter = None
-    if candidate_regions_file is not None:
-        candidate_regions_filter = parse_candidate_regions_file(
-            Path(candidate_regions_file)
-        )
-        log.info(
-            f"Filtering SVpatterns to candidate regions from {candidate_regions_file}."
+        data: list[SVcomposite] = generate_svComposites_from_dbs(
+            input=input,
+            sv_types=sv_types,
+            candidate_regions_filter=candidate_regions_filter,
         )
 
-    data: list[SVcomposite] = generate_svComposites_from_dbs(
-        input=input,
-        sv_types=sv_types,
-        candidate_regions_filter=candidate_regions_filter,
-    )
+        merged: list[SVcomposite] = merge_svComposites(
+            apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+            svComposites=data,
+            max_cohens_d=max_cohens_d,
+            near=near,
+            min_kmer_overlap=min_kmer_overlap,
+            verbose=verbose,
+        )
 
-    merged: list[SVcomposite] = merge_svComposites(
-        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-        svComposites=data,
-        max_cohens_d=max_cohens_d,
-        near=near,
-        min_kmer_overlap=min_kmer_overlap,
-        verbose=verbose,
-    )
-
-    merged = [
-        svComposite
-        for svComposite in merged
-        if abs(svComposite.get_size()) >= min_sv_size
-    ]
-    # if tmp dir is provided, dump all merged svComposites to a pickle file
-    if tmp_dir_path is not None:
-        save_svComposites_to_pickle(data=merged, output_path=tmp_dir_path)
-    svCalls: list[SVcall] = [
-        svcall
-        for svComposite in merged
-        for svcall in SVcalls_from_SVcomposite(
-            svComposite,
-            covtrees=covtrees,
-            cn_tracks=cn_tracks,
+        merged = [
+            svComposite
+            for svComposite in merged
+            if abs(svComposite.get_size()) >= min_sv_size
+        ]
+        # if tmp dir is provided, dump all merged svComposites to a pickle file
+        if tmp_dir_path is not None:
+            save_svComposites_to_pickle(data=merged, output_path=tmp_dir_path)
+        svCalls: list[SVcall] = [
+            svcall
+            for svComposite in merged
+            for svcall in SVcalls_from_SVcomposite(
+                svComposite,
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+                find_leftmost_reference_position=find_leftmost_reference_position,
+            )
+        ]
+        ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
+            svComposites=merged,
+            reference=reference,
             find_leftmost_reference_position=find_leftmost_reference_position,
         )
-    ]
-    ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
-        svComposites=merged,
-        reference=reference,
-        find_leftmost_reference_position=find_leftmost_reference_position,
-    )
-    write_svCalls_to_vcf(
-        svCalls=svCalls,
-        output=output,
-        reference=reference,
-        samplenames=samplenames,
-        covtrees=covtrees,
-        refdict=ref_bases_dict,
-        symbolic_threshold=symbolic_threshold,
-    )
+        write_svCalls_to_vcf(
+            svCalls=svCalls,
+            output=output,
+            reference=reference,
+            samplenames=samplenames,
+            covtrees=covtrees,
+            refdict=ref_bases_dict,
+            symbolic_threshold=symbolic_threshold,
+        )
 
 
 def run(args) -> None:
