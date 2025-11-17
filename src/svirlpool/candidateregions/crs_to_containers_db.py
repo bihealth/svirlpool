@@ -1,20 +1,20 @@
 # %%
 import argparse
 import json
+import logging
 import sqlite3
-
-# from tqdm import tqdm
 from itertools import combinations
 from pathlib import Path, PosixPath
 
 # from sklearn.cluster import AgglomerativeClustering
 # import numpy as np
 # import pandas as pd
-from logzero import logger as log
 from tqdm import tqdm
 
 from ..candidateregions import signalstrength_to_crs
 from ..util import datastructures, datatypes
+
+log = logging.getLogger(__name__)
 
 # %%
 
@@ -192,8 +192,7 @@ def crs_containers_QC(
 
     # create a histogram of the number of crs per crs container
     _data = [len(cr["crs"]) for cr in crs_containers]  # FIXME: unused?
-    # import seaborn as sns
-    # # # create histogram with seaborn
+
     # sns.histplot(data,bins=range(1,max(data)+1),discrete=True)
     # import matplotlib.pyplot as plt
     # plt.title('Histogram of crs per container')

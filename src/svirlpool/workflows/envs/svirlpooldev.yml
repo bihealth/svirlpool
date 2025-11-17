@@ -74,7 +74,6 @@ dependencies:
   - humanfriendly=10.0=pyhd8ed1ab_6
   - icu=73.2=h59595ed_0
   - idna=3.7=pyhd8ed1ab_0
-  - igraph=0.10.12=hc5bd65f_0
   - igvtools=2.17.3=hdfd78af_0
   - immutables=0.20=py312h98912ed_1
   - importlib_resources=6.4.0=pyhd8ed1ab_0
@@ -155,7 +154,6 @@ dependencies:
   - libxml2=2.12.7=hc051c1a_1
   - libzlib=1.2.13=h4ab18f5_6
   - logmuse=0.2.6=pyh8c360ce_0
-  - logzero=1.7.0=py312h7900ff3_5
   - lz4-c=1.9.4=hcb278e6_0
   - mafft=7.525=h031d066_1
   - markdown-it-py=3.0.0=pyhd8ed1ab_0
@@ -173,7 +171,6 @@ dependencies:
   - mysql-libs=8.3.0=hca2cd23_4
   - nbformat=5.10.4=pyhd8ed1ab_0
   - ncurses=6.5=h59595ed_0
-  - networkx=3.3=pyhd8ed1ab_1
   - ngmlr=0.2.7=hdcf5f25_6
   - nose=1.3.7=py_1006
   - nspr=4.35=h27087fc_0
@@ -211,7 +208,6 @@ dependencies:
   - python=3.12.3=hab00c5b_0_cpython
   - python-dateutil=2.9.0=pyhd8ed1ab_0
   - python-fastjsonschema=2.19.1=pyhd8ed1ab_0
-  - python-igraph=0.11.5=py312h794dfce_0
   - python-levenshtein=0.12.0=0
   - python-tzdata=2024.1=pyhd8ed1ab_0
   - python_abi=3.12=4_cp312
@@ -244,7 +240,6 @@ dependencies:
   - snakemake-interface-storage-plugins=3.2.2=pyhdfd78af_0
   - snakemake-minimal=8.14.0=pyhdfd78af_0
   - sqlite=3.46.0=h6d4b2fc_0
-  - stopit=1.1.2=py_0
   - tabulate=0.9.0=pyhd8ed1ab_1
   - tenacity=8.3.0=pyhd8ed1ab_0
   - texttable=1.7.0=pyhd8ed1ab_0
@@ -300,5 +295,4 @@ dependencies:
   - zstd=1.5.6=ha6fb4c9_0
   - pip:
     - kaleido==0.2.1
-    - seaborn==0.13.2
 prefix: /data/gpfs-1/users/mayv_c/work/miniconda/envs/svirlpooldev

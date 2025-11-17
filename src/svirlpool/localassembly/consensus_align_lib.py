@@ -2,6 +2,7 @@
 
 import cProfile
 import io
+import logging
 import pstats
 import subprocess
 import tempfile
@@ -10,12 +11,13 @@ from pathlib import Path
 from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from intervaltree import Interval, IntervalTree
-from logzero import logger as log
 from pysam import AlignedSegment
 
 from ..localassembly import consensus
 from ..util import datastructures, datatypes
 from . import consensus_class
+
+log = logging.getLogger(__name__)
 
 # %%
 

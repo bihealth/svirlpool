@@ -3,14 +3,15 @@
 import argparse
 import csv
 import json
+import logging
 import tempfile
 from pathlib import Path
-
-from logzero import logger as log
 
 from ..signalprocessing import alignments_to_rafs
 from ..util import util
 from . import rafs_indel_histograms
+
+log = logging.getLogger(__name__)
 
 # %%
 

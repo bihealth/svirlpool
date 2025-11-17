@@ -1,8 +1,8 @@
 import logging
 import multiprocessing as mp
 import time
+from collections.abc import Iterator
 from datetime import datetime
-from typing import Iterator
 
 import attrs
 import cattrs
@@ -45,7 +45,7 @@ class SVprimitive(datatypes.MergedSVSignal):  # can be ins,del,bndl,bndr
     )
     adjacent_bnd: None | Adjacency = None
     similar_sequence_intervals_on_consensus: list[
-        list[int, int]
+        tuple[int, int]
     ] = []  # in core sequence coords
 
     @classmethod
@@ -220,7 +220,7 @@ def add_genotypeMeasurements_to_SVprimitives(
 
 def calculate_similar_sequence_intervals_on_consensus(
     svPrimitive: SVprimitive, core_padding_left: int, minimizer_index: MinimizerIndex
-) -> list[list[int, int]]:
+) -> list[tuple[int, int]]:
     sv_start_on_core = svPrimitive.read_start - core_padding_left
     if svPrimitive.sv_type == 0:  # INS
         start = sv_start_on_core

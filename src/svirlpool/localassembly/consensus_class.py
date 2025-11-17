@@ -9,7 +9,6 @@ import logging
 import pickle
 import sqlite3
 from pathlib import Path
-from typing import Union
 
 import attrs
 import cattrs
@@ -39,7 +38,7 @@ def structure_string_int_float_union(obj, _):
 
 
 # Register the structure hook for the union type
-cattrs.register_structure_hook(Union[str, int, float], structure_string_int_float_union)
+cattrs.register_structure_hook(str | int | float, structure_string_int_float_union)
 
 
 @attrs.define

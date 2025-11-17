@@ -41,13 +41,16 @@
 # - uncertain: Complex CN patterns requiring manual review
 
 import argparse
+import logging
 import subprocess
 import tempfile
 from enum import Enum
 from pathlib import Path, PosixPath
 
 import vcfpy
-from logzero import logger as log
+
+# logger
+log = logging.getLogger(__name__)
 
 # %%
 

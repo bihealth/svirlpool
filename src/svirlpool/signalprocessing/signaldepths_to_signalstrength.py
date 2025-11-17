@@ -4,6 +4,7 @@ import argparse
 import csv
 import gzip
 import json
+import logging
 import multiprocessing
 import shlex
 import subprocess
@@ -14,10 +15,12 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-from logzero import logger as log
 
 from ..signalprocessing import alignments_to_rafs
 from ..util import datatypes, util
+
+# logger
+log = logging.getLogger(__name__)
 
 
 # creates a score between 0 and 1 for the similarity of two signal sizes.

@@ -5,22 +5,23 @@
 # S set of read names that are filtered out
 # %%
 import argparse
+import logging
 import multiprocessing as mp
 import subprocess
 import tempfile
-import typing
 from math import ceil
 from pathlib import Path
 from shlex import split
 
 import pysam
-from logzero import logger as log
+
+log = logging.getLogger(__name__)
 
 # %%
 
 
 def find_candidates(
-    region: typing.Tuple[str, int, int],
+    region: tuple[str, int, int],
     bam_path: Path,
     cache_size: int,
     min_overlap: float,
@@ -121,7 +122,7 @@ def find_candidates(
 
 
 def filter_reads(
-    region: typing.Tuple[str, int, int], readnames: set, bam_path: Path, out_path: Path
+    region: tuple[str, int, int], readnames: set, bam_path: Path, out_path: Path
 ):
     log.info(
         f"filtering reads from {region[0]}:{region[1]}-{region[2]} in file {bam_path} and writing to file {out_path}."
@@ -140,9 +141,7 @@ def filter_reads(
 # regions and then divide the total number by the number of provided threads to get the chunk size.
 # if a chromosome is much longer than chunksize, then split it into regions of chunksize.
 # otherwise, use the provided regions.
-def split_regions(
-    bedfile: Path, threads: int
-) -> typing.List[typing.Tuple[str, int, int]]:
+def split_regions(bedfile: Path, threads: int) -> list[tuple[str, int, int]]:
     # first, compute the total number of bases in the regions
     total_bases = 0
     with open(bedfile, "r") as f:

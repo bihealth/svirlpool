@@ -2,11 +2,11 @@
 # this script combines the tables from all given databases into a single database
 
 import argparse
+import logging
 import sqlite3
 from pathlib import Path
 
-from logzero import logfile
-from logzero import logger as log
+log = logging.getLogger(__name__)
 
 # %%
 
@@ -112,7 +112,15 @@ def main():
     parser = get_parser()
     args = parser.parse_args()
     if args.logfile:
-        logfile(str(args.logfile))
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        )
+        file_handler = logging.FileHandler(args.logfile)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+        )
+        logging.getLogger().addHandler(file_handler)
     run(args)
     return
 

@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-dependencies = ["numpy>=2.3.4,<3", "pandas>=2.3.3,<3", "matplotlib>=3.10.7,<4", "scipy>=1.16.3,<2", "scikit-learn>=1.7.2,<2", "biopython>=1.86,<2", "plotly>=6.3.1,<7", "seaborn>=0.13.2,<0.14", "tqdm>=4.67.1,<5", "logzero>=1.7.0,<2", "attrs>=25.4.0,<26", "cattrs>=25.3.0,<26", "intervaltree>=3.1.0,<4", "networkx>=3.5,<4", "python-igraph>=1.0.0,<2", "stopit>=1.1.2,<2", "vcfpy>=0.14.2,<0.15", "pyyaml>=6.0.3,<7", "typer>=0.20.0,<0.21", "rich", "pydantic>=2.12.3,<3", "requests>=2.32.5,<3", "click", "setuptools~=70.0.0", "snakemake>=9.13.4,<10"]
+dependencies = ["numpy>=2.3.4,<3", "pandas>=2.3.3,<3", "matplotlib>=3.10.7,<4", "scipy>=1.16.3,<2", "scikit-learn>=1.7.2,<2", "biopython>=1.86,<2", "plotly>=6.3.1,<7", "tqdm>=4.67.1,<5", "attrs>=25.4.0,<26", "cattrs>=25.3.0,<26", "intervaltree>=3.1.0,<4", "vcfpy>=0.14.2,<0.15", "pyyaml>=6.0.3,<7", "typer>=0.20.0,<0.21", "rich", "pydantic>=2.12.3,<3", "requests>=2.32.5,<3", "click", "setuptools~=70.0.0", "snakemake>=9.13.4,<10"]
 
 [project.scripts]
 svirlpool = "svirlpool.__main__:main"
@@ -191,7 +191,7 @@ dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
 check = "ruff check --preview src tests && shfmt -i 4 -d **/*.sh"
-format = "ruff format --preview src tests && shfmt -i 4 -w **/*.sh"
+format = "ruff format --preview src tests && ruff check --preview --fix src tests && shfmt -i 4 -w **/*.sh"
 typecheck = "pyright src/ tests/"
 test = "pytest --cov=svirlpool --cov-report=term-missing tests/ --durations 0 -s"
 test-snapshot = "pytest --cov=svirlpool tests/ --snapshot-update"
