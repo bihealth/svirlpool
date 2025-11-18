@@ -2472,7 +2472,7 @@ packages:
 - pypi: ./
   name: svirlpool
   version: 0.1.0
-  sha256: d910505858e267aeba7a6d3e973623d9587624f06e757c711255d267dc9a59a5
+  sha256: b25c78d0f0e6f3fe21ccb06a9d0476fe704c70f081718f64a503d778a55e78b7
   requires_dist:
   - numpy>=2.3.4,<3
   - pandas>=2.3.3,<3
