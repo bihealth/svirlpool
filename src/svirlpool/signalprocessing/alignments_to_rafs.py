@@ -326,6 +326,7 @@ def process_region(
     filter_nonseparated__min_overlap: float,
     filter_nonseparated__min_fragment_size: int,
     filter_nonseparated__max_inversion_coverage: float,
+    max_coverage: int = 400,
 ) -> list[datatypes.ReadAlignmentFragment]:
     """parse all alignments in a region and create from each alignment a ReadAlignmentFragment"""
     chrom, start, end = region
@@ -344,6 +345,8 @@ def process_region(
         )
     lines = []
     with pysam.AlignmentFile(path_alignments, "rb") as file:
+        current_coverage = 0
+        ending = []  # keeps track of alignment end positions in ascending sorted order
         for alignment in file.fetch(chrom, start, end):
             N_alignments += 1
             if alignment.query_name in non_separated_reads:
@@ -358,6 +361,24 @@ def process_region(
                 or alignment.reference_start > end
             ):
                 continue
+
+            # Update coverage: remove alignments that have ended
+            while ending and ending[0] <= alignment.reference_start:
+                ending.pop(0)
+                current_coverage -= 1
+
+            # Add current alignment to coverage tracking
+            current_coverage += 1
+            ending.append(alignment.reference_end)
+            ending.sort()
+
+            # Skip processing if coverage exceeds threshold
+            if current_coverage > max_coverage:
+                log.debug(
+                    f"Skipping alignment {chrom}:{alignment.reference_start}-{alignment.reference_end} due to high coverage ({current_coverage} > {max_coverage})"
+                )
+                continue
+
             lines.append(
                 parse_ReadAlignmentFragment_from_alignment(
                     alignment=alignment,
@@ -420,6 +441,7 @@ def process_bam(
     filter_nonseparated__max_inversion_coverage: float,
     threads: int = 1,
     tmp_dir_path: Path | None = None,
+    max_coverage: int = 400,
 ):
     if threads < 1:
         threads = mp.cpu_count()
@@ -453,6 +475,7 @@ def process_bam(
             "filter_nonseparated__max_inversion_coverage": (
                 filter_nonseparated__max_inversion_coverage
             ),
+            "max_coverage": max_coverage,
         }
         for i, region in enumerate(regions)
     ]
@@ -576,6 +599,7 @@ def run(args, **kwargs):
         filter_nonseparated__min_fragment_size=args.filter_nonseparated__min_fragment_size,
         filter_nonseparated__max_inversion_coverage=args.filter_nonseparated__max_inversion_coverage,
         tmp_dir_path=args.tmp_dir_path,
+        max_coverage=args.max_coverage,
     )
 
     # path_alignments:Path,
@@ -699,6 +723,12 @@ def get_parser():
         type=float,
         default=0.15,
         help="maximum coverage by candidates to be considered as candidate. Increase if a greater proportion of the depth of coverage is attributed to candidates. Default is 0.15",
+    )
+    parser.add_argument(
+        "--max-coverage",
+        type=int,
+        default=400,
+        help="Maximum coverage threshold. Alignments in regions exceeding this coverage will be skipped. Default is 400.",
     )
     parser.add_argument(
         "--tmp-dir-path",
