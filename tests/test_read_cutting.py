@@ -19,20 +19,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data" / "read_cutting"
 
 def test_trim_reads_multiple():
     filepath = DATA_DIR / "platinum.bam"
-
-    # Debug: check file size and first bytes
-    print(f"File size: {filepath.stat().st_size} bytes")
-    with open(filepath, "rb") as f:
-        magic = f.read(4)
-        print(f"First 4 bytes: {magic}")
-        assert magic == b"BAM\x01" or magic[:3] == b"\x1f\x8b\x08", (
-            f"Invalid BAM header: {magic}"
-        )
-
-    # Convert Path to str for pysam
     try:
-        with pysam.AlignmentFile(str(filepath), "rb", check_sq=False) as samfile:
-            alns = list(samfile)
+        alns = list(pysam.AlignmentFile(filepath, "rb"))
     except Exception as e:
         print(f"Error opening BAM: {e}")
         print(f"pysam version: {pysam.__version__}")
@@ -41,7 +29,6 @@ def test_trim_reads_multiple():
     region_start = 21112695
     regions_end = 21122675
     dict_all_intervals = consensus.get_read_alignment_intervals_in_region(
-        sampleID=0,
         alignments=alns,
         buffer_clipped_length=0,
         region_start=region_start,
@@ -51,36 +38,37 @@ def test_trim_reads_multiple():
         dict_all_intervals=dict_all_intervals
     )
     read_records = consensus.get_full_read_sequences_of_alignments(
-        dict_alignments={0: {0: alns}}, paths_alignments={0: DATA_DIR / "platinum.bam"}
+        dict_alignments={0: alns}, path_alignments=DATA_DIR / "platinum.bam"
     )
     cut_reads = consensus.trim_reads(
-        dict_alignments={0: {0: alns}},
+        dict_alignments={0: alns},
         intervals=max_intervals,
         read_records=read_records,
     )
     result = {readname: len(rc) for readname, rc in cut_reads.items()}
+
     expected = {
-        "06f1d59d-2559-49a0-ac27-3c7bc8dfa723.0": 9936,
-        "408fe495-893f-4cfd-bf2f-15953e3bf41f.0": 9982,
-        "e32c0759-77d1-4ae9-8a17-f8ad228d2f53.0": 9893,
-        "4bcc7456-8df6-4472-9c64-cc82ca642b38.0": 9900,
-        "e98b61e1-f273-49a1-b74e-f8f965a890fd.0": 9885,
-        "4e977c76-e639-4887-8b1c-71ce98432603.0": 9925,
-        "1f07a9a1-7bf0-4120-b47d-9d1e54b47412.0": 9904,
-        "6c40fb61-ad17-4e63-ac9d-026a1c82dab1.0": 9891,
-        "d69878f8-4ee1-41f0-b472-a952b7b8dcd6.0": 9900,
-        "277483bd-edbc-4ca4-bf40-f9e5be0cb63b.0": 9893,
-        "a513e5f1-1011-4a3d-a3b4-b9c184e9f083.0": 9869,
-        "226ef612-42f1-4b00-85fa-5800824eb44e.0": 9898,
-        "6b6fcdda-997a-4406-9832-3782abe54504.0": 9946,
-        "4809cafa-6202-4981-a810-a752c96b183b.0": 9900,
-        "796ad9b0-8325-4774-96c8-8dce86526b25.0": 9860,
-        "21985f85-24eb-4461-bab7-98f2f70516d8.0": 9862,
-        "44824ca7-4ef5-42e7-9756-3275157850ac.0": 9929,
-        "d9d47dfd-f913-475b-b3f0-24a5e9be045c.0": 9905,
-        "886c55ec-a679-40af-9d8f-58e43f4c8a7a.0": 5747,
-        "7bfd65fa-58b5-4ade-8565-fd3bb08fe4db.0": 2099,
-        "143d83e8-b375-449d-8564-7c05fea7b07f.0": 196,
+        "06f1d59d-2559-49a0-ac27-3c7bc8dfa723": 9936,
+        "408fe495-893f-4cfd-bf2f-15953e3bf41f": 9982,
+        "e32c0759-77d1-4ae9-8a17-f8ad228d2f53": 9893,
+        "4bcc7456-8df6-4472-9c64-cc82ca642b38": 9900,
+        "e98b61e1-f273-49a1-b74e-f8f965a890fd": 9885,
+        "4e977c76-e639-4887-8b1c-71ce98432603": 9925,
+        "1f07a9a1-7bf0-4120-b47d-9d1e54b47412": 9904,
+        "6c40fb61-ad17-4e63-ac9d-026a1c82dab1": 9891,
+        "d69878f8-4ee1-41f0-b472-a952b7b8dcd6": 9900,
+        "277483bd-edbc-4ca4-bf40-f9e5be0cb63b": 9893,
+        "a513e5f1-1011-4a3d-a3b4-b9c184e9f083": 9869,
+        "226ef612-42f1-4b00-85fa-5800824eb44e": 9898,
+        "6b6fcdda-997a-4406-9832-3782abe54504": 9946,
+        "4809cafa-6202-4981-a810-a752c96b183b": 9900,
+        "796ad9b0-8325-4774-96c8-8dce86526b25": 9860,
+        "21985f85-24eb-4461-bab7-98f2f70516d8": 9862,
+        "44824ca7-4ef5-42e7-9756-3275157850ac": 9929,
+        "d9d47dfd-f913-475b-b3f0-24a5e9be045c": 9905,
+        "886c55ec-a679-40af-9d8f-58e43f4c8a7a": 5747,
+        "7bfd65fa-58b5-4ade-8565-fd3bb08fe4db": 2099,
+        "143d83e8-b375-449d-8564-7c05fea7b07f": 196,
     }
     for key in expected:
         assert result[key] == expected[key]
@@ -123,7 +111,6 @@ def test_cut_reads_open_end_fwd():
         region_start = 1000
         regions_end = 8000
         dict_all_intervals = consensus.get_read_alignment_intervals_in_region(
-            sampleID=0,
             alignments=alns,
             buffer_clipped_length=4000,
             region_start=region_start,
@@ -133,17 +120,17 @@ def test_cut_reads_open_end_fwd():
             dict_all_intervals=dict_all_intervals
         )
         read_records = consensus.get_full_read_sequences_of_alignments(
-            dict_alignments={0: {0: alns}}, paths_alignments={0: tmp_alignments.name}
+            dict_alignments={0: alns}, path_alignments=tmp_alignments.name
         )
         cut_reads = consensus.trim_reads(
-            dict_alignments={0: {0: alns}},
+            dict_alignments={0: alns},
             intervals=max_intervals,
             read_records=read_records,
         )
         # check lengths of cut reads
         assert len(cut_reads) == 2
-        assert len(cut_reads["read-0.0"]) == 9_000
-        assert len(cut_reads["read-1.0"]) == 7_000
+        assert len(cut_reads["read-0"]) == 9_000
+        assert len(cut_reads["read-1"]) == 7_000
 
 
 # now do the same with reversed reads
@@ -163,12 +150,10 @@ def test_cut_reads_open_end_rvs():
             alignments=Path(tmp_alignments.name),
             aln_args=" -Y --secondary=no --sam-hit-only",
         )
-        util.display_ascii_alignments(alns)
         region_start = 1000
         regions_end = 8000
         buffer_clipped_length = 4000
         dict_all_intervals = consensus.get_read_alignment_intervals_in_region(
-            sampleID=0,
             alignments=alns,
             buffer_clipped_length=buffer_clipped_length,
             region_start=region_start,
@@ -178,21 +163,21 @@ def test_cut_reads_open_end_rvs():
             dict_all_intervals=dict_all_intervals
         )
         read_records = consensus.get_full_read_sequences_of_alignments(
-            dict_alignments={0: {0: alns}}, paths_alignments={0: tmp_alignments.name}
+            dict_alignments={0: alns}, path_alignments=tmp_alignments.name
         )
         cut_reads = consensus.trim_reads(
-            dict_alignments={0: {0: alns}},
+            dict_alignments={0: alns},
             intervals=max_intervals,
             read_records=read_records,
         )
         # check lengths of cut reads
         assert len(cut_reads) == 2
-        assert len(cut_reads["read-0.0"]) == 6000
-        assert len(cut_reads["read-1.0"]) == 5000
+        assert len(cut_reads["read-0"]) == 6000
+        assert len(cut_reads["read-1"]) == 5000
 
 
 def test_get_ref_pitx_on_read__real_long_rev():
-    alns = DATA_DIR / "read_cutting" / "long_rev.bam"
+    alns = DATA_DIR / "long_rev.bam"
     aln = next(pysam.AlignmentFile(alns, "rb"))
     positions = [819_386, 932_891]
     expecteds = [113338, 68]
@@ -204,7 +189,7 @@ def test_get_ref_pitx_on_read__real_long_rev():
 
 
 def test_get_interval_on_read_in_region__real_long_rev():
-    alns = DATA_DIR / "read_cutting" / "long_rev.bam"
+    alns = DATA_DIR / "long_rev.bam"
     aln = next(pysam.AlignmentFile(alns, "rb"))
     regions = [(920481, 927769), (865112, 876018)]
     expectets = [(5322, 12566), (58324, 68267)]
@@ -216,7 +201,7 @@ def test_get_interval_on_read_in_region__real_long_rev():
 
 
 def test_get_interval_on_read_in_region__real_long_rev2():
-    alns = DATA_DIR / "read_cutting" / "long_rev.2.bam"
+    alns = DATA_DIR / "long_rev.2.bam"
     aln = next(pysam.AlignmentFile(alns, "rb"))
     regions = [(920481, 927769), (865112, 876018)]
     expectets = [(31, 6300), (51939, 61888)]
