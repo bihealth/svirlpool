@@ -6,10 +6,12 @@ import sqlite3
 import tempfile
 from pathlib import Path, PosixPath
 
+from numpy import uint64
+from xxhash import xxh64
+
 from ..util import datatypes, util
 
 log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 
 # %%
 
@@ -28,31 +30,44 @@ def parse_lines(byte_lines):
             chr = parts[0]  # Keep as string
             start = int(parts[1])  # Convert to int
             end = int(parts[2])  # Convert to int
-            readname = parts[3]  # Keep as string
+            readname = uint64(
+                parts[3]
+            )  # parts[3] is already the hash value as string, just convert to uint64
             parsed_data.append([chr, start, end, readname])
         except (UnicodeDecodeError, ValueError) as e:
             print(f"Skipping line {i} due to error: {e}")
     return parsed_data
 
 
-def load_cov_from_db(
-    db_path: Path, itemname: str = "effective", encoding: str = "utf-8"
-) -> list:
+def load_cov_from_db(db_path: Path, itemname: str = "effective") -> list:
     """
-    Reads the gzipped coverage data from the database, decompresses it, and parses the lines.
-
-    :param db_path: Path to the SQLite database.
-    :param encoding: Encoding to use for decoding lines (default: utf-8).
-    :return: Generator yielding parsed tuples (str, int, int, int).
+    Reads the chunked coverage data from the database and parses the lines.
     """
     conn = sqlite3.connect("file:" + str(db_path) + "?mode=ro", uri=True)
     cursor = conn.cursor()
-    cursor.execute("SELECT data FROM coverage WHERE id = ?", (itemname,))
+
+    # Get number of chunks
+    cursor.execute(
+        "SELECT data FROM coverage WHERE id = ?", (f"{itemname}_num_chunks",)
+    )
     row = cursor.fetchone()
-    conn.close()
     if row is None:
-        return  # No data found, exit generator
-    return parse_lines(pickle.loads(row[0]))
+        conn.close()
+        return []
+
+    num_chunks = pickle.loads(row[0])
+
+    # Load all chunks
+    all_lines = []
+    for chunk_idx in range(num_chunks):
+        chunk_id = f"{itemname}_chunk_{chunk_idx}"
+        cursor.execute("SELECT data FROM coverage WHERE id = ?", (chunk_id,))
+        row = cursor.fetchone()
+        if row:
+            all_lines.extend(pickle.loads(row[0]))
+
+    conn.close()
+    return parse_lines(all_lines)
 
 
 def create_database(output: bytes) -> None:
@@ -68,16 +83,48 @@ def create_database(output: bytes) -> None:
 
 
 # reading with util.yield_cov_from_db
-def write_cov_to_db(db_path: Path, tmp_bg_file: str | Path, itemname: str) -> None:
-    # write the tmp_bg_file to the database as a BLOB
+def write_cov_to_db(
+    db_path: Path, tmp_bg_file: str | Path, itemname: str, chunk_size: int = 1_000_000
+) -> None:
+    """
+    Write the tmp_bg_file to the database as chunked BLOBs.
+
+    :param db_path: Path to the SQLite database
+    :param tmp_bg_file: Path to the temporary coverage file
+    :param itemname: Identifier for this coverage data
+    :param chunk_size: Number of lines per chunk (default: 1,000,000)
+    """
     conn = sqlite3.connect("file:" + str(db_path) + "?mode=rwc", uri=True)
+
     with open(tmp_bg_file, "rb") as file:
-        # read lines and compress to BLOB
-        lines = file.readlines()
-        data = pickle.dumps(lines)
+        chunk_idx = 0
+        while True:
+            # Read chunk_size lines
+            lines = []
+            for _ in range(chunk_size):
+                line = file.readline()
+                if not line:
+                    break
+                lines.append(line)
+
+            if not lines:
+                break  # No more data
+
+            # Compress and store chunk
+            data = pickle.dumps(lines)
+            chunk_id = f"{itemname}_chunk_{chunk_idx}"
+            conn.execute(
+                "INSERT OR REPLACE INTO coverage (id, data) VALUES (?, ?)",
+                (chunk_id, data),
+            )
+            chunk_idx += 1
+
+        # Store metadata about number of chunks
         conn.execute(
-            "INSERT OR REPLACE INTO coverage (id, data) VALUES (?, ?)", (itemname, data)
+            "INSERT OR REPLACE INTO coverage (id, data) VALUES (?, ?)",
+            (f"{itemname}_num_chunks", pickle.dumps(chunk_idx)),
         )
+
     conn.commit()
     conn.close()
 
@@ -93,7 +140,13 @@ def rafs_to_coverage(input: Path, output: Path) -> None:
             x: datatypes.ReadAlignmentFragment = raf
             # print(x.reference_name, x.reference_alignment_start, x.reference_alignment_end, x.read_name, sep="\t", file=f)
             if x.effective_interval:
-                print(*x.effective_interval, x.read_name, sep="\t", file=g)
+                print(
+                    *x.effective_interval,
+                    uint64(xxh64(x.read_name).intdigest()),
+                    sep="\t",
+                    file=g,
+                )
+
     # create DB
     create_database(output=output)
     # write both (total, ) to DB
