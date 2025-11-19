@@ -15,7 +15,7 @@ import pysam
 from tqdm import tqdm
 
 from ..util import datatypes, util
-from . import filter_nonseparated, filter_rafs
+from . import filter_nonseparated
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +257,53 @@ def parse_SVsignals_from_alignment(
     return sv_signals
 
 
+def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> list[int]:
+    """Returns"""
+    if len(svSignals) == 0:
+        return []
+    # check if list is sorted
+    if not all(
+        svSignals[i].ref_start <= svSignals[i + 1].ref_start
+        for i in range(len(svSignals) - 1)
+    ):
+        raise ValueError("List of SVsignals is not sorted by ref_start.")
+
+    # build a mask. The mask keeps the density of each signal. The mask has the length of svSignals
+    mask = [0] * len(svSignals)
+    left: int = 0
+    right: int = 0
+    for mid, midSvSignal in enumerate(svSignals):
+        # move right until right is out of radius (svSignals[right].ref_start - midSvSignal.ref_end > radius)
+        while (
+            right < len(svSignals)
+            and svSignals[right].ref_start - midSvSignal.ref_end <= radius
+        ):
+            right += 1
+        # right is now the the first signal that is out of radius
+        # move left until left is in radius (midSvSignal.ref_start - svSignals[left].ref_end <= radius)
+        while left < mid and midSvSignal.ref_start - svSignals[left].ref_end > radius:
+            left += 1
+        # left is now the first signal that is in the radius
+        # sum all signals sizes of the same type as midSvSignal that are in the radius
+        mask[mid] = sum(
+            s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type
+        )
+    # filter all signals that have a mask value below min_signal_bp
+    return mask
+
+
+def filter_signals_for_minimum_density(
+    svSignals: list[datatypes.SVsignal], min_signal_bp: int, radius: int
+) -> list[datatypes.SVsignal]:
+    """filters any signal that fails to accumulate another min_signal_bp within radius. The returned list is sorted by ref_start."""
+    densities = sv_signals_densities(
+        svSignals=sorted(svSignals, key=lambda x: x.ref_start), radius=radius
+    )
+    return [
+        svSignals[i] for i in range(len(svSignals)) if densities[i] >= min_signal_bp
+    ]
+
+
 def parse_ReadAlignmentFragment_from_alignment(
     alignment: pysam.AlignedSegment,
     samplename: str,
@@ -282,7 +329,7 @@ def parse_ReadAlignmentFragment_from_alignment(
     sv_signals_density_filtered = sv_signals
     if filter_density_radius > 0 and filter_density_min_bp > 0:
         sv_signals_density_filtered = sorted(
-            filter_rafs.filter_signals_for_minimum_density(
+            filter_signals_for_minimum_density(
                 svSignals=sv_signals,
                 min_signal_bp=filter_density_min_bp,
                 radius=filter_density_radius,
