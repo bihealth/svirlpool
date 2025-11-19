@@ -15,7 +15,7 @@ import pysam
 from tqdm import tqdm
 
 from ..util import datatypes, util
-from . import filter_nonseparated, filter_rafs
+from . import filter_nonseparated
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +257,53 @@ def parse_SVsignals_from_alignment(
     return sv_signals
 
 
+def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> list[int]:
+    """Returns"""
+    if len(svSignals) == 0:
+        return []
+    # check if list is sorted
+    if not all(
+        svSignals[i].ref_start <= svSignals[i + 1].ref_start
+        for i in range(len(svSignals) - 1)
+    ):
+        raise ValueError("List of SVsignals is not sorted by ref_start.")
+
+    # build a mask. The mask keeps the density of each signal. The mask has the length of svSignals
+    mask = [0] * len(svSignals)
+    left: int = 0
+    right: int = 0
+    for mid, midSvSignal in enumerate(svSignals):
+        # move right until right is out of radius (svSignals[right].ref_start - midSvSignal.ref_end > radius)
+        while (
+            right < len(svSignals)
+            and svSignals[right].ref_start - midSvSignal.ref_end <= radius
+        ):
+            right += 1
+        # right is now the the first signal that is out of radius
+        # move left until left is in radius (midSvSignal.ref_start - svSignals[left].ref_end <= radius)
+        while left < mid and midSvSignal.ref_start - svSignals[left].ref_end > radius:
+            left += 1
+        # left is now the first signal that is in the radius
+        # sum all signals sizes of the same type as midSvSignal that are in the radius
+        mask[mid] = sum(
+            s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type
+        )
+    # filter all signals that have a mask value below min_signal_bp
+    return mask
+
+
+def filter_signals_for_minimum_density(
+    svSignals: list[datatypes.SVsignal], min_signal_bp: int, radius: int
+) -> list[datatypes.SVsignal]:
+    """filters any signal that fails to accumulate another min_signal_bp within radius. The returned list is sorted by ref_start."""
+    densities = sv_signals_densities(
+        svSignals=sorted(svSignals, key=lambda x: x.ref_start), radius=radius
+    )
+    return [
+        svSignals[i] for i in range(len(svSignals)) if densities[i] >= min_signal_bp
+    ]
+
+
 def parse_ReadAlignmentFragment_from_alignment(
     alignment: pysam.AlignedSegment,
     samplename: str,
@@ -282,7 +329,7 @@ def parse_ReadAlignmentFragment_from_alignment(
     sv_signals_density_filtered = sv_signals
     if filter_density_radius > 0 and filter_density_min_bp > 0:
         sv_signals_density_filtered = sorted(
-            filter_rafs.filter_signals_for_minimum_density(
+            filter_signals_for_minimum_density(
                 svSignals=sv_signals,
                 min_signal_bp=filter_density_min_bp,
                 radius=filter_density_radius,
@@ -326,6 +373,7 @@ def process_region(
     filter_nonseparated__min_overlap: float,
     filter_nonseparated__min_fragment_size: int,
     filter_nonseparated__max_inversion_coverage: float,
+    max_coverage: int = 400,
 ) -> list[datatypes.ReadAlignmentFragment]:
     """parse all alignments in a region and create from each alignment a ReadAlignmentFragment"""
     chrom, start, end = region
@@ -344,6 +392,8 @@ def process_region(
         )
     lines = []
     with pysam.AlignmentFile(path_alignments, "rb") as file:
+        current_coverage = 0
+        ending = []  # keeps track of alignment end positions in ascending sorted order
         for alignment in file.fetch(chrom, start, end):
             N_alignments += 1
             if alignment.query_name in non_separated_reads:
@@ -358,6 +408,24 @@ def process_region(
                 or alignment.reference_start > end
             ):
                 continue
+
+            # Update coverage: remove alignments that have ended
+            while ending and ending[0] <= alignment.reference_start:
+                ending.pop(0)
+                current_coverage -= 1
+
+            # Add current alignment to coverage tracking
+            current_coverage += 1
+            ending.append(alignment.reference_end)
+            ending.sort()
+
+            # Skip processing if coverage exceeds threshold
+            if current_coverage > max_coverage:
+                log.debug(
+                    f"Skipping alignment {chrom}:{alignment.reference_start}-{alignment.reference_end} due to high coverage ({current_coverage} > {max_coverage})"
+                )
+                continue
+
             lines.append(
                 parse_ReadAlignmentFragment_from_alignment(
                     alignment=alignment,
@@ -420,6 +488,7 @@ def process_bam(
     filter_nonseparated__max_inversion_coverage: float,
     threads: int = 1,
     tmp_dir_path: Path | None = None,
+    max_coverage: int = 400,
 ):
     if threads < 1:
         threads = mp.cpu_count()
@@ -453,6 +522,7 @@ def process_bam(
             "filter_nonseparated__max_inversion_coverage": (
                 filter_nonseparated__max_inversion_coverage
             ),
+            "max_coverage": max_coverage,
         }
         for i, region in enumerate(regions)
     ]
@@ -576,6 +646,7 @@ def run(args, **kwargs):
         filter_nonseparated__min_fragment_size=args.filter_nonseparated__min_fragment_size,
         filter_nonseparated__max_inversion_coverage=args.filter_nonseparated__max_inversion_coverage,
         tmp_dir_path=args.tmp_dir_path,
+        max_coverage=args.max_coverage,
     )
 
     # path_alignments:Path,
@@ -699,6 +770,12 @@ def get_parser():
         type=float,
         default=0.15,
         help="maximum coverage by candidates to be considered as candidate. Increase if a greater proportion of the depth of coverage is attributed to candidates. Default is 0.15",
+    )
+    parser.add_argument(
+        "--max-coverage",
+        type=int,
+        default=400,
+        help="Maximum coverage threshold. Alignments in regions exceeding this coverage will be skipped. Default is 400.",
     )
     parser.add_argument(
         "--tmp-dir-path",

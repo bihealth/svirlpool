@@ -28,7 +28,9 @@ def construct_interval_trees(
     for chr in tqdm(chrs, desc="Building interval trees"):
         chr = str(chr)
         data_chr_intervals = data[data[:, 0] == chr][:, 1:3].astype(int)
-        data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)
+        data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(
+            np.uint64
+        )  # 64 bit hashed readnames
         tree = IntervalTree()
         tree = IntervalTree.from_tuples(
             zip(

@@ -1421,8 +1421,8 @@ def SVcalls_from_SVcomposite(
     # separate cases:
     # 1) insertion & deletion
     result: list[SVcall] = []
-    all_alt_reads: dict[str, set[str]] = (
-        svComposite.get_alt_readnames_per_sample()
+    all_alt_reads: dict[str, set[np.uint64]] = (
+        svComposite.get_alt_readnamehashes_per_sample()
     )  # {samplename: {readname, ...}}
 
     if svComposite.sv_type in ("INS", "DEL"):
@@ -1448,13 +1448,19 @@ def SVcalls_from_SVcomposite(
                     samplename=samplename, total_coverage=0
                 )
                 continue
-            all_reads: set[str] = {
-                it.data for it in covtrees[samplename][chrname][start - 500 : end + 500]
+            all_reads: set[int] = {
+                int(it.data)
+                for it in covtrees[samplename][chrname][start - 500 : end + 500]
             }
-            alt_reads: set[str] = all_reads.intersection(
+            # debug: compare all reads and all alt reads
+            print(
+                f"All reads: {all_reads}\nAlt reads: {all_alt_reads.get(samplename, set())}"
+            )
+
+            alt_reads: set[int] = all_reads.intersection(
                 all_alt_reads.get(samplename, set())
             )
-            ref_reads: set[str] = all_reads.difference(alt_reads)
+            ref_reads: set[int] = all_reads.difference(alt_reads)
 
             if len(alt_reads) == 0:
                 log.warning(

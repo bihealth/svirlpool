@@ -6,6 +6,7 @@ import pickle
 import attrs  # type: ignore
 import numpy as np  # type: ignore
 from intervaltree import Interval, IntervalTree  # type: ignore
+from xxhash import xxh64
 
 from ..localassembly import SVpatterns
 
@@ -128,6 +129,15 @@ class SVcomposite:
         for svPattern in self.svPatterns:
             alt_readnames.setdefault(svPattern.samplename, set()).update(
                 svPattern.get_supporting_reads()
+            )
+        return alt_readnames
+
+    def get_alt_readnamehashes_per_sample(self) -> dict[str, set[int]]:
+        """Get all supporting reads per sample (from each SVpattern, from each SVprimitive) returns a dict {samplename: set(hashed readnames)}"""
+        alt_readnames: dict[str, set[int]] = {}
+        for svPattern in self.svPatterns:
+            alt_readnames.setdefault(svPattern.samplename, set()).update(
+                int(xxh64(s).intdigest()) for s in svPattern.get_supporting_reads()
             )
         return alt_readnames
 

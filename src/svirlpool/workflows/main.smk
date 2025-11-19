@@ -64,13 +64,15 @@ else:
 
 N_files_per_dir = config["N_files_per_dir"]
 mononucleotides = config["mononucleotides"]
-unique_regions  = config["unique_regions"]
+#unique_regions  = config["unique_regions"]
+
+# signal extraction
+max_coverage_per_region = config.get("max_coverage_per_region", 400)
 
 # candidate regions
 filter_absolute=config["filter_absolute"]
 filter_normalized=config["filter_normalized"]
 min_cr_size=config["min_cr_size"]
-optimal_cr_size=config["optimal_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
 
 # consensus
@@ -145,7 +147,8 @@ rule signalprocessing_alignments_to_rafs:
         min_signal_size=6,
         min_bnd_size=300,
         min_segment_size=250,
-        min_mapq=min_mapq
+        min_mapq=min_mapq,
+        max_coverage_per_region=max_coverage_per_region,
     resources:
         mem_mb=cores*1024,
         runtime=240
@@ -164,6 +167,7 @@ rule signalprocessing_alignments_to_rafs:
         -s {params.samplename} \
         -r {input.regions} \
         -o {output.file} \
+        --max-coverage {params.max_coverage_per_region} \
         --min-signal-size {params.min_signal_size} \
         --min-bnd-size {params.min_bnd_size} \
         --min-segment-size {params.min_segment_size} \

@@ -45,36 +45,41 @@ log = logging.getLogger(__name__)
 # %%
 
 
-def yield_last_column(input: Path, dtype: type) -> Iterable[object]:
+def yield_last_column(input: Path, dtype: type, description: str = "") -> Iterable:
     csv.field_size_limit(2147483647)
     # open gzipped file if compressed, else open as text file
     try:
         with gzip.open(input, "rt") as f:
             reader = csv.reader(f, delimiter="\t", quotechar='"')
-            for line in tqdm(reader):
+            for line in tqdm(reader, desc=description):
                 yield cattrs.structure(json.loads(line[-1]), dtype)
-    except Exception as e:
-        log.error(f"Error reading {input}: {e}")
+    except (gzip.BadGzipFile, OSError, UnicodeDecodeError) as e:
+        # Log and fall back to the other opener
+        log.debug(f"Could not open {input} with gzip.open: {e}. Trying plain open...")
         try:
             with open(input, "r") as f:
                 reader = csv.reader(f, delimiter="\t", quotechar='"')
-                for line in tqdm(reader):
+                for line in tqdm(reader, desc=description):
                     yield cattrs.structure(json.loads(line[-1]), dtype)
-        except Exception as e:
-            log.error(f"Error reading {input}: {e}")
-            raise FileNotFoundError(
-                f"Could not open {input}. Make sure the file exists and is not corrupted."
-            )
+        except FileNotFoundError as e:
+            # Not found: rethrow as it is definitive
+            raise e
 
 
-def yield_from_raf(input: Path) -> Iterable[datatypes.ReadAlignmentFragment]:
-    yield from yield_last_column(input=input, dtype=datatypes.ReadAlignmentFragment)
+def yield_from_raf(
+    input: Path, description: str = ""
+) -> Iterator[datatypes.ReadAlignmentFragment]:
+    yield from yield_last_column(
+        input=input, dtype=datatypes.ReadAlignmentFragment, description=description
+    )
 
 
 def yield_from_extendedSVsignal(
-    input: Path,
-) -> Iterable[datatypes.ExtendedSVsignal]:
-    yield from yield_last_column(input=input, dtype=datatypes.ExtendedSVsignal)
+    input: Path, description: str = ""
+) -> Iterator[datatypes.ExtendedSVsignal]:
+    yield from yield_last_column(
+        input=input, dtype=datatypes.ExtendedSVsignal, description=description
+    )
 
 
 def yield_consensus_objects(

@@ -61,8 +61,7 @@ pixi run \
         --reference examples/muc1/data/muc1.fa \
         --trf examples/muc1/data/muc1.trf.bed \
         --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
-        --lamassemble-mat data/lamassemble-mats/promethion.mat \
-        --unique-regions examples/muc1/data/muc1.unique.bed
+        --lamassemble-mat data/lamassemble-mats/promethion.mat
 ```
 
 The directory `/tmp/workdir/result` will contain a number of files. The most important one is the file `/tmp/svirltile.db` that is necessary for the subsequent (potentially joint) SV calling and creation of a VCF file.
@@ -145,7 +144,6 @@ THREADS=16
 TRF=$DATADIR/pbsv-annotations/human_hs37d5.trf.bed
 MAT=$SVIRLPOOLDIR/data/lamassemble-mats/promethion.mat
 MNNTS=$DATADIR/HG19/hs37d5.mononucleotides.lt6.bed.gz
-UNIQUER=$DATADIR/HG19/hs37d5.unique.bed.gz
 ```
 
 Now cd into a directory of your choice, where your data shall be processed, e.g.
@@ -166,7 +164,6 @@ svirlpool run \
     --trf $TRF \
     --lamassemble-mat $MAT \
     --mononucleotides $ MNNTS \
-    --unique-regions UNIQUER \
     --threads $THREADS \
     --min-sv-size 30
 ```
@@ -183,7 +180,6 @@ svirlpool run \
     --trf $TRF \
     --lamassemble-mat $MAT \
     --mononucleotides $ MNNTS \
-    --unique-regions UNIQUER \
     --threads $THREADS \
     --min-sv-size 30
 ```
