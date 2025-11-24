@@ -4,39 +4,50 @@
 
 import argparse
 import logging
-import multiprocessing as mp
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from shlex import split
 
+from tqdm import tqdm
+
 from ..signalprocessing import alignments_to_rafs
 from ..util import datatypes, util
+
+log = logging.getLogger(__name__)
 
 # 0     1         2       3    4          5        6    7        8          9       10
 # [chrID,ref_start,ref_end,type,read_start,read_end,size,readname,samplename,forward,chr] # +deph_of_coverage (later)
 
 
-def get_depths(rafs: list[datatypes.ReadAlignmentFragment], output: Path) -> None:
-    """Get the maximum depth of coverage over the given intervals, excluding the specified readname."""
+def get_depths(rafs: Iterator[datatypes.ReadAlignmentFragment], output: Path) -> None:
+    """Get the maximum depth of coverage over the given intervals, excluding the specified readname.
+
+    Processes RAFs in a streaming fashion to avoid loading all data into memory.
+    """
     with tempfile.TemporaryDirectory() as tdir:
         tmp_bed_intervals = Path(tdir) / "intervals.bed"
-        # write intervals to bed file for depth computation
-        with open(tmp_bed_intervals, "w") as f:
-            for x in sorted(rafs, key=lambda x: x.reference_alignment_start):
+        tmp_bed_signals = Path(tdir) / "signals.bed"
+
+        log.debug(f"Writing temporary intervals file: {tmp_bed_intervals}")
+        # Stream RAFs and write both intervals and signals in one pass
+        with (
+            open(tmp_bed_intervals, "w") as intervals_f,
+            open(tmp_bed_signals, "w") as signals_f,
+        ):
+            for raf in rafs:
+                x: datatypes.ReadAlignmentFragment = raf
+                # Write interval for this RAF
                 print(
                     x.referenceID,
                     x.reference_alignment_start,
                     x.reference_alignment_end,
                     sep="\t",
-                    file=f,
+                    file=intervals_f,
                 )
 
-        # now write the signal lines to a tmp file
-        tmp_bed_signals = Path(tdir) / "signals.bed"
-        with open(tmp_bed_signals, "w") as f:
-            for raf in rafs:
-                x: datatypes.ReadAlignmentFragment = raf
+                # Write all signal lines for this RAF
                 for signal in x.SV_signals:
                     y: datatypes.SVsignal = signal
                     line = [
@@ -52,73 +63,42 @@ def get_depths(rafs: list[datatypes.ReadAlignmentFragment], output: Path) -> Non
                         int(x.alignment_forward),
                         x.reference_name,
                     ]
-                    print(*line, sep="\t", file=f)
+                    print(*line, sep="\t", file=signals_f)
 
-        # sort the signal bed file
+        # Sort the intervals file by position
+        log.debug(f"Sorting temporary intervals file: {tmp_bed_intervals}")
+        sorted_intervals = Path(tdir) / "intervals_sorted.bed"
+        cmd_sort_intervals = f"sort -k1,1 -k2,2n {tmp_bed_intervals}"
+        with open(sorted_intervals, "w") as out_f:
+            subprocess.check_call(split(cmd_sort_intervals), stdout=out_f)
+
+        # Sort the signal bed file
+        log.debug(f"Sorting temporary signals file: {tmp_bed_signals}")
         sorted_signals = Path(tdir) / "signals_sorted.bed"
         cmd_sort = f"sort -k1,1 -k2,2n {tmp_bed_signals}"
         with open(sorted_signals, "w") as out_f:
             subprocess.check_call(split(cmd_sort), stdout=out_f)
 
         # now use bedtools coverage to get the coverage of each signal line by the intervals in the tmp bed file
-        cmd = f"bedtools coverage -a {sorted_signals} -b {tmp_bed_intervals} -counts"
+        log.debug(
+            f"Running bedtools coverage with -a {sorted_signals} and -b {sorted_intervals}"
+        )
+        cmd = f"bedtools coverage -a {sorted_signals} -b {sorted_intervals} -counts"
         with open(output, "w") as out_f:
             subprocess.check_call(split(cmd), stdout=out_f)
 
 
-def _process_chromosome(args_tuple):
-    """Helper function for parallel processing of chromosomes."""
-    chrom_rafs_serialized, temp_output = args_tuple
-    # Deserialize RAFs
-    chrom_rafs = [
-        datatypes.ReadAlignmentFragment.from_unstructured(raf_data)
-        for raf_data in chrom_rafs_serialized
-    ]
-    get_depths(chrom_rafs, temp_output)
-    return temp_output
-
-
 def signaldepths_from_rafs(input: Path, output: Path, threads: int = 8) -> None:
-    """creates a signaldepths file from a RAF file. Coverage is only counted for the unique region spanning \
-intervals of all alignments (RAFs). The output file is a tsv with olumns: \
-[chrID,ref_start,ref_end,type,read_start,read_end,size,readname,sampleID,forward,chr,deph_of_coverage]"""
+    """Creates a signaldepths file from a RAF file.
 
-    rafs: dict[str : list[datatypes.ReadAlignmentFragment]] = {}  # chr:list of rafs
-    for raf in util.yield_from_raf(input):
-        if raf.reference_name not in rafs:
-            rafs[raf.reference_name] = []
-        rafs[raf.reference_name].append(raf)
+    Coverage is only counted for the unique region spanning intervals of all alignments (RAFs).
+    The output file is a tsv with columns:
+    [chrID,ref_start,ref_end,type,read_start,read_end,size,readname,sampleID,forward,chr,depth_of_coverage]
 
-    # procedure:
-    # create jobs for multiprocessing. each job processes the ReadalignmentFragments of one chromosome and writes to a temporary file.
-    # create a temporary directory with target files for each process
-    # execute the jobs in parallel
-    # combine the temporary files into the output file
-    # sort the output file by chrID and ref_start
-
-    with tempfile.TemporaryDirectory() as tdir:
-        temp_dir = Path(tdir)
-
-        # Prepare jobs for parallel processing - serialize RAFs
-        jobs = []
-        for chrom, chrom_rafs in rafs.items():
-            if not chrom_rafs:
-                continue
-            temp_output = temp_dir / f"{chrom}_signals.bed"
-            # Serialize RAFs for multiprocessing
-            chrom_rafs_serialized = [raf.unstructure() for raf in chrom_rafs]
-            jobs.append((chrom_rafs_serialized, temp_output))
-
-        # Process chromosomes in parallel
-        with mp.Pool(processes=min(threads, len(jobs))) as pool:
-            temp_files = pool.map(_process_chromosome, jobs)
-
-        # Combine all temporary files into the output file
-        with open(output, "w") as out_f:
-            for temp_file in temp_files:
-                if temp_file.exists():
-                    with open(temp_file, "r") as in_f:
-                        out_f.write(in_f.read())
+    Streams all RAFs from the input file without loading them into memory.
+    """
+    # Stream all RAFs and process them directly
+    get_depths(tqdm(util.yield_from_raf(input)), output)
 
 
 def create_combined_files(

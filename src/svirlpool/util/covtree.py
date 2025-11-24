@@ -13,8 +13,11 @@ log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)
 
 
 def load_reference_data(path_db: Path | str) -> np.ndarray:
-    """Loads reference dictionary and coverage data from the database."""
-    data = np.array(rafs_to_coverage.load_cov_from_db(path_db))
+    """
+    Loads reference dictionary and coverage data from the database.
+    data is a container that holds all parsed RAF intervals as numpy array. chr, start, end, readname
+    """
+    data = np.array(list(rafs_to_coverage.load_cov_from_db(path_db)))
     return data
 
 
@@ -51,6 +54,7 @@ def process_chromosome(
     chr: str, positions: list[int], intervall_tree: IntervalTree
 ) -> tuple[str, IntervalTree]:
     """Processes a single chromosome to compute coverage intervals."""
+    log.info(f"Processing chromosome {chr} for coverage computation")
     local_cov_tree = IntervalTree()
     for i in range(len(positions) - 1):
         start, end = positions[i], positions[i + 1]
@@ -64,9 +68,10 @@ def process_chromosome(
 def parallel_coverage_computation(
     all_positions: dict[str, list[int]],
     intervall_trees: dict[str, IntervalTree],
-    num_workers: int = mp.cpu_count(),
+    num_workers: int = 4,
 ) -> dict[str, IntervalTree]:
     """Computes coverage in parallel for all chromosomes."""
+    log.info(f"Using {num_workers} workers for parallel coverage computation")
     cov_trees = {}
     with mp.Pool(processes=num_workers) as pool:
         results = list(
@@ -91,6 +96,8 @@ def covtree(path_db: Path | str) -> dict[str, IntervalTree]:
     """Returns a dict of interval trees. Each tree consists of intervals (start, end, readname) of the 'read alignment fragments (RAFs)'."""
     log.info(f"loading data from {path_db}")
     data = load_reference_data(path_db)
+    # print the memory usage of data
+    log.info(f"Data loaded. Memory usage: {data.nbytes / (1024**2):.2f} MB")
     log.info("constructing interval trees")
     intervall_trees, all_positions = construct_interval_trees(data)
     return intervall_trees

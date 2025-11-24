@@ -1258,7 +1258,7 @@ def write_svPatterns_to_db(
 
 
 def read_svPatterns_from_db(
-    database: Path, consensusIDs: list[str] | None = None, crIDs: set[int] | None = None
+    database: Path, consensusIDs: set[str] | None = None, crIDs: set[int] | None = None
 ) -> list[SVpatternType]:
     """Read SVpatterns from database."""
     with sqlite3.connect(str(database), timeout=30.0) as conn:

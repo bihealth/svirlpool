@@ -515,6 +515,50 @@ def query_copynumber_from_regions(
 # Main Copy Number Track Generation
 # ============================================================================
 
+# def generate_copynumber_tracks(
+#             fasta_index: Path,
+#             coverage_db: Path,
+#             output_bed: Path,
+#             output_db: Path,
+#             threads: int,
+#             stay_prob: float,
+#             dispersion: float,
+#             chr_filterlist: list[str] = None,
+#             regions_path: Path | None = None,
+#             transition_matrix=None,
+#         ) -> tuple[Path, Path]:
+#     if chr_filterlist is None:
+#         chr_filterlist = []
+#     log.info("Generating copy number tracks...")
+
+#     # step 1: use covtree to compute non-overlapping intervals of coverage
+#     log.info(f"loading data from {coverage_db}")
+#     coverage_intervals: dict[str, list[tuple[int, int, uint64]]] = {}
+#     ends: dict[str, list[tuple[int, uint64]]] = {}  # heap per chromosome
+#     current_position: int = 0
+#     current_coverage: int = 0
+#     for (chr, start, end, readhash) in rafs_to_coverage.load_cov_from_db(path_db=coverage_db):
+#         # before the current position is advanced by the new start, we need to check if any intervals end before the new start
+#         while chr in ends and ends[chr] and ends[chr][0][0] <= start:
+#             end_pos, end_readhash = heapq.heappop(ends[chr])
+#             # add interval
+#             if end_pos > current_position:
+#                 coverage_intervals.setdefault(chr, []).append((current_position, end_pos, current_coverage))
+#                 current_position = end_pos
+#             current_coverage -= 1
+
+
+#         if chr not in ends:
+#             ends[chr] = []
+#         heapq.heappush(ends[chr], (end, readhash))
+#         # intervals can have the same start or end. In case this intervals shares a start with the previous one, we need to increment the coverage before adding the interval.
+#         # if the start is greater than the current position, we need to add an interval
+#         if start > current_position:
+#             # add interval
+#             coverage_intervals.setdefault(chr, []).append((current_position, start, current_coverage))
+#             current_position = start
+#         current_coverage += 1
+
 
 def generate_copynumber_tracks(
     fasta_index: Path,
@@ -556,13 +600,14 @@ def generate_copynumber_tracks(
     log.info(f"loading data from {coverage_db}")
     data = covtree.load_reference_data(path_db=coverage_db)
     log.info("constructing interval trees")
+
     intervall_trees_reads, all_positions = covtree.construct_interval_trees(data=data)
     log.info("computing coverages")
     start_time = time.time()
     cov_trees = covtree.parallel_coverage_computation(
         all_positions=all_positions,
         intervall_trees=intervall_trees_reads,
-        num_workers=threads,
+        num_workers=min(8, threads),
     )
     log.info(f"Execution time: {time.time() - start_time:.2f} seconds")
 

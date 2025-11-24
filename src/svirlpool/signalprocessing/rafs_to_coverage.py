@@ -4,6 +4,7 @@ import logging as log
 import pickle
 import sqlite3
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path, PosixPath
 
 from numpy import uint64
@@ -18,13 +19,13 @@ log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)
 
 def parse_lines(byte_lines):
     parsed_data = []
-    for i, line in enumerate(byte_lines):
+    for line in byte_lines:
         try:
             decoded_str = line.decode().strip()  # Decode bytes and strip newline
             parts = decoded_str.split("\t")  # Split by tab
 
             if len(parts) != 4:
-                raise ValueError(f"Line {i} does not have exactly 4 columns: {parts}")
+                raise ValueError(f"Line does not have exactly 4 columns: {parts}")
 
             # Convert values with error handling
             chr = parts[0]  # Keep as string
@@ -35,13 +36,15 @@ def parse_lines(byte_lines):
             )  # parts[3] is already the hash value as string, just convert to uint64
             parsed_data.append([chr, start, end, readname])
         except (UnicodeDecodeError, ValueError) as e:
-            print(f"Skipping line {i} due to error: {e}")
+            print(f"Skipping line due to error: {e}")
     return parsed_data
 
 
-def load_cov_from_db(db_path: Path, itemname: str = "effective") -> list:
+def load_cov_from_db(
+    db_path: Path, itemname: str = "effective"
+) -> Iterator[tuple[str, int, int, uint64]]:
     """
-    Reads the chunked coverage data from the database and parses the lines.
+    Reads the chunked coverage data from the database and yields parsed lines one at a time.
     """
     conn = sqlite3.connect("file:" + str(db_path) + "?mode=ro", uri=True)
     cursor = conn.cursor()
@@ -53,21 +56,37 @@ def load_cov_from_db(db_path: Path, itemname: str = "effective") -> list:
     row = cursor.fetchone()
     if row is None:
         conn.close()
-        return []
+        return
 
     num_chunks = pickle.loads(row[0])
 
-    # Load all chunks
-    all_lines = []
+    # Load and yield lines from each chunk
     for chunk_idx in range(num_chunks):
         chunk_id = f"{itemname}_chunk_{chunk_idx}"
         cursor.execute("SELECT data FROM coverage WHERE id = ?", (chunk_id,))
         row = cursor.fetchone()
         if row:
-            all_lines.extend(pickle.loads(row[0]))
+            byte_lines = pickle.loads(row[0])
+            # Parse and yield each line individually
+            for line in byte_lines:
+                try:
+                    decoded_str = line.decode().strip()
+                    parts = decoded_str.split("\t")
+
+                    if len(parts) != 4:
+                        raise ValueError(
+                            f"Line does not have exactly 4 columns: {parts}"
+                        )
+
+                    chr = str(parts[0])
+                    start = int(parts[1])
+                    end = int(parts[2])
+                    readname = uint64(parts[3])
+                    yield (chr, start, end, readname)
+                except (UnicodeDecodeError, ValueError) as e:
+                    print(f"Skipping line due to error: {e}")
 
     conn.close()
-    return parse_lines(all_lines)
 
 
 def create_database(output: bytes) -> None:
