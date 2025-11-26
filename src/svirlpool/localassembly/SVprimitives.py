@@ -288,137 +288,120 @@ def generate_SVprimitives(
     result = []
 
     for crs_container_result in tqdm(crs_container_results_iter):
-        for consensus in crs_container_result.consensus_dicts.values():
-            cache: list[SVprimitive] = []
-            if print_performance_times:
-                start_idx_build_time = datetime.now()
-                minimizer_index = MinimizerIndex(
-                    consensus.consensus_sequence, k=15, w=10
-                )
-                end_idx_build_time = datetime.now()
-                log.info(
-                    f"Minimizer index built in {(end_idx_build_time - start_idx_build_time).total_seconds() * 1000:.3f} ms"
-                )
-            else:
-                minimizer_index = MinimizerIndex(
-                    consensus.consensus_sequence, k=15, w=10
-                )
+        
+        
+def container_result_to_svprimitives(
+        consensus:consensus_class.Consensus,
+        consensus_alignments: list[consensus_class.ConsensusAlignment],
+        ) -> list[SVprimitive]:
+    
+    results : list[SVprimitive] = []
 
-            start_querying_time = datetime.now()
-            for i, consensusAlignment in enumerate(
-                dict_alignments.get(consensus.ID, [])
+    for i, consensusAlignment in enumerate(consensus_alignments):
+        svp_cache: list[SVprimitive] = []
+        # trace back the core interval of the consensus sequence on the consensus to reference alignment
+        pysam_alignment = pysam_cache[consensusAlignment.uid]
+        ref_start = get_read_position_on_ref(
+            alignment=pysam_alignment,
+            position=intervals_core[consensus.ID][0],
+            direction=Direction.LEFT,
+        )
+        ref_end = get_read_position_on_ref(
+            alignment=pysam_alignment,
+            position=intervals_core[consensus.ID][1],
+            direction=Direction.RIGHT,
+        )
+        ref_start, ref_end = (
+            (ref_end, ref_start)
+            if ref_start > ref_end
+            else (ref_start, ref_end)
+        )  # ensure ref_start <= ref_end
+        for j, svCandidate in enumerate(consensusAlignment.proto_svs):
+            consensus_aln_interval = (
+                pysam_alignment.reference_name,
+                ref_start,
+                ref_end,
+            )
+            svp_cache.append(
+                SVprimitive.from_merged_sv_signal(
+                    merged_sv_signal=svCandidate,
+                    samplename=samplename,
+                    consensusID=consensus.ID,
+                    alignmentID=i,
+                    svID=j,
+                    aln_is_reverse=consensusAlignment.alignment.is_reverse(),
+                    consensus_aln_interval=consensus_aln_interval,
+                )
+            )
+        add_genotypeMeasurements_to_SVprimitives(
+            svps=svp_cache,
+            pysam_aln=pysam_alignment,
+            intervals_cutread_alignments=consensus.intervals_cutread_alignments,
+            core_interval_start=consensus.consensus_padding.padding_size_left,
+        )
+
+        # filter svp_cache for all svps that have no supporting reads
+        svp_cache = [
+            svp
+            for svp in svp_cache
+            if len(svp.genotypeMeasurement.supporting_reads_start) > 0
+        ]  # this should really filter all empty svPrimitives, but they still occur downstream. why?
+
+        for idx, svPrimitive in enumerate(svp_cache):
+            debug_performance__len_consensus_seuquence = len(
+                consensus.consensus_sequence
+            )
+            debug_performance__sum_svPrimitive_sizes = sum(
+                (
+                    svp.size
+                    if svp.sv_type == 0
+                    else (50 if svp.sv_type == 1 else 200)
+                )
+                for svp in svp_cache
+            )
+            debug_performance__num_svPrimitives = len(svp_cache)
+
+            # Start timing
+            start_time = time.perf_counter()
+
+            # Use optimized or original method based on flag
+            svPrimitive.similar_sequence_intervals_on_consensus = calculate_similar_sequence_intervals_on_consensus(
+                svPrimitive=svPrimitive,
+                core_padding_left=consensus.consensus_padding.padding_size_left,
+                minimizer_index=minimizer_index,
+            )
+
+            if (
+                not svPrimitive.similar_sequence_intervals_on_consensus
+                or len(svPrimitive.similar_sequence_intervals_on_consensus) == 0
             ):
-                svp_cache: list[SVprimitive] = []
-                # trace back the core interval of the consensus sequence on the consensus to reference alignment
-                pysam_alignment = pysam_cache[consensusAlignment.uid]
-                ref_start = get_read_position_on_ref(
-                    alignment=pysam_alignment,
-                    position=intervals_core[consensus.ID][0],
-                    direction=Direction.LEFT,
+                # make the location of the SV primitive on the consensus sequence
+                start = (
+                    svPrimitive.read_start
+                    - 50
+                    - consensus.consensus_padding.padding_size_left
                 )
-                ref_end = get_read_position_on_ref(
-                    alignment=pysam_alignment,
-                    position=intervals_core[consensus.ID][1],
-                    direction=Direction.RIGHT,
+                end = (
+                    svPrimitive.read_end
+                    + 50
+                    - consensus.consensus_padding.padding_size_left
                 )
-                ref_start, ref_end = (
-                    (ref_end, ref_start)
-                    if ref_start > ref_end
-                    else (ref_start, ref_end)
-                )  # ensure ref_start <= ref_end
-                for j, svCandidate in enumerate(consensusAlignment.proto_svs):
-                    consensus_aln_interval = (
-                        pysam_alignment.reference_name,
-                        ref_start,
-                        ref_end,
-                    )
-                    svp_cache.append(
-                        SVprimitive.from_merged_sv_signal(
-                            merged_sv_signal=svCandidate,
-                            samplename=samplename,
-                            consensusID=consensus.ID,
-                            alignmentID=i,
-                            svID=j,
-                            aln_is_reverse=consensusAlignment.alignment.is_reverse(),
-                            consensus_aln_interval=consensus_aln_interval,
-                        )
-                    )
-                add_genotypeMeasurements_to_SVprimitives(
-                    svps=svp_cache,
-                    pysam_aln=pysam_alignment,
-                    intervals_cutread_alignments=consensus.intervals_cutread_alignments,
-                    core_interval_start=consensus.consensus_padding.padding_size_left,
-                )
+                svPrimitive.similar_sequence_intervals_on_consensus = [
+                    (start, end)
+                ]
 
-                # filter svp_cache for all svps that have no supporting reads
-                svp_cache = [
-                    svp
-                    for svp in svp_cache
-                    if len(svp.genotypeMeasurement.supporting_reads_start) > 0
-                ]  # this should really filter all empty svPrimitives, but they still occur downstream. why?
+            # End timing and log performance data
+            end_time = time.perf_counter()
+            execution_time_ms = (end_time - start_time) * 1000.0
 
-                for idx, svPrimitive in enumerate(svp_cache):
-                    debug_performance__len_consensus_seuquence = len(
-                        consensus.consensus_sequence
-                    )
-                    debug_performance__sum_svPrimitive_sizes = sum(
-                        (
-                            svp.size
-                            if svp.sv_type == 0
-                            else (50 if svp.sv_type == 1 else 200)
-                        )
-                        for svp in svp_cache
-                    )
-                    debug_performance__num_svPrimitives = len(svp_cache)
+            # Get performance logger
+            perf_logger = logging.getLogger("performance")
+            perf_logger.info(
+                f"{consensus.ID},{idx},{debug_performance__len_consensus_seuquence},{debug_performance__num_svPrimitives},{debug_performance__sum_svPrimitive_sizes},{svPrimitive.sv_type},{svPrimitive.size},{execution_time_ms:.3f}"
+            )
+            results.append(svPrimitive)
+    return results
 
-                    # Start timing
-                    start_time = time.perf_counter()
-
-                    # Use optimized or original method based on flag
-                    svPrimitive.similar_sequence_intervals_on_consensus = calculate_similar_sequence_intervals_on_consensus(
-                        svPrimitive=svPrimitive,
-                        core_padding_left=consensus.consensus_padding.padding_size_left,
-                        minimizer_index=minimizer_index,
-                    )
-
-                    if (
-                        not svPrimitive.similar_sequence_intervals_on_consensus
-                        or len(svPrimitive.similar_sequence_intervals_on_consensus) == 0
-                    ):
-                        # make the location of the SV primitive on the consensus sequence
-                        start = (
-                            svPrimitive.read_start
-                            - 50
-                            - consensus.consensus_padding.padding_size_left
-                        )
-                        end = (
-                            svPrimitive.read_end
-                            + 50
-                            - consensus.consensus_padding.padding_size_left
-                        )
-                        svPrimitive.similar_sequence_intervals_on_consensus = [
-                            (start, end)
-                        ]
-
-                    # End timing and log performance data
-                    end_time = time.perf_counter()
-                    execution_time_ms = (end_time - start_time) * 1000.0
-
-                    # Get performance logger
-                    perf_logger = logging.getLogger("performance")
-                    perf_logger.info(
-                        f"{consensus.ID},{idx},{debug_performance__len_consensus_seuquence},{debug_performance__num_svPrimitives},{debug_performance__sum_svPrimitive_sizes},{svPrimitive.sv_type},{svPrimitive.size},{execution_time_ms:.3f}"
-                    )
-
-                cache.extend(svp_cache)
-            if print_performance_times:
-                end_querying_time = datetime.now()
-                log.info(
-                    f"Querying similar sequence intervals took {(end_querying_time - start_querying_time).total_seconds() * 1000:.3f} ms"
-                )
-            # add adjacencies to the cached SVprimitives
-            result.extend(add_adjacencies_to_svPrimitives(cache))
-    return result
 
 
 def _process_consensus_batch_serialized(

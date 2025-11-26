@@ -1,4 +1,5 @@
 import argparse
+from io import TextIOWrapper
 import json
 import logging
 import multiprocessing as mp
@@ -29,7 +30,7 @@ log = logging.getLogger(__name__)
 
 
 def parse_crs_container_results(
-    path: PosixPath,
+    path: Path | str,
 ) -> Generator[consensus_class.CrsContainerResult, None, None]:
     with open(path, "r") as f:
         for line in f:
@@ -126,59 +127,15 @@ def add_trf_annotations_to_consensusAlignments_inplace(
 
 
 def align_padded_consensus_sequences(
-    input_consensus_container_results: Path | str,
+    padded_sequences_paths: dict[int, Path],
     input_reference: Path | str,
     path_bamout: Path | str,
-    path_fastaout: Path | str,
     threads: int,
-    overwrite_fasta: bool = False,
     tmp_dir_path: Path | None = None,
-) -> tuple[dict[str, bytes], dict[str, tuple[int, int]]]:
-    # iterate all CrsContainerResults and write the padded DNA sequences to a fasta file
-    core_sequences: dict[
-        str, bytes
-    ] = {}  # save key = consensusID, value = sequence (compressed with pickle and simplified padding parts)
-    core_intervals: dict[
-        str, tuple[int, int]
-    ] = {}  # save key = consensusID, value = (start,end) of the core sequence
-
+) -> None:
     with tempfile.TemporaryDirectory(
         dir=tmp_dir_path, delete=False if tmp_dir_path else True
     ) as tmp_dir:
-        log.debug(
-            f"Writing core sequences and intervals to fasta file: {str(path_fastaout)} "
-        )
-        with open(path_fastaout, "w") as fasta_writer:
-            for crs_container_result in parse_crs_container_results(
-                input_consensus_container_results
-            ):
-                log.debug(
-                    f"Processing CrsContainerResult with {len(crs_container_result.consensus_dicts)} consensuses..."
-                )
-                for consensus in crs_container_result.consensus_dicts.values():
-                    core_sequences[consensus.ID] = pickle.dumps(
-                        consensus.consensus_sequence
-                    )
-                    core_intervals[consensus.ID] = (
-                        consensus.consensus_padding.consensus_interval_on_sequence_with_padding
-                    )
-                    seqRec = SeqRecord(
-                        seq=Seq(consensus.consensus_padding.sequence),
-                        id=consensus.ID,
-                        name=consensus.ID,
-                        description="",
-                    )
-                    log.debug(
-                        f"Writing consensus {consensus.ID} with length {len(consensus.consensus_padding.sequence)} to fasta file"
-                    )
-                    SeqIO.write(seqRec, fasta_writer, "fasta")
-
-        if Path(path_bamout).exists() and not overwrite_fasta:
-            log.info(
-                f"BAM file {path_bamout} already exists. Skipping alignment to reference. set overwrite_fasta to true if this is not desired."
-            )
-            return core_sequences, core_intervals
-
         aln_args = " --secondary=no "
         tmp_bam_out_unfiltered = tempfile.NamedTemporaryFile(
             dir=tmp_dir,
@@ -226,7 +183,7 @@ def align_padded_consensus_sequences(
                             g.write(aln)
         cmd_index = ["samtools", "index", path_bamout]
         subprocess.check_call(cmd_index)
-    return core_sequences, core_intervals
+    return core_intervals
 
 
 def svPrimitives_to_svPatterns(
@@ -729,6 +686,317 @@ def add_core_reference_intervals_inplace(
                 )
 
 
+def write_tmp_core_sequences_files_for_parallel_processing(
+        input_consensus_container_results: Path | str,
+        core_sequences_paths: dict[int, Path],
+        consensus_paths: dict[int, Path],
+        padded_sequences_paths: dict[int, Path]) -> dict[int, set[str]]:
+    """Writes temporary core sequence fasta, padded sequence fasta, and consensus json tsv files for parallel processing."""
+    # check if padded_sequences_paths and core_sequences_paths have the same keys
+    if set(core_sequences_paths.keys()) != set(padded_sequences_paths.keys()):
+        raise ValueError("core_sequences_paths and padded_sequences_paths must have the same keys.")
+    # write the core sequences to fasta files
+    # 1) open all fasta writers
+    n_files = len(core_sequences_paths)
+    core_writers:dict[int,TextIOWrapper] = {}
+    for i in range(n_files):
+        core_writers[i] = open(core_sequences_paths[i], "w")
+    padded_writers:dict[int,TextIOWrapper] = {}
+    for i in range(n_files):
+        padded_writers[i] = open(padded_sequences_paths[i], "w")
+    consensus_writers:dict[int,TextIOWrapper] = {}
+    for i in range(n_files):
+        consensus_writers[i] = open(consensus_paths[i], "w")
+    # 2) iterate over all consensus sequences and write them in a round-robin fashion
+    writer_idx:int = 0
+    index_consensusIDs:dict[int, set[str]] = {i:set() for i in range(n_files)} # to find the correct fasta file for each consensusID
+
+    for crs_container_result in parse_crs_container_results(
+            input_consensus_container_results
+        ):
+            log.debug(
+                f"Processing CrsContainerResult with {len(crs_container_result.consensus_dicts)} consensuses..."
+            )
+            for consensus in crs_container_result.consensus_dicts.values():
+                core_seqRec = SeqRecord(
+                    seq=Seq(consensus.consensus_sequence),
+                    id=consensus.ID,
+                    name=consensus.ID,
+                    description=""
+                )
+                log.debug(
+                    f"Writing consensus {consensus.ID} with length {len(consensus.consensus_sequence)} to fasta file"
+                )
+                SeqIO.write(core_seqRec, core_writers[writer_idx], "fasta")
+                
+                padded_seqRec = SeqRecord(
+                    seq=Seq(consensus.consensus_padding.sequence),
+                    id=consensus.ID,
+                    name=consensus.ID,
+                    description="",
+                )
+                log.debug(
+                    f"Writing padded consensus {consensus.ID} with length {len(consensus.consensus_padding.sequence)} to fasta file"
+                )
+                SeqIO.write(padded_seqRec, padded_writers[writer_idx], "fasta")
+                # serialize consensus and write to tsv (consenus.ID \t serialized_consensus)
+                
+                consensus.consensus_sequence = ""  # remove the sequences to save space and time
+                consensus.consensus_padding.sequence = ""  # remove the sequences to save space and time
+                print(str(consensus.ID),json.dumps(consensus.unstructure()), sep='\t', file=consensus_writers[writer_idx])
+                
+                # core interval would be consensus.consensus_padding.consensus_interval_on_sequence_with_padding
+                index_consensusIDs[writer_idx].add(consensus.ID)
+            writer_idx = (writer_idx + 1) % n_files # round-robin
+    # close all fasta writers
+    for i in range(n_files):
+        core_writers[i].close()
+        padded_writers[i].close()
+        consensus_writers[i].close()
+    return index_consensusIDs
+
+
+def index_tmp_fastas(paths: list[Path]) -> None:
+    """Indexes temporary fasta files using samtools faidx."""
+    for path in paths:
+        cmd_index = ["samtools", "faidx", str(path)]
+        subprocess.check_call(cmd_index)
+
+
+def split_bam(
+    input:Path,
+    output:dict[int, Path],
+    index_consensusIDs:dict[int, set[str]]) -> None:
+    """Splits a BAM file into multiple BAM files based on consensus IDs."""
+    # get header from input bam file
+    with AlignmentFile(input, "rb") as bam_in:
+        header = bam_in.header
+    
+    # open all output bam files
+    bam_writers:dict[int, AlignmentFile] = {}
+    for i in output.keys():
+        bam_writers[i] = AlignmentFile(output[i], "wb", header=header)
+    
+    # generate a dict consensusID:index for faster lookup
+    consensusID_to_index:dict[str,int] = {consensusID:i for i, consensusIDs in index_consensusIDs.items() for consensusID in consensusIDs}
+    
+    # open input bam file
+    with AlignmentFile(input, "rb") as bam_in:
+        for aln in bam_in:
+            # find the correct output bam file based on the consensusID (query_name)
+            consensusID = aln.query_name
+            try:
+                idx:int = consensusID_to_index[consensusID]
+            except:
+                raise ValueError(f"consensusID {consensusID} not found in index_consensusIDs. This should not happen. Please check the input data.")
+            bam_writers[idx].write(aln)
+
+    # index all output bam files and close them
+    for i in output.keys():
+        bam_writers[i].close()
+        cmd_index = ["samtools", "index", str(output[i])]
+        subprocess.check_call(cmd_index)
+    
+
+def build_consensus_tsv_index(consensus_paths: dict[int, Path]) -> dict[str, tuple[int, int]]:
+    """Build an index mapping consensusID to (file_index, byte_offset)."""
+    index: dict[str, tuple[int, int]] = {}
+    
+    for file_idx, path in consensus_paths.items():
+        with open(path, 'r') as f:
+            offset = 0
+            for line in f:
+                consensusID = line.split('\t', 1)[0]
+                index[consensusID] = (file_idx, offset)
+                offset = f.tell()
+    
+    return index
+
+
+def build_fasta_index(fasta_paths: dict[int, Path]) -> dict[str, tuple[int, int, int]]:
+    """Build an index mapping consensusID to (file_index, byte_offset, sequence_length) for FASTA files.
+    
+    Args:
+        fasta_paths: Dictionary mapping file indices to FASTA file paths
+        
+    Returns:
+        Dictionary mapping consensusID to (file_index, byte_offset, sequence_length)
+    """
+    index: dict[str, tuple[int, int, int]] = {}
+    
+    for file_idx, path in fasta_paths.items():
+        with open(path, 'r') as f:
+            current_id = None
+            header_offset = 0
+            seq_length = 0
+            
+            for line in f:
+                line = line.rstrip('\n')
+                if line.startswith('>'):
+                    # Save previous sequence if exists
+                    if current_id is not None:
+                        index[current_id] = (file_idx, header_offset, seq_length)
+                    
+                    # Start new sequence
+                    current_id = line[1:].split()[0]  # Get ID after '>'
+                    header_offset = f.tell() - len(line) - 1  # Position of header line
+                    seq_length = 0
+                else:
+                    # Accumulate sequence length
+                    seq_length += len(line)
+            
+            # Save last sequence
+            if current_id is not None:
+                index[current_id] = (file_idx, header_offset, seq_length)
+    
+    return index
+
+
+def get_sequence_by_id(
+    consensusID: str,
+    index: dict[str, tuple[int, int, int]],
+    fasta_paths: dict[int, Path]
+) -> str:
+    """Retrieve a sequence from indexed FASTA files by consensusID.
+    
+    Args:
+        consensusID: The consensus ID to retrieve
+        index: Index mapping consensusID to (file_index, byte_offset, sequence_length)
+        fasta_paths: Dictionary mapping file indices to FASTA file paths
+        
+    Returns:
+        The sequence as a string
+    """
+    if consensusID not in index:
+        raise KeyError(f"consensusID {consensusID} not found in FASTA index")
+    
+    file_idx, offset, _seq_length = index[consensusID]
+    
+    with open(fasta_paths[file_idx], 'r') as f:
+        f.seek(offset)
+        
+        # Skip header line
+        f.readline()
+        
+        # Read sequence lines until next header or EOF
+        sequence_parts = []
+        while True:
+            pos = f.tell()
+            line = f.readline()
+            
+            if not line or line.startswith('>'):
+                break
+            
+            sequence_parts.append(line.rstrip('\n'))
+        
+        return ''.join(sequence_parts)
+
+
+def get_sequences_batch_by_ids(
+    consensusIDs: list[str],
+    index: dict[str, tuple[int, int, int]],
+    fasta_paths: dict[int, Path]
+) -> dict[str, str]:
+    """Retrieve multiple sequences from indexed FASTA files in a batched manner.
+    
+    This is more efficient than calling get_sequence_by_id repeatedly
+    because it minimizes file open/close operations.
+    
+    Args:
+        consensusIDs: List of consensus IDs to retrieve
+        index: Index mapping consensusID to (file_index, byte_offset, sequence_length)
+        fasta_paths: Dictionary mapping file indices to FASTA file paths
+        
+    Returns:
+        Dictionary mapping consensusID to sequence string
+    """
+    # Group consensusIDs by file_index to minimize file operations
+    ids_by_file: dict[int, list[tuple[str, int, int]]] = {}
+    
+    for consensusID in consensusIDs:
+        if consensusID not in index:
+            log.warning(f"consensusID {consensusID} not found in FASTA index")
+            continue
+        
+        file_idx, offset, seq_length = index[consensusID]
+        if file_idx not in ids_by_file:
+            ids_by_file[file_idx] = []
+        ids_by_file[file_idx].append((consensusID, offset, seq_length))
+    
+    # Sort by offset for sequential reads (faster than random access)
+    for file_idx in ids_by_file:
+        ids_by_file[file_idx].sort(key=lambda x: x[1])
+    
+    # Retrieve sequences
+    results: dict[str, str] = {}
+    
+    for file_idx, id_offset_pairs in ids_by_file.items():
+        with open(fasta_paths[file_idx], 'r') as f:
+            for consensusID, offset, _seq_length in id_offset_pairs:
+                f.seek(offset)
+                
+                # Skip header line
+                f.readline()
+                
+                # Read sequence lines until next header or EOF
+                sequence_parts = []
+                while True:
+                    line = f.readline()
+                    
+                    if not line or line.startswith('>'):
+                        break
+                    
+                    sequence_parts.append(line.rstrip('\n'))
+                
+                results[consensusID] = ''.join(sequence_parts)
+    
+    return results
+
+
+def get_consensus_batch_by_ids(
+    consensusIDs: list[str],
+    index: dict[str, tuple[int, int]],
+    consensus_paths: dict[int, Path]
+) -> dict[str, consensus_class.Consensus]:
+    """Retrieve multiple consensus objects by ID in a batched manner.
+    
+    This is more efficient than calling get_consensus_by_id repeatedly
+    because it minimizes file open/close operations.
+    """
+    # Group consensusIDs by file_index to minimize file operations
+    ids_by_file: dict[int, list[tuple[str, int]]] = {}
+    
+    for consensusID in consensusIDs:
+        if consensusID not in index:
+            log.warning(f"consensusID {consensusID} not found in index")
+            continue
+        
+        file_idx, offset = index[consensusID]
+        if file_idx not in ids_by_file:
+            ids_by_file[file_idx] = []
+        ids_by_file[file_idx].append((consensusID, offset))
+    
+    # Sort by offset for sequential reads (faster than random access)
+    for file_idx in ids_by_file:
+        ids_by_file[file_idx].sort(key=lambda x: x[1])
+    
+    # Retrieve consensus objects
+    results: dict[str, consensus_class.Consensus] = {}
+    
+    for file_idx, id_offset_pairs in ids_by_file.items():
+        with open(consensus_paths[file_idx], 'r') as f:
+            for consensusID, offset in id_offset_pairs:
+                f.seek(offset)
+                line = f.readline()
+                _, serialized_data = line.strip().split('\t', 1)
+                results[consensusID] = cattrs.structure(
+                    json.loads(serialized_data), 
+                    consensus_class.Consensus
+                )
+    
+    return results
+
+
 def svPatterns_from_consensus_sequences(
     samplename: str,
     input_consensus_container_results: Path | str,
@@ -757,20 +1025,83 @@ def svPatterns_from_consensus_sequences(
     with tempfile.TemporaryDirectory(
         dir=tmp_dir_path, delete=False if tmp_dir_path else True
     ) as tmp_dir:
-        if output_consensus_to_reference_alignments is None:
-            output_consensus_to_reference_alignments = (
-                Path(tmp_dir) / "consensus_to_reference.bam"
-            )
+        # if output_consensus_to_reference_alignments is None:
+        #     output_consensus_to_reference_alignments = (
+        #         Path(tmp_dir) / "consensus_to_reference.bam"
+        #     )
 
-        sequences_core, intervals_core = align_padded_consensus_sequences(
-            input_consensus_container_results=input_consensus_container_results,
-            path_fastaout=output_consensus_fasta,
-            path_bamout=output_consensus_to_reference_alignments,
-            input_reference=input_reference,
-            threads=threads,
-            tmp_dir_path=tmp_dir,
+        output_consensus_to_reference_alignments = Path(
+            output_consensus_to_reference_alignments
         )
 
+        # the following part will be multi-threaded. All extracted core sequences will be written to {threads} tmp files for parallel processig
+        core_sequences_paths:dict[int,Path] = {i: Path(tmp_dir) / f"core_sequences.{i}.fasta" for i in range(threads)}
+        padded_sequences_paths:dict[int,Path] = {i: Path(tmp_dir) / f"padded_sequences.{i}.fasta" for i in range(threads)}
+        consensus_json_paths:dict[int,Path] = {i: Path(tmp_dir) / f"consensus.{i}.tsv" for i in range(threads)}
+        
+        # write all core sequences and all padded sequences to fasta files for parallel processing
+        index_consensusIDs = write_tmp_core_sequences_files_for_parallel_processing(
+            input_consensus_container_results=input_consensus_container_results,
+            core_sequences_paths=core_sequences_paths,
+            padded_sequences_paths=padded_sequences_paths,
+            consensus_paths=consensus_json_paths
+        )
+        # iterate over consensus_json and extract the core intervals on the padded sequences to get the core intervals on the reference coordinate system
+        intervals_core:dict[int, dict[str, tuple[int, int]]] = {} # consensusID : (core_start, core_end)
+        for i in range(threads):
+            intervals_core[i] = {}
+            with open(consensus_json_paths[i], 'r') as f:
+                for line in f:
+                    consensusID, serialized_data = line.strip().split('\t', 1)
+                    consensus_obj = cattrs.structure(
+                        json.loads(serialized_data), 
+                        consensus_class.Consensus
+                    )
+                    core_interval_on_padded = consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding
+                    intervals_core[i][consensusID] = core_interval_on_padded
+        
+        # Build indices for FASTA files (both samtools faidx and in-memory)
+        log.info("Building FASTA indices...")
+        index_tmp_fastas(paths=list(core_sequences_paths.values()) + list(padded_sequences_paths.values()))
+        
+        # Build in-memory indices for fast random access
+        log.info("Building in-memory indices for core and padded sequences...")
+        core_sequences_index = build_fasta_index(core_sequences_paths)
+        padded_sequences_index = build_fasta_index(padded_sequences_paths)
+        log.info(f"Indexed {len(core_sequences_index)} core sequences and {len(padded_sequences_index)} padded sequences.")
+        
+        tmp_padded_alignments_path : Path = Path(tmp_dir) / "padded_alignments_all.bam"
+        
+        util.align_reads_with_minimap(
+            reference=input_reference,
+            bamout=tmp_padded_alignments_path,
+            reads=[str(padded_sequences_paths[i]) for i in range(len(padded_sequences_paths))],
+            tech="map-ont",
+            threads=threads,
+            aln_args=" --secondary=no ")
+        
+        # then iterate all alignments in the bam file and write them to a tmp tsv file that contains the consensus_class.ConsensusAlignment objects
+        # to parse them, it makes sense to split the padded alignments bam file into {threads} chunks for parallel processing
+        padded_alignments_paths:dict[int,Path] = {i: Path(tmp_dir) / f"padded_alignments.{i}.bam" for i in range(threads)} # stores all alignments of padded sequences to reference    
+
+        # split all alignments into multiple bam files for parallel processing. They are also indexed.
+        split_bam(
+            input=tmp_padded_alignments_path,
+            output=padded_alignments_paths,
+            index_consensusIDs=index_consensusIDs
+        )
+        # for each file in consensus_json_paths:
+        # for each consensus in the file:
+        #   write each consensus alignment core interval on the reference to a dict[int, dict[str, list[tuple[chr,int,int]]]] (idx:[(chr,start,end)])
+        # this is used to subset the trf intervals for much faster compute
+        
+        
+        
+        
+        
+        
+        # consensus_align_lib.parse_sv_signals_from_consensus
+        
         log.debug(
             f"loading alignments from {output_consensus_to_reference_alignments}..."
         )

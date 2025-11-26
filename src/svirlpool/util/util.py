@@ -218,7 +218,7 @@ def parse_alignment(
 
 def align_reads_with_minimap(
     reference: Path | str,
-    reads: Path | str,
+    reads: Path | str | list[Path|str],
     bamout: Path | str,
     tech: str = "map-ont",
     threads: int = 3,
@@ -231,8 +231,12 @@ def align_reads_with_minimap(
     If timeout is given (seconds), processes will be killed after timeout.
     """
     try:
+        if isinstance(reads, list):
+            reads_str = " ".join(str(r) for r in reads)
+        else:
+            reads_str = str(reads)
         cmd_align = shlex.split(
-            f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads}"
+            f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads_str}"
         )
         cmd_sort = shlex.split(f"samtools sort -O BAM -o {bamout}")
         cmd_index = shlex.split(f"samtools index {bamout}")

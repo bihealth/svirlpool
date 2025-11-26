@@ -637,27 +637,17 @@ def assign_repeat_ids(
 
 def parse_sv_signals_from_consensus(
     samplename: str,
-    consensusAlignment: consensus_class.ConsensusAlignment,
+    reference_name: str,
     consensus_sequence: str,
-    interval_core: tuple[int, int] | None = None,
+    pysam_alignment: AlignedSegment,
+    interval_core: tuple[int, int],
+    trf_intervals: list[tuple[int, int, int]],
     min_signal_size: int = 5,
     min_bnd_size: int = 200,
-    _pysam_cache: dict[int, AlignedSegment] = None,
 ) -> list[datatypes.MergedSVSignal]:
     """
     Parse SV signals from consensus alignment.
-
-    Args:
-        _pysam_cache: Optional cache for pysam alignments to avoid repeated to_pysam() calls
     """
-    # Cache pysam alignment to avoid repeated expensive conversions
-    if _pysam_cache is None:
-        _pysam_cache = {}
-
-    if consensusAlignment.uid not in _pysam_cache:
-        _pysam_cache[consensusAlignment.uid] = consensusAlignment.alignment.to_pysam()
-    pysam_alignment = _pysam_cache[consensusAlignment.uid]
-
     # parse sv signals from alignments
     sv_signals: list[datatypes.SVsignal] = (
         consensus.parse_ReadAlignmentSignals_from_alignment(
@@ -681,7 +671,7 @@ def parse_sv_signals_from_consensus(
     # transform all SVsignals to MergedSVSignals
     merged_sv_signals = [
         datatypes.MergedSVSignal(
-            chr=consensusAlignment.alignment.reference_name,
+            chr=reference_name,
             ref_start=sv_signal.ref_start,
             ref_end=sv_signal.ref_end,
             read_start=sv_signal.read_start,
@@ -695,7 +685,7 @@ def parse_sv_signals_from_consensus(
         for sv_signal in sv_signals
     ]
 
-    assign_repeat_ids(merged_sv_signals, consensusAlignment.trf_intervals)
+    assign_repeat_ids(merged_sv_signals, trf_intervals)
 
     # add alt sequences to all MergedSVSignals
     for merged_signal in merged_sv_signals:
