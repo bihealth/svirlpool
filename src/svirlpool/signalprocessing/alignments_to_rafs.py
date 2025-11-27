@@ -7,6 +7,7 @@ import logging
 import multiprocessing as mp
 import subprocess
 import tempfile
+from math import floor
 from pathlib import Path
 from shlex import split
 
@@ -572,60 +573,88 @@ def process_bam(
 
 # %%
 
-# def process_all_samples(
-#             path_sampledicts:Path,
-#             path_regions:Path,
-#             output_prefix:Path,
-#             min_signal_size:int,
-#             min_bnd_size:int,
-#             min_segment_size:int,
-#             min_mapq:int,
-#             threads:int,
-#             filter_density_radius:int,
-#             filter_density_min_bp:int,
-#             tmp_dir_path:Path|None=None):
-#     log.info(f"load sample dicts from {path_sampledicts}")
-#     sampleID_bam_dict = util.load_sampledicts(path_sampledicts)[2]
+def scale_coords(coords: list[int], maxlen: int, line_width: int) -> list[int]:
+    return [int(floor((coord / maxlen) * line_width)) for coord in coords]
 
-#     # # iterate over all samples and store their outputs in a temporary directory
-#     # if not tmp_dir_path:
-#     #     tmp_dir = tempfile.TemporaryDirectory()
-#     #     tmp_dir_path = Path(tmp_dir.name)
 
-#     log.info(f"process all samples")
-#     for sampleID, path_alignments in sampleID_bam_dict.items():
-#         path_output = str(output_prefix)+f".{sampleID}.rafs.tsv.gz"
-#         process_bam(
-#             path_alignments=path_alignments,
-#             path_regions=path_regions,
-#             path_output=path_output,
-#             sampleID=sampleID,
-#             min_signal_size=min_signal_size,
-#             min_bnd_size=min_bnd_size,
-#             min_segment_size=min_segment_size,
-#             min_mapq=min_mapq,
-#             threads=threads,
-#             filter_density_radius=filter_density_radius,
-#             filter_density_min_bp=filter_density_min_bp,
-#             tmp_dir_path=tmp_dir_path)
-
-# log.info("concatenate and sort all sample outputs")
-# # TODO: each sample output is already sorted. So, we can merge them in a sorted manner to avoid the quadratic complexity of sorting.
-# cmd_cat = "cat " + ' '.join([str(tmp_dir_path / f"{sampleID}.tsv") for sampleID in sampleID_bam_dict.keys()])
-# cmd_sort = "sort -k1,1 -k2,2n"
-# tmp_text_out = tmp_dir_path / "tmp_text_out.tsv"
-# with open(tmp_text_out, "w") as file_out:
-#     p0 = subprocess.Popen(split(cmd_cat),stdout=subprocess.PIPE)
-#     p1 = subprocess.Popen(split(cmd_sort),stdin=p0.stdout,stdout=file_out)
-#     p1.communicate()
-# # remove tmp files ([str(tmp_dir_path / f"{sampleID}.tsv") for sampleID in sampleID_bam_dict.keys()])
-# for sampleID in sampleID_bam_dict.keys():
-#     (tmp_dir_path / f"{sampleID}.tsv").unlink()
-
-# compress_and_index_bedlike(input=tmp_text_out,output=output,threads=threads)
-# # remove tmp file
-# tmp_text_out.unlink()
-# log.info(f"done. Output written to {output}")
+def display_ascii_alignments(
+    alignments: list[pysam.AlignedSegment],
+    terminal_width: int = 100,
+    filter_density_min_bp: int = 30,
+    filter_density_radius: int = 1000,
+    min_bnd_size: int = 300,
+    min_signal_size: int = 8,
+    min_aln_length: int = 500,
+    max_ref_len: int = 0,
+):
+    if len(alignments) == 0:
+        return
+    dict_alns = {a.reference_name: [] for a in alignments}
+    for refname in dict_alns.keys():
+        dict_alns[refname] = [a for a in alignments if a.reference_name == refname]
+        alns = dict_alns[refname]
+        if max_ref_len < 1:
+            try:
+                max_ref_len = max(
+                    a.reference_start + a.reference_length
+                    for a in alns
+                    if a.reference_length
+                )
+            except Exception as e:
+                log.error(f"Error calculating max_ref_len for {refname}: {e}")
+                continue
+        print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
+        for a in alns:
+            if a.reference_length >= min_aln_length:
+                raf = parse_ReadAlignmentFragment_from_alignment(
+                    alignment=a,
+                    samplename="no samplename",
+                    filter_density_min_bp=filter_density_min_bp,
+                    filter_density_radius=filter_density_radius,
+                    min_bnd_size=min_bnd_size,
+                    min_signal_size=min_signal_size,
+                )
+                # construct the string.
+                rstart, rend = scale_coords(
+                    [raf.reference_alignment_start, raf.reference_alignment_end],
+                    max_ref_len,
+                    terminal_width,
+                )
+                rlen = rend - rstart
+                line = (
+                    ([" "] * rstart)
+                    + (["<" if a.is_reverse else ">"] * rlen)
+                    + ([" "] * (terminal_width - rend))
+                )
+                # insert insertions and deletions
+                for sv in raf.SV_signals:
+                    if sv.sv_type == 1:  # DEL
+                        start, end = scale_coords(
+                            [sv.ref_start, sv.ref_end], max_ref_len, terminal_width
+                        )
+                        # modify the interval on line
+                        line[start:end] = ["-"] * (end - start)
+                    if sv.sv_type == 0:  # INS
+                        start = scale_coords(
+                            [sv.ref_start], max_ref_len, terminal_width
+                        )[0]
+                        line[start] = "V"
+                    if sv.sv_type == 4:  # BNDR
+                        start = scale_coords(
+                            [sv.ref_start], max_ref_len, terminal_width
+                        )[0]
+                        # check if bndr is hard or soft clipped
+                        line[start - 1] = "R" if a.cigartuples[-1][0] == 5 else "r"
+                    if sv.sv_type == 3:  # BNDL
+                        start = scale_coords([sv.ref_end], max_ref_len, terminal_width)[
+                            0
+                        ]
+                        line[start] = (
+                            ("L" if a.cigartuples[0][0] == 5 else "l")
+                            if line[start] != "R"
+                            else "X"
+                        )
+                print("".join(line) + " " + a.query_name)
 
 
 def run(args, **kwargs):

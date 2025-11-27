@@ -908,7 +908,7 @@ def final_consensus(
     )
 
     if verbose:
-        util.display_ascii_alignments(alignments=cut_read_alns, terminal_width=125)
+        alignments_to_rafs.display_ascii_alignments(alignments=cut_read_alns, terminal_width=125)
 
     return result
 
@@ -1086,9 +1086,7 @@ def align_cutreads_to_representative(
     )
 
     if show_ascii_alignments:
-        from ..svirlpool.scripts.util import display_ascii_alignments
-
-        display_ascii_alignments(
+        alignments_to_rafs.display_ascii_alignments(
             alignments=list(pysam.AlignmentFile(tmp_alignments_sam.name, mode="r"))
         )
 
