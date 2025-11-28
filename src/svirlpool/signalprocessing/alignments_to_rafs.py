@@ -573,6 +573,7 @@ def process_bam(
 
 # %%
 
+
 def scale_coords(coords: list[int], maxlen: int, line_width: int) -> list[int]:
     return [int(floor((coord / maxlen) * line_width)) for coord in coords]
 

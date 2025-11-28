@@ -908,7 +908,9 @@ def final_consensus(
     )
 
     if verbose:
-        alignments_to_rafs.display_ascii_alignments(alignments=cut_read_alns, terminal_width=125)
+        alignments_to_rafs.display_ascii_alignments(
+            alignments=cut_read_alns, terminal_width=125
+        )
 
     return result
 

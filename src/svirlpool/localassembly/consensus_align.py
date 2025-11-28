@@ -1,18 +1,15 @@
 import argparse
-from asyncio import threads
 import json
 import logging
 import multiprocessing as mp
-import pickle
 import shlex
 import shutil
 import subprocess
 import tempfile
-import time
 from collections.abc import Generator
 from copy import deepcopy
 from io import TextIOWrapper
-from pathlib import Path, PosixPath
+from pathlib import Path
 
 import attrs
 import cattrs
@@ -32,6 +29,7 @@ log = logging.getLogger(__name__)
 @attrs.define
 class SVPatternProcessingParams:
     """Parameters for processing consensus objects to SV patterns in parallel."""
+
     svPatterns_path: Path
     consensusIDs: list[str]
     consensus_json_index_partition: dict[str, int]
@@ -62,30 +60,6 @@ def parse_crs_container_results(
             )
 
 
-def load_alignments(
-    path_alignments: Path, samplename: str | None = None, parse_DNA: bool = True
-) -> dict[str, list[datatypes.Alignment]]:
-    """produces a dict consensusID:list[Alignment]. If a consensus has no alignments, the list is empty"""
-    # load all alignments and parse from pysam.alignedSegment to datatypes.Alignment
-    dict_consensus_to_alignments: dict[str, list[datatypes.Alignment]] = {}
-    with open(path_alignments, "rb") as f:
-        for aln in AlignmentFile(f):
-            if aln.is_mapped:  # no mapped consensuses -> empty list
-                if aln.query_name not in dict_consensus_to_alignments:
-                    dict_consensus_to_alignments[aln.query_name] = []
-                if not parse_DNA:
-                    aln.query_sequence = None
-                dict_consensus_to_alignments[aln.query_name].append(
-                    util.parse_alignment(
-                        aln=aln,
-                        samplename=samplename,
-                        parse_qualities=False,
-                        parse_sequence=False,
-                    )
-                )
-    return dict_consensus_to_alignments
-
-
 def trf_to_interval_tree(input_trf: Path) -> dict[str, IntervalTree]:
     """produces a dict chrom:IntervalTree"""
     # load the trf intervals to an intervaltree and set their index as their names
@@ -97,115 +71,6 @@ def trf_to_interval_tree(input_trf: Path) -> dict[str, IntervalTree]:
                 trf_intervals[chrom] = IntervalTree()
             trf_intervals[chrom][int(start) : int(end)] = i
     return trf_intervals
-
-
-def alignments_to_consensusAlignments(
-    alignments: dict[str, list[datatypes.Alignment]],
-) -> dict[str, list[consensus_class.ConsensusAlignment]]:
-    """Converts a dict of alignments to a dict of ConsensusAlignment objects.
-    Args:
-        alignments (dict[str,list[datatypes.Alignment]]): dict of alignments
-        reference_name (str): name of the reference, e.g. GRCh38 or HS1
-    Returns:
-        dict[str,list[consensus_class.ConsensusAlignment]]: dict of ConsensusAlignment objects
-    """
-    dict_results: dict[
-        str, list[consensus_class.ConsensusAlignment]
-    ] = {}  # dict consensusID:list[ConsensusAlignment]
-    current_uid: int = 0
-    for consensusID, alns in alignments.items():
-        if consensusID not in dict_results:
-            dict_results[consensusID] = []
-        for aln in alns:
-            consensusAlignment: consensus_class.ConsensusAlignment = (
-                consensus_class.ConsensusAlignment(
-                    alignment=aln, reference_name=aln.reference_name, uid=current_uid
-                )
-            )
-            current_uid += 1
-            dict_results[consensusID].append(consensusAlignment)
-    return dict_results
-
-
-def add_trf_annotations_to_consensusAlignments_inplace(
-    dict_alignments: dict[str, list[consensus_class.ConsensusAlignment]],
-    trf_intervals: dict[str, IntervalTree],
-) -> None:
-    """Finds the trf annotations for each alignment and produces a dict consensusID:list[tuple[Alignment,(chrom,start,end)]"""
-    for consensusAlns in dict_alignments.values():
-        for consensusAlignment in consensusAlns:
-            chrom = str(consensusAlignment.reference_name)  # type: ignore
-            if chrom in trf_intervals:
-                overlapping_intervals = trf_intervals[chrom][
-                    consensusAlignment.core_reference_interval[
-                        0
-                    ] : consensusAlignment.core_reference_interval[1]
-                ]
-                # for interval in overlapping_intervals:
-                # assert type(interval.data) == int, f"interval.data is not an int (repeatID), but {type(interval.data)}, data={interval.data}"
-                consensusAlignment.trf_intervals = [
-                    (it.begin, it.end, it.data) for it in overlapping_intervals
-                ]  # .append((interval.begin,interval.end,interval.data))
-
-
-def align_padded_consensus_sequences(
-    padded_sequences_paths: dict[int, Path],
-    input_reference: Path | str,
-    path_bamout: Path | str,
-    threads: int,
-    tmp_dir_path: Path | None = None,
-) -> None:
-    with tempfile.TemporaryDirectory(
-        dir=tmp_dir_path, delete=False if tmp_dir_path else True
-    ) as tmp_dir:
-        aln_args = " --secondary=no "
-        tmp_bam_out_unfiltered = tempfile.NamedTemporaryFile(
-            dir=tmp_dir,
-            delete=False if tmp_dir_path else True,
-            suffix=".bam",
-            prefix="consensus_to_reference_unfiltered.",
-        )
-
-        # Inline align_consensus_sequences_to_reference function
-        log.debug("aligning consensus sequences to reference with minimap2")
-        # check if a minimap2 index exists
-        reference_path = Path(input_reference)
-        if Path(f"{input_reference}.mmi").exists():
-            log.debug("using existing minimap2 index")
-            reference_path = Path(f"{input_reference}.mmi")
-        util.align_reads_with_minimap(
-            reference=reference_path,
-            bamout=tmp_bam_out_unfiltered.name,
-            reads=path_fastaout,
-            tech="map-ont",
-            threads=threads,
-            aln_args=aln_args,
-        )
-        # filter the consensus alignments for local alignments that are not covering the core intervals
-        log.debug(
-            "filtering the consensus alignments for local alignments that are not covering the core intervals..."
-        )
-        with AlignmentFile(tmp_bam_out_unfiltered, "rb") as f:
-            header = f.header
-            log.debug(
-                "filtering the consensus alignments for local alignments that are not covering the core intervals..."
-            )
-            with AlignmentFile(path_bamout, "wb", header=header) as g:
-                for aln in f:
-                    if aln.is_mapped:
-                        # check if the alignment covers the core interval
-                        traced_back_ref_start, traced_back_ref_end = (
-                            util.get_interval_on_ref_in_region(
-                                a=aln,
-                                start=core_intervals[aln.query_name][0],
-                                end=core_intervals[aln.query_name][1],
-                            )
-                        )
-                        if traced_back_ref_start != traced_back_ref_end:
-                            g.write(aln)
-        cmd_index = ["samtools", "index", path_bamout]
-        subprocess.check_call(cmd_index)
-    return core_intervals
 
 
 def svPrimitives_to_svPatterns(
@@ -239,30 +104,6 @@ def svPrimitives_to_svPatterns(
     return svpatterns
 
 
-# def add_depth_to_svPrimitives_genotypes_inplace(
-#         svPrimitives: list[SVprimitives.SVprimitive],
-#         _covtree:dict[str,IntervalTree]) -> None:
-#     """Add depth genotypes to SVprimitives based on coverage trees."""
-#     for svp in svPrimitives:
-#         if not svp.chr in _covtree:
-#             log.debug(f"Chromosome {svp.chr} not found in coverage tree. Skipping depth assignment for SVprimitive {svp.consensusID}.")
-#             continue
-#         intervals = _covtree[svp.chr][svp.ref_start]
-#         if len(intervals) == 0:
-#             log.debug(f"No coverage data found on position {svp.chr}:{svp.ref_start}. consensusID: {svp.consensusID}.")
-#             continue
-#         start_depth = next(iter(intervals)).data
-#         if svp.sv_type != 1:  # not a deletion
-#             svp.genotypeMeasurement.add_depths(start_depth)
-#         else: # deletion
-#             intervals = _covtree[svp.chr][svp.ref_end]
-#             if len(intervals) == 0:
-#                 log.debug(f"No coverage data found on position {svp.chr}:{svp.ref_end}. consensusID: {svp.consensusID}.")
-#                 continue
-#             end_depth = next(iter(intervals)).data
-#             svp.genotypeMeasurement.add_depths(start_depth,end_depth)
-
-
 def add_consensus_sequence_and_size_distortions_to_svPatterns(
     consensus_objects: dict[str, consensus_class.Consensus],
     svPatterns: list[SVpatterns.SVpatternType],
@@ -287,7 +128,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
     # Track processed indices to avoid processing the same SVpattern twice
     processed_indices = set()
     output_svPatterns = []
-    for consensusID,consensus in consensus_objects.items():
+    for consensusID, consensus in consensus_objects.items():
         if consensusID not in svPatterns_dict:
             continue
 
@@ -296,9 +137,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 continue
 
             # Process the SVpattern - create a copy to avoid modifying original
-            processed_svp = (
-                svp  # SVpatterns are typically immutable enough for this
-            )
+            processed_svp = svp  # SVpatterns are typically immutable enough for this
 
             # Get the size distortions from the consensus
             size_distortions = SVpatterns.distortions_by_svPattern(
@@ -316,7 +155,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 raise ValueError(
                     f"No size distortions found for SVpattern {processed_svp.consensusID} in consensus {consensusID}. This should not happen. Please check the input data. svPatterns: {processed_svp}\n{consensus}"
                 )
-            
+
             # Set sequences based on SVpattern type
             if isinstance(processed_svp, SVpatterns.SVpatternInsertion):
                 processed_svp.set_sequence(
@@ -337,7 +176,6 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
             # Add to output and mark as processed
             output_svPatterns.append(processed_svp)
             processed_indices.add(idx)
-
 
     # Add any unprocessed SVpatterns (those without matching consensus)
     for i, svp in enumerate(svPatterns):
@@ -701,54 +539,64 @@ def add_core_reference_intervals_inplace(
 
 
 def write_consensus_files_for_parallel_processing(
-        input_consensus_container_results: Path | str,
-        consensus_paths: dict[int, Path],
-        padded_sequences_paths: dict[int, Path]) -> dict[int, set[str]]:
+    input_consensus_container_results: Path | str,
+    consensus_paths: dict[int, Path],
+    padded_sequences_paths: dict[int, Path],
+) -> dict[int, set[str]]:
     """Writes temporary core sequence fasta, padded sequence fasta, and consensus json tsv files for parallel processing."""
     # write the core sequences to fasta files
     # 1) open all fasta writers
     n_files = len(consensus_paths)
-    padded_writers:dict[int,TextIOWrapper] = {}
+    padded_writers: dict[int, TextIOWrapper] = {}
     for i in range(n_files):
         padded_writers[i] = open(padded_sequences_paths[i], "w")
-    consensus_writers:dict[int,TextIOWrapper] = {}
+    consensus_writers: dict[int, TextIOWrapper] = {}
     for i in range(n_files):
         consensus_writers[i] = open(consensus_paths[i], "w")
     # 2) iterate over all consensus sequences and write them in a round-robin fashion
-    writer_idx:int = 0
-    index_consensusIDs:dict[int, set[str]] = {i:set() for i in range(n_files)} # to find the correct fasta file for each consensusID
+    writer_idx: int = 0
+    index_consensusIDs: dict[int, set[str]] = {
+        i: set() for i in range(n_files)
+    }  # to find the correct fasta file for each consensusID
 
     for crs_container_result in parse_crs_container_results(
-            input_consensus_container_results
-        ):
-            log.debug(
-                f"Processing CrsContainerResult with {len(crs_container_result.consensus_dicts)} consensuses..."
+        input_consensus_container_results
+    ):
+        log.debug(
+            f"Processing CrsContainerResult with {len(crs_container_result.consensus_dicts)} consensuses..."
+        )
+        for consensus in crs_container_result.consensus_dicts.values():
+            if consensus.consensus_padding is None:
+                raise ValueError(
+                    f"Consensus {consensus.ID} has no consensus_padding. This should not happen. Please check the input data."
+                )
+
+            padded_seqRec = SeqRecord(
+                seq=Seq(consensus.consensus_padding.sequence),
+                id=consensus.ID,
+                name=consensus.ID,
+                description="",
             )
-            for consensus in crs_container_result.consensus_dicts.values():
-                if consensus.consensus_padding is None:
-                    raise ValueError(
-                        f"Consensus {consensus.ID} has no consensus_padding. This should not happen. Please check the input data."
-                    )
-                
-                padded_seqRec = SeqRecord(
-                    seq=Seq(consensus.consensus_padding.sequence),
-                    id=consensus.ID,
-                    name=consensus.ID,
-                    description="",
-                )
-                log.debug(
-                    f"Writing padded consensus {consensus.ID} with length {len(consensus.consensus_padding.sequence)} to fasta file"
-                )
-                SeqIO.write(padded_seqRec, padded_writers[writer_idx], "fasta")
-                # serialize consensus and write to tsv (consenus.ID \t serialized_consensus)
-                
-                #consensus.consensus_sequence = ""  # remove the sequences to save space and time
-                consensus.consensus_padding.sequence = ""  # remove the sequences to save space and time
-                print(str(consensus.ID),json.dumps(consensus.unstructure()), sep='\t', file=consensus_writers[writer_idx])
-                
-                # core interval would be consensus.consensus_padding.consensus_interval_on_sequence_with_padding
-                index_consensusIDs[writer_idx].add(consensus.ID)
-            writer_idx = (writer_idx + 1) % n_files # round-robin
+            log.debug(
+                f"Writing padded consensus {consensus.ID} with length {len(consensus.consensus_padding.sequence)} to fasta file"
+            )
+            SeqIO.write(padded_seqRec, padded_writers[writer_idx], "fasta")
+            # serialize consensus and write to tsv (consenus.ID \t serialized_consensus)
+
+            # consensus.consensus_sequence = ""  # remove the sequences to save space and time
+            consensus.consensus_padding.sequence = (
+                ""  # remove the sequences to save space and time
+            )
+            print(
+                str(consensus.ID),
+                json.dumps(consensus.unstructure()),
+                sep="\t",
+                file=consensus_writers[writer_idx],
+            )
+
+            # core interval would be consensus.consensus_padding.consensus_interval_on_sequence_with_padding
+            index_consensusIDs[writer_idx].add(consensus.ID)
+        writer_idx = (writer_idx + 1) % n_files  # round-robin
     # close all fasta writers
     for i in range(n_files):
         padded_writers[i].close()
@@ -770,7 +618,7 @@ def write_partitioned_alignments(
     samplename: str,
 ) -> None:
     """Parse BAM file and write partitioned datatypes.Alignment objects to TSV files.
-    
+
     Args:
         input_bam: Path to input BAM file
         output_paths: Dictionary mapping partition index to output TSV path
@@ -778,146 +626,154 @@ def write_partitioned_alignments(
     """
     # Generate a dict consensusID:index for faster lookup
     consensusID_to_index: dict[str, int] = {
-        consensusID: i 
-        for i, consensusIDs in index_consensusIDs.items() 
+        consensusID: i
+        for i, consensusIDs in index_consensusIDs.items()
         for consensusID in consensusIDs
     }
-    
+
     # Open all output TSV files
     writers: dict[int, TextIOWrapper] = {}
     for i in output_paths.keys():
-        writers[i] = open(output_paths[i], 'w')
-    
+        writers[i] = open(output_paths[i], "w")
+
     # Parse BAM file and write alignments to partitioned files
     with AlignmentFile(str(input_bam), "rb") as bam_in:
         for pysam_aln in bam_in:
             consensusID = pysam_aln.query_name
-            
+
             if consensusID not in consensusID_to_index:
                 raise ValueError(
                     f"consensusID {consensusID} not found in index_consensusIDs. "
                     "This should not happen. Please check the input data."
                 )
-            
+
             # Convert pysam alignment to datatypes.Alignment
             alignment = datatypes.Alignment.from_pysam(pysam_aln, samplename)
-            
+
             # Write to appropriate partition file: consensusID\tserialized_alignment
             idx = consensusID_to_index[consensusID]
             print(
                 consensusID,
                 json.dumps(alignment.unstructure()),
-                sep='\t',
-                file=writers[idx]
+                sep="\t",
+                file=writers[idx],
             )
-    
+
     # Close all writers
     for writer in writers.values():
         writer.close()
-    
 
-def build_alignments_index(alignment_paths: dict[int, Path]) -> dict[str, list[tuple[int, int]]]:
+
+def build_alignments_index(
+    alignment_paths: dict[int, Path],
+) -> dict[str, list[tuple[int, int]]]:
     """Build an index mapping consensusID to list of (file_index, byte_offset) for alignments.
-    
+
     Args:
         alignment_paths: Dictionary mapping file indices to alignment TSV paths
-        
+
     Returns:
         Dictionary mapping consensusID to list of (file_index, byte_offset) tuples,
         one entry per alignment of that consensusID
     """
     index: dict[str, list[tuple[int, int]]] = {}
-    
+
     for file_idx, path in alignment_paths.items():
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             while True:
                 offset = f.tell()
                 line = f.readline()
-                
+
                 if not line:  # EOF
                     break
-                
-                consensusID = line.split('\t', 1)[0]
+
+                consensusID = line.split("\t", 1)[0]
                 if consensusID not in index:
                     index[consensusID] = []
                 index[consensusID].append((file_idx, offset))
-    
+
     return index
 
 
-def build_alignments_index_partitioned(alignment_paths: dict[int, Path]) -> dict[int, dict[str, list[int]]]:
+def build_alignments_index_partitioned(
+    alignment_paths: dict[int, Path],
+) -> dict[int, dict[str, list[int]]]:
     """Build partitioned alignment indices directly, partitioned by file.
-    
+
     Args:
         alignment_paths: Dictionary mapping file indices to alignment TSV paths
-        
+
     Returns:
         Dictionary mapping partition_idx -> consensusID -> list of byte_offsets
         Each consensusID can have multiple alignments (multiple offsets) in the same file
     """
     partitioned_index: dict[int, dict[str, list[int]]] = {}
-    
+
     for file_idx, path in alignment_paths.items():
         partitioned_index[file_idx] = {}
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             while True:
                 offset = f.tell()
                 line = f.readline()
-                
+
                 if not line:  # EOF
                     break
-                
-                consensusID = line.split('\t', 1)[0]
+
+                consensusID = line.split("\t", 1)[0]
                 if consensusID not in partitioned_index[file_idx]:
                     partitioned_index[file_idx][consensusID] = []
                 partitioned_index[file_idx][consensusID].append(offset)
-    
+
     return partitioned_index
 
 
-def build_consensus_tsv_index(consensus_paths: dict[int, Path]) -> dict[str, tuple[int, int]]:
+def build_consensus_tsv_index(
+    consensus_paths: dict[int, Path],
+) -> dict[str, tuple[int, int]]:
     """Build an index mapping consensusID to (file_index, byte_offset)."""
     index: dict[str, tuple[int, int]] = {}
-    
+
     for file_idx, path in consensus_paths.items():
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             while True:
                 offset = f.tell()
                 line = f.readline()
-                
+
                 if not line:  # EOF
                     break
-                
-                consensusID = line.split('\t', 1)[0]
+
+                consensusID = line.split("\t", 1)[0]
                 index[consensusID] = (file_idx, offset)
-    
+
     return index
 
 
-def build_consensus_tsv_index_partitioned(consensus_paths: dict[int, Path]) -> dict[int, dict[str, int]]:
+def build_consensus_tsv_index_partitioned(
+    consensus_paths: dict[int, Path],
+) -> dict[int, dict[str, int]]:
     """Build partitioned indices mapping consensusID to byte_offset, partitioned by file.
-    
+
     Args:
         consensus_paths: Dictionary mapping file indices to consensus TSV paths
-        
+
     Returns:
         Dictionary mapping partition_idx -> consensusID -> byte_offset
     """
     partitioned_index: dict[int, dict[str, int]] = {}
-    
+
     for file_idx, path in consensus_paths.items():
         partitioned_index[file_idx] = {}
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             while True:
                 offset = f.tell()
                 line = f.readline()
-                
+
                 if not line:  # EOF
                     break
-                
-                consensusID = line.split('\t', 1)[0]
+
+                consensusID = line.split("\t", 1)[0]
                 partitioned_index[file_idx][consensusID] = offset
-    
+
     return partitioned_index
 
 
@@ -927,12 +783,12 @@ def _process_alignment_file_for_core_intervals(
     index_consensusIDs: set[str],
     consensus_json_index_partition: dict[str, int],
     consensus_json_path: Path,
-    batch_size: int = 100
+    batch_size: int = 100,
 ) -> dict[str, list[tuple[int, str, int, int]]]:
     """Process a single alignment file to extract core intervals on reference.
-    
+
     This function is designed to be run in parallel for each alignment file.
-    
+
     Args:
         file_idx: Index of the file being processed
         padded_alignments_path: Path to the serialized alignments TSV file
@@ -940,51 +796,48 @@ def _process_alignment_file_for_core_intervals(
         consensus_json_index_partition: Partitioned index mapping consensusID to byte_offset for this partition only
         consensus_json_path: Path to the consensus TSV file for this partition
         batch_size: Number of alignments to process per batch
-        
+
     Returns:
         Dictionary mapping consensusID to list of (alignment_idx, ref_name, core_start_on_ref, core_end_on_ref)
         The alignment_idx corresponds to the order in the alignment file for this consensusID
     """
     core_intervals_on_reference: dict[str, list[tuple[int, str, int, int]]] = {}
     alignment_counters: dict[str, int] = {}  # Track alignment index per consensusID
-    
+
     log.debug(f"Worker {file_idx}: Processing {padded_alignments_path}")
-    
+
     alignment_batch = []
     consensusID_batch = []
     alignment_idx_batch = []  # Track indices
-    
+
     # Read serialized alignments from TSV file
-    with open(padded_alignments_path, 'r') as f:
+    with open(padded_alignments_path, "r") as f:
         for line in f:
-            fields = line.rstrip().split('\t', 1)
+            fields = line.rstrip().split("\t", 1)
             if len(fields) < 2:
                 continue
-            
+
             consensusID = fields[0]
             if consensusID not in index_consensusIDs:
                 raise ValueError(
                     f"consensusID {consensusID} found in alignment file but not in "
                     f"index_consensusIDs for index {file_idx}. This should not happen."
                 )
-            
+
             # Track alignment index for this consensusID
             if consensusID not in alignment_counters:
                 alignment_counters[consensusID] = 0
             current_alignment_idx = alignment_counters[consensusID]
             alignment_counters[consensusID] += 1
-            
+
             # Deserialize alignment
-            alignment = cattrs.structure(
-                json.loads(fields[1]),
-                datatypes.Alignment
-            )
-            
+            alignment = cattrs.structure(json.loads(fields[1]), datatypes.Alignment)
+
             # Add to batch
             alignment_batch.append(alignment)
             consensusID_batch.append(consensusID)
             alignment_idx_batch.append(current_alignment_idx)
-            
+
             # Process batch when it reaches batch_size
             if len(alignment_batch) >= batch_size:
                 # Get all consensus objects for this batch at once
@@ -997,47 +850,44 @@ def _process_alignment_file_for_core_intervals(
                 consensus_objs = get_consensus_batch_by_ids(
                     consensusIDs=consensusID_batch,
                     index=batch_index,
-                    consensus_paths={file_idx: consensus_json_path}
+                    consensus_paths={file_idx: consensus_json_path},
                 )
-                
+
                 # Process each alignment in the batch
                 for alignment_item, consensusID_item, aln_idx in zip(
-                    alignment_batch, consensusID_batch, alignment_idx_batch
+                    alignment_batch, consensusID_batch, alignment_idx_batch, strict=True
                 ):
                     consensus_obj = consensus_objs[consensusID_item]
-                    
+
                     # Convert to pysam for processing
                     pysam_aln = alignment_item.to_pysam()
-                    
+
                     # Get core interval on reference (already traced back from consensus coordinates)
                     ref_name, core_start_on_ref, core_end_on_ref = (
                         consensus_class.get_consensus_core_alignment_interval_on_reference(
-                            consensus=consensus_obj,
-                            alignment=pysam_aln
+                            consensus=consensus_obj, alignment=pysam_aln
                         )
                     )
                     # alignments that are not overlapping with the core show to have the same start and end after back-tracing.
                     # such alignments are skipped.
                     if core_start_on_ref == core_end_on_ref:
                         continue
-                                        
+
                     if consensusID_item not in core_intervals_on_reference:
                         core_intervals_on_reference[consensusID_item] = []
-                    
+
                     # Store with alignment index for matching
-                    core_intervals_on_reference[consensusID_item].append(
-                        (
-                            aln_idx,  # Alignment index within this consensusID
-                            ref_name,
-                            min(core_start_on_ref, core_end_on_ref),
-                            max(core_start_on_ref, core_end_on_ref)
-                        )
-                    )
-                
+                    core_intervals_on_reference[consensusID_item].append((
+                        aln_idx,  # Alignment index within this consensusID
+                        ref_name,
+                        min(core_start_on_ref, core_end_on_ref),
+                        max(core_start_on_ref, core_end_on_ref),
+                    ))
+
                 # Clear the batch
                 alignment_batch = []
                 consensusID_batch = []
-        
+
         # Process remaining alignments in the last batch
         if alignment_batch:
             # Reconstruct the index format expected by get_consensus_batch_by_ids
@@ -1049,41 +899,42 @@ def _process_alignment_file_for_core_intervals(
             consensus_objs = get_consensus_batch_by_ids(
                 consensusIDs=consensusID_batch,
                 index=batch_index,
-                consensus_paths={file_idx: consensus_json_path}
+                consensus_paths={file_idx: consensus_json_path},
             )
-            
+
             for alignment_item, consensusID_item, aln_idx in zip(
-                alignment_batch, consensusID_batch, alignment_idx_batch
+                alignment_batch, consensusID_batch, alignment_idx_batch, strict=True
             ):
                 consensus_obj = consensus_objs[consensusID_item]
                 pysam_aln = alignment_item.to_pysam()
-                
+
                 core_interval_on_reference = (
                     consensus_class.get_consensus_core_alignment_interval_on_reference(
-                        consensus=consensus_obj,
-                        alignment=pysam_aln
+                        consensus=consensus_obj, alignment=pysam_aln
                     )
                 )
-                
-                traced_back_ref_start, traced_back_ref_end = util.get_interval_on_ref_in_region(
-                    a=pysam_aln,
-                    start=core_interval_on_reference[1],
-                    end=core_interval_on_reference[2]
+
+                traced_back_ref_start, traced_back_ref_end = (
+                    util.get_interval_on_ref_in_region(
+                        a=pysam_aln,
+                        start=core_interval_on_reference[1],
+                        end=core_interval_on_reference[2],
+                    )
                 )
-                
+
                 if consensusID_item not in core_intervals_on_reference:
                     core_intervals_on_reference[consensusID_item] = []
-                
-                core_intervals_on_reference[consensusID_item].append(
-                    (
-                        aln_idx,
-                        str(pysam_aln.reference_name),
-                        min(traced_back_ref_start, traced_back_ref_end),
-                        max(traced_back_ref_start, traced_back_ref_end)
-                    )
-                )
-    
-    log.debug(f"Worker {file_idx}: Processed {len(core_intervals_on_reference)} consensus sequences")
+
+                core_intervals_on_reference[consensusID_item].append((
+                    aln_idx,
+                    str(pysam_aln.reference_name),
+                    min(traced_back_ref_start, traced_back_ref_end),
+                    max(traced_back_ref_start, traced_back_ref_end),
+                ))
+
+    log.debug(
+        f"Worker {file_idx}: Processed {len(core_intervals_on_reference)} consensus sequences"
+    )
     return core_intervals_on_reference
 
 
@@ -1093,10 +944,10 @@ def generate_core_intervals_on_reference(
     consensus_json_index_partitioned: dict[int, dict[str, int]],
     consensus_json_paths: dict[int, Path],
     threads: int,
-    batch_size: int = 100
+    batch_size: int = 100,
 ) -> dict[int, dict[str, list[tuple[int, str, int, int]]]]:
     """Generate core intervals on reference for all alignment files in parallel.
-    
+
     Args:
         padded_alignments_paths: Dictionary mapping file indices to serialized alignment TSV paths
         index_consensusIDs: Dictionary mapping file indices to sets of consensus IDs
@@ -1104,12 +955,14 @@ def generate_core_intervals_on_reference(
         consensus_json_paths: Dictionary mapping file indices to consensus TSV paths
         threads: Number of parallel workers to use
         batch_size: Number of alignments to process per batch
-        
+
     Returns:
         Partitioned dictionary mapping file_index -> consensusID -> list of (alignment_idx, ref_name, core_start_on_ref, core_end_on_ref)
     """
-    log.info(f"Generating core intervals on reference using {threads} parallel workers...")
-    
+    log.info(
+        f"Generating core intervals on reference using {threads} parallel workers..."
+    )
+
     # Prepare arguments for parallel processing
     process_args = []
     for i in range(threads):
@@ -1119,25 +972,33 @@ def generate_core_intervals_on_reference(
             index_consensusIDs[i],
             consensus_json_index_partitioned[i],
             consensus_json_paths[i],
-            batch_size
+            batch_size,
         ))
-    
+
     # Process files in parallel with progress bar tracking completed files
     with mp.Pool(processes=threads) as pool:
-        results = list(tqdm(
-            pool.starmap(_process_alignment_file_for_core_intervals, process_args),
-            total=threads,
-            desc="Processing alignment files"
-        ))
-    
+        results = list(
+            tqdm(
+                pool.starmap(_process_alignment_file_for_core_intervals, process_args),
+                total=threads,
+                desc="Processing alignment files",
+            )
+        )
+
     # Keep partitioned structure: file_idx -> consensusID -> intervals
-    partitioned_core_intervals: dict[int, dict[str, list[tuple[int, str, int, int]]]] = {}
+    partitioned_core_intervals: dict[
+        int, dict[str, list[tuple[int, str, int, int]]]
+    ] = {}
     for i, result_dict in enumerate(results):
         partitioned_core_intervals[i] = result_dict
-    
-    total_consensuses = sum(len(intervals) for intervals in partitioned_core_intervals.values())
-    log.info(f"Generated core intervals for {total_consensuses} consensus sequences across {threads} files.")
-    
+
+    total_consensuses = sum(
+        len(intervals) for intervals in partitioned_core_intervals.values()
+    )
+    log.info(
+        f"Generated core intervals for {total_consensuses} consensus sequences across {threads} files."
+    )
+
     return partitioned_core_intervals
 
 
@@ -1146,85 +1007,87 @@ def _process_partition_for_trf_overlaps(
     core_intervals: dict[str, list[tuple[int, str, int, int]]],
     input_trf: Path,
     reference: Path,
-    tmp_dir: Path
+    tmp_dir: Path,
 ) -> dict[str, list[tuple[str, int, int, int]]]:
     """Process a single partition to find TRF overlaps for core intervals using bedtools.
-    
+
     Args:
         partition_idx: Index of the partition being processed
         core_intervals: Dictionary mapping consensusID to list of (alignment_idx, ref_name, core_start, core_end)
         input_trf: Path to TRF bed file
         reference: Path to reference genome (for creating genome file)
         tmp_dir: Temporary directory for intermediate files
-        
+
     Returns:
         Dictionary mapping consensusID to list of TRF intervals (chrom, start, end, repeat_id)
         All TRF overlaps for a consensusID are collected in a single flat list
         The repeat_id is the 0-indexed line number from the TRF bed file
     """
-    log.debug(f"Worker {partition_idx}: Finding TRF overlaps for {len(core_intervals)} consensus sequences")
-    
+    log.debug(
+        f"Worker {partition_idx}: Finding TRF overlaps for {len(core_intervals)} consensus sequences"
+    )
+
     # Write core intervals to BED file with consensusID as 4th column
     bed_file = tmp_dir / f"core_intervals_{partition_idx}.bed"
-    with open(bed_file, 'w') as f:
+    with open(bed_file, "w") as f:
         for consensusID, intervals in core_intervals.items():
-            for aln_idx, ref_name, core_start, core_end in intervals:
-                print(ref_name, core_start, core_end, consensusID, sep='\t', file=f)
-    
+            for _, ref_name, core_start, core_end in intervals:
+                print(ref_name, core_start, core_end, consensusID, sep="\t", file=f)
+
     # Sort the BED file
     sorted_bed_file = tmp_dir / f"core_intervals_{partition_idx}.sorted.bed"
     genome_file = tmp_dir / f"genome_{partition_idx}.txt"
     util.genome_file_for_bedtools(reference=reference, output=genome_file)
-    
+
     cmd_sort = f"bedtools sort -i {bed_file} -g {genome_file}"
-    with open(sorted_bed_file, 'w') as f:
+    with open(sorted_bed_file, "w") as f:
         subprocess.check_call(shlex.split(cmd_sort), stdout=f)
-    
+
     # Add repeat_id to TRF bed file (0-indexed line number)
     trf_with_id = tmp_dir / f"trf_with_id_{partition_idx}.bed"
-    with open(input_trf, 'r') as fin, open(trf_with_id, 'w') as fout:
+    with open(input_trf, "r") as fin, open(trf_with_id, "w") as fout:
         for repeat_id, line in enumerate(fin):
-            fields = line.rstrip().split('\t')
+            fields = line.rstrip().split("\t")
             if len(fields) >= 3:
-                print(fields[0], fields[1], fields[2], repeat_id, sep='\t', file=fout)
-    
+                print(fields[0], fields[1], fields[2], repeat_id, sep="\t", file=fout)
+
     # Use bedtools intersect to find overlapping TRFs
     intersect_output = tmp_dir / f"trf_overlaps_{partition_idx}.bed"
     cmd_intersect = f"bedtools intersect -a {sorted_bed_file} -b {trf_with_id} -wa -wb"
-    with open(intersect_output, 'w') as f:
+    with open(intersect_output, "w") as f:
         subprocess.check_call(shlex.split(cmd_intersect), stdout=f)
-    
+
     # Parse the intersect output and build the result structure
     # Format: chrom start end consensusID chrom_trf start_trf end_trf repeat_id ...
     result: dict[str, list[tuple[str, int, int, int]]] = {}
-    
+
     # Initialize result structure with empty lists for each consensusID
     for consensusID in core_intervals.keys():
         result[consensusID] = []
-    
+
     # Parse intersect output
-    with open(intersect_output, 'r') as f:
+    with open(intersect_output, "r") as f:
         for line in f:
-            fields = line.rstrip().split('\t')
+            fields = line.rstrip().split("\t")
             if len(fields) < 8:
                 continue
-            
+
             # Extract core interval info
             consensusID = fields[3]
-            
+
             # Extract TRF interval info (now with repeat_id as 4th column)
             trf_chrom = fields[4]
             trf_start = int(fields[5])
             trf_end = int(fields[6])
             repeat_id = int(fields[7])
-            
+
             # Add TRF overlap to consensusID's list
             if consensusID in result:
                 trf_tuple = (trf_chrom, trf_start, trf_end, repeat_id)
                 # Avoid duplicates (same TRF might overlap multiple alignments)
                 if trf_tuple not in result[consensusID]:
                     result[consensusID].append(trf_tuple)
-    
+
     log.debug(f"Worker {partition_idx}: Processed {len(result)} consensus sequences")
     return result
 
@@ -1234,28 +1097,30 @@ def find_trf_overlaps_for_core_intervals(
     input_trf: Path,
     reference: Path,
     threads: int,
-    tmp_dir: Path
+    tmp_dir: Path,
 ) -> dict[int, dict[str, list[tuple[str, int, int, int]]]]:
     """Find TRF overlaps for core intervals on reference in parallel using bedtools.
-    
+
     This function processes each partition in parallel to find overlapping TRF intervals
     for each core interval on the reference.
-    
+
     Args:
-        core_intervals_on_reference: Partitioned dict mapping partition_idx -> consensusID -> 
+        core_intervals_on_reference: Partitioned dict mapping partition_idx -> consensusID ->
                                      list of (alignment_idx, ref_name, core_start, core_end)
         input_trf: Path to TRF bed file
         reference: Path to reference genome
         threads: Number of parallel workers to use
         tmp_dir: Temporary directory for intermediate files
-        
+
     Returns:
         Partitioned dict mapping partition_idx -> consensusID -> list of TRF intervals
         For each consensusID, all overlapping TRF intervals are collected as (chrom, start, end, repeat_id) tuples
         The repeat_id is the 0-indexed line number from the TRF bed file
     """
-    log.info(f"Finding TRF overlaps for core intervals using {threads} parallel workers...")
-    
+    log.info(
+        f"Finding TRF overlaps for core intervals using {threads} parallel workers..."
+    )
+
     # Prepare arguments for parallel processing
     process_args = []
     for partition_idx, core_intervals in core_intervals_on_reference.items():
@@ -1264,59 +1129,65 @@ def find_trf_overlaps_for_core_intervals(
             core_intervals,
             input_trf,
             reference,
-            tmp_dir
+            tmp_dir,
         ))
-    
+
     # Process partitions in parallel
     with mp.Pool(processes=threads) as pool:
-        results = list(tqdm(
-            pool.starmap(_process_partition_for_trf_overlaps, process_args),
-            total=len(process_args),
-            desc="Finding TRF overlaps"
-        ))
-    
+        results = list(
+            tqdm(
+                pool.starmap(_process_partition_for_trf_overlaps, process_args),
+                total=len(process_args),
+                desc="Finding TRF overlaps",
+            )
+        )
+
     # Rebuild partitioned structure maintaining partition indices
     trf_overlaps_partitioned: dict[int, dict[str, list[tuple[str, int, int, int]]]] = {}
     for partition_idx in core_intervals_on_reference.keys():
         trf_overlaps_partitioned[partition_idx] = results[partition_idx]
-    
-    total_consensuses = sum(len(overlaps) for overlaps in trf_overlaps_partitioned.values())
-    log.info(f"Found TRF overlaps for {total_consensuses} consensus sequences across {threads} partitions.")
-    
+
+    total_consensuses = sum(
+        len(overlaps) for overlaps in trf_overlaps_partitioned.values()
+    )
+    log.info(
+        f"Found TRF overlaps for {total_consensuses} consensus sequences across {threads} partitions."
+    )
+
     return trf_overlaps_partitioned
 
 
 def build_fasta_index(fasta_paths: dict[int, Path]) -> dict[str, tuple[int, int, int]]:
     """Build an index mapping consensusID to (file_index, byte_offset, sequence_length) for FASTA files.
-    
+
     Args:
         fasta_paths: Dictionary mapping file indices to FASTA file paths
-        
+
     Returns:
         Dictionary mapping consensusID to (file_index, byte_offset, sequence_length)
     """
     index: dict[str, tuple[int, int, int]] = {}
-    
+
     for file_idx, path in fasta_paths.items():
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             current_id = None
             header_offset = 0
             seq_length = 0
-            
+
             while True:
                 # Store position before reading line
                 pos = f.tell()
                 line = f.readline()
-                
+
                 if not line:  # EOF
                     break
-                
-                line = line.rstrip('\n')
-                if line.startswith('>'):
+
+                line = line.rstrip("\n")
+                if line.startswith(">"):
                     # Save previous sequence if exists
                     if current_id is not None:
                         index[current_id] = (file_idx, header_offset, seq_length)
-                    
+
                     # Start new sequence
                     current_id = line[1:].split()[0]  # Get ID after '>'
                     header_offset = pos  # Position of header line
@@ -1324,47 +1195,52 @@ def build_fasta_index(fasta_paths: dict[int, Path]) -> dict[str, tuple[int, int,
                 else:
                     # Accumulate sequence length
                     seq_length += len(line)
-            
+
             # Save last sequence
             if current_id is not None:
                 index[current_id] = (file_idx, header_offset, seq_length)
-    
+
     return index
 
 
-def build_fasta_index_partitioned(fasta_paths: dict[int, Path]) -> dict[int, dict[str, tuple[int, int]]]:
+def build_fasta_index_partitioned(
+    fasta_paths: dict[int, Path],
+) -> dict[int, dict[str, tuple[int, int]]]:
     """Build partitioned FASTA indices directly, partitioned by file.
-    
+
     Args:
         fasta_paths: Dictionary mapping file indices to FASTA file paths
-        
+
     Returns:
         Dictionary mapping partition_idx -> consensusID -> (byte_offset, sequence_length)
         Note: file_index is not stored since it equals partition_idx
     """
     partitioned_index: dict[int, dict[str, tuple[int, int]]] = {}
-    
+
     for file_idx, path in fasta_paths.items():
         partitioned_index[file_idx] = {}
-        with open(path, 'r') as f:
+        with open(path, "r") as f:
             current_id = None
             header_offset = 0
             seq_length = 0
-            
+
             while True:
                 # Store position before reading line
                 pos = f.tell()
                 line = f.readline()
-                
+
                 if not line:  # EOF
                     break
-                
-                line = line.rstrip('\n')
-                if line.startswith('>'):
+
+                line = line.rstrip("\n")
+                if line.startswith(">"):
                     # Save previous sequence if exists
                     if current_id is not None:
-                        partitioned_index[file_idx][current_id] = (header_offset, seq_length)
-                    
+                        partitioned_index[file_idx][current_id] = (
+                            header_offset,
+                            seq_length,
+                        )
+
                     # Start new sequence
                     current_id = line[1:].split()[0]  # Get ID after '>'
                     header_offset = pos  # Position of header line
@@ -1372,223 +1248,221 @@ def build_fasta_index_partitioned(fasta_paths: dict[int, Path]) -> dict[int, dic
                 else:
                     # Accumulate sequence length
                     seq_length += len(line)
-            
+
             # Save last sequence
             if current_id is not None:
                 partitioned_index[file_idx][current_id] = (header_offset, seq_length)
-    
+
     return partitioned_index
 
 
 def get_sequence_by_id(
     consensusID: str,
     index: dict[str, tuple[int, int, int]],
-    fasta_paths: dict[int, Path]
+    fasta_paths: dict[int, Path],
 ) -> str:
     """Retrieve a sequence from indexed FASTA files by consensusID.
-    
+
     Args:
         consensusID: The consensus ID to retrieve
         index: Index mapping consensusID to (file_index, byte_offset, sequence_length)
         fasta_paths: Dictionary mapping file indices to FASTA file paths
-        
+
     Returns:
         The sequence as a string
     """
     if consensusID not in index:
         raise KeyError(f"consensusID {consensusID} not found in FASTA index")
-    
+
     file_idx, offset, _seq_length = index[consensusID]
-    
-    with open(fasta_paths[file_idx], 'r') as f:
+
+    with open(fasta_paths[file_idx], "r") as f:
         f.seek(offset)
-        
+
         # Skip header line
         f.readline()
-        
+
         # Read sequence lines until next header or EOF
         sequence_parts = []
         while True:
-            pos = f.tell()
             line = f.readline()
-            
-            if not line or line.startswith('>'):
+
+            if not line or line.startswith(">"):
                 break
-            
-            sequence_parts.append(line.rstrip('\n'))
-        
-        return ''.join(sequence_parts)
+
+            sequence_parts.append(line.rstrip("\n"))
+
+        return "".join(sequence_parts)
 
 
 def get_sequences_batch_by_ids(
     consensusIDs: list[str],
     index: dict[str, tuple[int, int, int]],
-    fasta_paths: dict[int, Path]
+    fasta_paths: dict[int, Path],
 ) -> dict[str, str]:
     """Retrieve multiple sequences from indexed FASTA files in a batched manner.
-    
+
     This is more efficient than calling get_sequence_by_id repeatedly
     because it minimizes file open/close operations.
-    
+
     Args:
         consensusIDs: List of consensus IDs to retrieve
         index: Index mapping consensusID to (file_index, byte_offset, sequence_length)
         fasta_paths: Dictionary mapping file indices to FASTA file paths
-        
+
     Returns:
         Dictionary mapping consensusID to sequence string
     """
     # Group consensusIDs by file_index to minimize file operations
     ids_by_file: dict[int, list[tuple[str, int, int]]] = {}
-    
+
     for consensusID in consensusIDs:
         if consensusID not in index:
             log.warning(f"consensusID {consensusID} not found in FASTA index")
             continue
-        
+
         file_idx, offset, seq_length = index[consensusID]
         if file_idx not in ids_by_file:
             ids_by_file[file_idx] = []
         ids_by_file[file_idx].append((consensusID, offset, seq_length))
-    
+
     # Sort by offset for sequential reads (faster than random access)
     for file_idx in ids_by_file:
         ids_by_file[file_idx].sort(key=lambda x: x[1])
-    
+
     # Retrieve sequences
     results: dict[str, str] = {}
-    
+
     for file_idx, id_offset_pairs in ids_by_file.items():
-        with open(fasta_paths[file_idx], 'r') as f:
+        with open(fasta_paths[file_idx], "r") as f:
             for consensusID, offset, _seq_length in id_offset_pairs:
                 f.seek(offset)
-                
+
                 # Skip header line
                 f.readline()
-                
+
                 # Read sequence lines until next header or EOF
                 sequence_parts = []
                 while True:
                     line = f.readline()
-                    
-                    if not line or line.startswith('>'):
+
+                    if not line or line.startswith(">"):
                         break
-                    
-                    sequence_parts.append(line.rstrip('\n'))
-                
-                results[consensusID] = ''.join(sequence_parts)
-    
+
+                    sequence_parts.append(line.rstrip("\n"))
+
+                results[consensusID] = "".join(sequence_parts)
+
     return results
 
 
 def get_sequences_batch_from_partition(
     consensusIDs: list[str],
     index_partition: dict[str, tuple[int, int]],
-    fasta_path: Path
+    fasta_path: Path,
 ) -> dict[str, str]:
     """Retrieve multiple sequences from a single partition's FASTA file.
-    
+
     More efficient than get_sequences_batch_by_ids when all sequences are in one file.
-    
+
     Args:
         consensusIDs: List of consensus IDs to retrieve
         index_partition: Partitioned index mapping consensusID to (byte_offset, sequence_length)
         fasta_path: Path to the FASTA file for this partition
-        
+
     Returns:
         Dictionary mapping consensusID to sequence string
     """
     # Collect all IDs with their offsets
     id_offset_pairs: list[tuple[str, int, int]] = []
-    
+
     for consensusID in consensusIDs:
         if consensusID not in index_partition:
             log.warning(f"consensusID {consensusID} not found in partition FASTA index")
             continue
-        
+
         offset, seq_length = index_partition[consensusID]
         id_offset_pairs.append((consensusID, offset, seq_length))
-    
+
     # Sort by offset for sequential reads (faster than random access)
     id_offset_pairs.sort(key=lambda x: x[1])
-    
+
     # Retrieve sequences
     results: dict[str, str] = {}
-    
-    with open(fasta_path, 'r') as f:
+
+    with open(fasta_path, "r") as f:
         for consensusID, offset, _seq_length in id_offset_pairs:
             f.seek(offset)
-            
+
             # Skip header line
             f.readline()
-            
+
             # Read sequence lines until next header or EOF
             sequence_parts = []
             while True:
                 line = f.readline()
-                
-                if not line or line.startswith('>'):
+
+                if not line or line.startswith(">"):
                     break
-                
-                sequence_parts.append(line.rstrip('\n'))
-            
-            results[consensusID] = ''.join(sequence_parts)
-    
+
+                sequence_parts.append(line.rstrip("\n"))
+
+            results[consensusID] = "".join(sequence_parts)
+
     return results
 
 
 def get_consensus_batch_by_ids(
     consensusIDs: list[str],
     index: dict[str, tuple[int, int]],
-    consensus_paths: dict[int, Path]
+    consensus_paths: dict[int, Path],
 ) -> dict[str, consensus_class.Consensus]:
     """Retrieve multiple consensus objects by ID in a batched manner.
-    
+
     This is more efficient than calling get_consensus_by_id repeatedly
     because it minimizes file open/close operations.
     """
     # Group consensusIDs by file_index to minimize file operations
     ids_by_file: dict[int, list[tuple[str, int]]] = {}
-    
+
     for consensusID in consensusIDs:
         if consensusID not in index:
             log.warning(f"consensusID {consensusID} not found in index")
             continue
-        
+
         file_idx, offset = index[consensusID]
         if file_idx not in ids_by_file:
             ids_by_file[file_idx] = []
         ids_by_file[file_idx].append((consensusID, offset))
-    
+
     # Sort by offset for sequential reads (faster than random access)
     for file_idx in ids_by_file:
         ids_by_file[file_idx].sort(key=lambda x: x[1])
-    
+
     # Retrieve consensus objects
     results: dict[str, consensus_class.Consensus] = {}
-    
+
     for file_idx, id_offset_pairs in ids_by_file.items():
-        with open(consensus_paths[file_idx], 'r') as f:
+        with open(consensus_paths[file_idx], "r") as f:
             for consensusID, offset in id_offset_pairs:
                 f.seek(offset)
                 line = f.readline()
-                _, serialized_data = line.strip().split('\t', 1)
+                _, serialized_data = line.strip().split("\t", 1)
                 results[consensusID] = cattrs.structure(
-                    json.loads(serialized_data), 
-                    consensus_class.Consensus
+                    json.loads(serialized_data), consensus_class.Consensus
                 )
-    
+
     return results
 
 
 def get_consensusIDs_by_partition(
-    index_alignments_partitioned: dict[int, dict[str, list[int]]]
-    ) -> dict[int, set[str]]:
+    index_alignments_partitioned: dict[int, dict[str, list[int]]],
+) -> dict[int, set[str]]:
     """Extract consensusIDs from partitioned alignment index.
-    
+
     Args:
         index_alignments_partitioned: Partitioned index mapping partition_idx -> consensusID -> list of offsets
-        
+
     Returns:
         Dictionary mapping partition_idx to set of consensusIDs in that partition
     """
@@ -1599,108 +1473,118 @@ def get_consensusIDs_by_partition(
 
 
 def get_alignments_for_consensus_from_partition(
-    consensusID: str,
-    index_partition: dict[str, list[int]],
-    alignments_path: Path
+    consensusID: str, index_partition: dict[str, list[int]], alignments_path: Path
 ) -> list[datatypes.Alignment]:
     """Retrieve all alignments for a consensusID from a single partition file.
-    
+
     Args:
         consensusID: The consensus ID to retrieve alignments for
         index_partition: Partitioned index mapping consensusID to list of byte_offsets
         alignments_path: Path to the alignments TSV file for this partition
-        
+
     Returns:
         List of Alignment objects for this consensusID
     """
     if consensusID not in index_partition:
         return []
-    
+
     alignments: list[datatypes.Alignment] = []
     offsets = index_partition[consensusID]
-    
-    with open(alignments_path, 'r') as f:
+
+    with open(alignments_path, "r") as f:
         for offset in offsets:
             f.seek(offset)
             line = f.readline()
-            fields = line.rstrip().split('\t', 1)
+            fields = line.rstrip().split("\t", 1)
             if len(fields) < 2:
-                log.warning(f"Malformed alignment line at offset {offset} in partition file {alignments_path}")
+                log.warning(
+                    f"Malformed alignment line at offset {offset} in partition file {alignments_path}"
+                )
                 continue
-            
+
             # Deserialize alignment
-            alignment = cattrs.structure(
-                json.loads(fields[1]),
-                datatypes.Alignment
-            )
+            alignment = cattrs.structure(json.loads(fields[1]), datatypes.Alignment)
             alignments.append(alignment)
-    
+
     return alignments
 
 
 def write_sequence_fastas_to_file(
-        padded_sequences_paths: dict[int, Path],
-        output_consensus_fasta: Path | str
+    padded_sequences_paths: dict[int, Path], output_consensus_fasta: Path | str
 ) -> None:
     # cat all consensus sequences fasta files and write them to output_consensus_fasta
-    with open(output_consensus_fasta, 'w') as outfile:
+    with open(output_consensus_fasta, "w") as outfile:
         for i in range(len(padded_sequences_paths)):
-            with open(padded_sequences_paths[i], 'r') as infile:
+            with open(padded_sequences_paths[i], "r") as infile:
                 shutil.copyfileobj(infile, outfile)
                 # Ensure newline between files to preserve FASTA format
-                if i < len(padded_sequences_paths) - 1:  # Don't add extra newline after last file
-                    outfile.write('\n')
-    log.info(f"Concatenated {len(padded_sequences_paths)} FASTA files to {output_consensus_fasta}")
+                if (
+                    i < len(padded_sequences_paths) - 1
+                ):  # Don't add extra newline after last file
+                    outfile.write("\n")
+    log.info(
+        f"Concatenated {len(padded_sequences_paths)} FASTA files to {output_consensus_fasta}"
+    )
 
 
 def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
     """Process consensus objects to SV patterns for a single partition.
-    
+
     Args:
         params: SVPatternProcessingParams containing all necessary parameters
     """
     # Configure logging for this worker process
     import sys
+
     logging.basicConfig(
         level=logging.DEBUG,
         format=f"[Worker {params.partition_index}] %(levelname)s - %(message)s",
         stream=sys.stderr,
-        force=True
+        force=True,
     )
-    
-    with open(params.svPatterns_path, 'w') as svp_outfile: # tmp output file for this partition
+
+    with open(
+        params.svPatterns_path, "w"
+    ) as svp_outfile:  # tmp output file for this partition
         for i in range(0, len(params.consensusIDs), params.batchsize):
-            consensusIDs_batch = list(params.consensusIDs)[i:i+params.batchsize]
+            consensusIDs_batch = list(params.consensusIDs)[i : i + params.batchsize]
             # get all consensus objects for this batch at once using partitioned index
             # Need to reconstruct the full index format for get_consensus_batch_by_ids
             consensus_index_for_batch = {
-                consensusID: (params.partition_index, params.consensus_json_index_partition[consensusID])
+                consensusID: (
+                    params.partition_index,
+                    params.consensus_json_index_partition[consensusID],
+                )
                 for consensusID in consensusIDs_batch
                 if consensusID in params.consensus_json_index_partition
             }
             consensus_objs = get_consensus_batch_by_ids(
                 consensus_paths=params.consensus_json_paths,
                 consensusIDs=consensusIDs_batch,
-                index=consensus_index_for_batch
+                index=consensus_index_for_batch,
             )
             svPrimitives: list[SVprimitives.SVprimitive] = []
             # process each consensusID in the batch
             for consensusID in consensusIDs_batch:
                 consensus_obj = consensus_objs[consensusID]
-                trf_overlaps = params.trf_overlaps_on_reference_partition.get(consensusID, [])
+                trf_overlaps = params.trf_overlaps_on_reference_partition.get(
+                    consensusID, []
+                )
                 alignments = get_alignments_for_consensus_from_partition(
                     consensusID=consensusID,
                     index_partition=params.alignments_index_partition,
-                    alignments_path=params.padded_alignments_path
+                    alignments_path=params.padded_alignments_path,
                 )
-                
+
                 # Get the core intervals for this consensus and create lookup by alignment index
-                core_intervals_with_idx = params.core_intervals_on_reference.get(consensusID, [])
+                core_intervals_with_idx = params.core_intervals_on_reference.get(
+                    consensusID, []
+                )
                 core_interval_by_idx = {
                     aln_idx: (ref_name, core_start, core_end)
                     for aln_idx, ref_name, core_start, core_end in core_intervals_with_idx
                 }
-                
+
                 for alignment_idx, alignment in enumerate(alignments):
                     # Match by alignment index
                     if alignment_idx not in core_interval_by_idx:
@@ -1708,16 +1592,20 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                             f"No core interval found for alignment {alignment_idx} of {consensusID}"
                         )
                         continue
-                                      
+
                     # Filter trf intervals to those overlapping with this alignment's reference
                     filtered_trf_overlaps = [
-                        (trf[1], trf[2], trf[3]) 
-                        for trf in trf_overlaps 
+                        (trf[1], trf[2], trf[3])
+                        for trf in trf_overlaps
                         if trf[0] == alignment.reference_name
                     ]
                     if consensus_obj.consensus_padding is None:
-                        raise ValueError(f"Consensus {consensusID} has no consensus_padding information!")
-                    log.debug(f"Parsing SV signals from consensus {consensusID} alignment to {alignment.reference_name}\nCore interval on reference: {core_interval_by_idx[alignment_idx][1:3]}\nCore interval on sequence with padding: {consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding}\nNumber of TRF overlaps for this reference: {len(filtered_trf_overlaps)}")
+                        raise ValueError(
+                            f"Consensus {consensusID} has no consensus_padding information!"
+                        )
+                    log.debug(
+                        f"Parsing SV signals from consensus {consensusID} alignment to {alignment.reference_name}\nCore interval on reference: {core_interval_by_idx[alignment_idx][1:3]}\nCore interval on sequence with padding: {consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding}\nNumber of TRF overlaps for this reference: {len(filtered_trf_overlaps)}"
+                    )
                     mergedSVs = consensus_align_lib.parse_sv_signals_from_consensus(
                         samplename=params.samplename,
                         consensus_sequence=consensus_obj.consensus_sequence,
@@ -1726,22 +1614,33 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         trf_intervals=filtered_trf_overlaps,
                         reference_name=alignment.reference_name,
                         min_bnd_size=params.min_bnd_size,
-                        min_signal_size=params.min_signal_size)
-                    
-                    log.debug(f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals")
-                    # now SV signals are parsed for this alignment
-                    svPrimitives.extend(SVprimitives.generate_SVprimitives(
-                        samplename=params.samplename,
-                        mergedSVs=mergedSVs,
-                        consensus=consensus_obj,
-                        consensus_alignment=alignment,
-                        alignmentID=alignment_idx,
-                        core_interval=core_interval_by_idx[alignment_idx])
+                        min_signal_size=params.min_signal_size,
                     )
-                    log.debug(f"Consensus {consensusID} alignment {alignment_idx}: Generated {len(svPrimitives)} SV primitives so far")
+
+                    log.debug(
+                        f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals"
+                    )
+                    # now SV signals are parsed for this alignment
+                    svPrimitives.extend(
+                        SVprimitives.generate_SVprimitives(
+                            samplename=params.samplename,
+                            mergedSVs=mergedSVs,
+                            consensus=consensus_obj,
+                            consensus_alignment=alignment,
+                            alignmentID=alignment_idx,
+                            core_interval=core_interval_by_idx[alignment_idx],
+                        )
+                    )
+                    log.debug(
+                        f"Consensus {consensusID} alignment {alignment_idx}: Generated {len(svPrimitives)} SV primitives so far"
+                    )
                 # now the sv patterns can be created from the svPrimitives
-            svPrimitives = sorted(svPrimitives, key=lambda svp: (svp.consensusID, svp.read_start))
-            log.debug(f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences")
+            svPrimitives = sorted(
+                svPrimitives, key=lambda svp: (svp.consensusID, svp.read_start)
+            )
+            log.debug(
+                f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences"
+            )
             svPatterns = svPrimitives_to_svPatterns(
                 SVprimitives=svPrimitives, max_del_size=params.max_del_size
             )
@@ -1771,8 +1670,12 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
             )
             # write all svPatterns to the tmp_svPrimitives_path
             for svp in svPatterns:
-                print(json.dumps(svpattern_converter.unstructure(svp)), file=svp_outfile)
-            log.debug(f"Processed batch {i} of consensus sequences for partition {params.partition_index}")
+                print(
+                    json.dumps(svpattern_converter.unstructure(svp)), file=svp_outfile
+                )
+            log.debug(
+                f"Processed batch {i} of consensus sequences for partition {params.partition_index}"
+            )
 
 
 def svPatterns_from_consensus_sequences(
@@ -1790,7 +1693,7 @@ def svPatterns_from_consensus_sequences(
     distance_scale: float,
     falloff: float,
     tmp_dir_path: Path | str | None = None,
-    dont_merge_horizontally: bool = False
+    dont_merge_horizontally: bool = False,
 ) -> None:
     # write all consensus sequences to a fasta file and align to the target reference
     # write all alignments to a file
@@ -1811,149 +1714,199 @@ def svPatterns_from_consensus_sequences(
         )
 
         # the following part will be multi-threaded. All extracted core sequences will be written to {threads} tmp files for parallel processig
-        padded_sequences_paths:dict[int,Path] = {i: Path(tmp_dir) / f"padded_sequences.{i}.fasta" for i in range(threads)}
-        consensus_json_paths:dict[int,Path] = {i: Path(tmp_dir) / f"consensus.{i}.tsv" for i in range(threads)}
-        
+        padded_sequences_paths: dict[int, Path] = {
+            i: Path(tmp_dir) / f"padded_sequences.{i}.fasta" for i in range(threads)
+        }
+        consensus_json_paths: dict[int, Path] = {
+            i: Path(tmp_dir) / f"consensus.{i}.tsv" for i in range(threads)
+        }
+
         # write all core sequences and all padded sequences to fasta files for parallel processing
         index_consensusIDs = write_consensus_files_for_parallel_processing(
             input_consensus_container_results=input_consensus_container_results,
             padded_sequences_paths=padded_sequences_paths,
-            consensus_paths=consensus_json_paths
+            consensus_paths=consensus_json_paths,
         )
-        write_sequence_fastas_to_file(output_consensus_fasta=output_consensus_fasta, padded_sequences_paths=padded_sequences_paths)
-        
+        write_sequence_fastas_to_file(
+            output_consensus_fasta=output_consensus_fasta,
+            padded_sequences_paths=padded_sequences_paths,
+        )
+
         # Build indices for FASTA files (samtools faidx for external tools)
         log.info("Building samtools FASTA indices...")
         index_tmp_fastas(paths=list(padded_sequences_paths.values()))
-        
+
         # Build partitioned in-memory indices directly (more efficient than building global then partitioning)
-        log.info("Building partitioned in-memory indices for core and padded sequences...")
-        padded_sequences_index_partitioned = build_fasta_index_partitioned(padded_sequences_paths)
-        consensus_json_index_partitioned = build_consensus_tsv_index_partitioned(consensus_json_paths)
-        
-        total_padded_seqs = sum(len(partition) for partition in padded_sequences_index_partitioned.values())
-        log.info(f"Indexed {total_padded_seqs} padded sequences across {len(padded_sequences_index_partitioned)} partitions.")
-        
-        tmp_padded_alignments_path : Path = Path(tmp_dir) / "padded_alignments_all.bam"
-        
+        log.info(
+            "Building partitioned in-memory indices for core and padded sequences..."
+        )
+        padded_sequences_index_partitioned = build_fasta_index_partitioned(
+            padded_sequences_paths
+        )
+        consensus_json_index_partitioned = build_consensus_tsv_index_partitioned(
+            consensus_json_paths
+        )
+
+        total_padded_seqs = sum(
+            len(partition) for partition in padded_sequences_index_partitioned.values()
+        )
+        log.info(
+            f"Indexed {total_padded_seqs} padded sequences across {len(padded_sequences_index_partitioned)} partitions."
+        )
+
+        tmp_padded_alignments_path: Path = Path(tmp_dir) / "padded_alignments_all.bam"
+
         util.align_reads_with_minimap(
             reference=input_reference,
             bamout=tmp_padded_alignments_path,
-            reads=[str(padded_sequences_paths[i]) for i in range(len(padded_sequences_paths))],
+            reads=[
+                str(padded_sequences_paths[i])
+                for i in range(len(padded_sequences_paths))
+            ],
             tech="map-ont",
             threads=threads,
-            aln_args=" --secondary=no ")
-        
+            aln_args=" --secondary=no ",
+        )
+
         # Parse alignments and write partitioned datatypes.Alignment objects to TSV files
         padded_alignments_paths: dict[int, Path] = {
-            i: Path(tmp_dir) / f"padded_alignments.{i}.tsv" 
-            for i in range(threads)
+            i: Path(tmp_dir) / f"padded_alignments.{i}.tsv" for i in range(threads)
         }
-        
+
         write_partitioned_alignments(
             input_bam=tmp_padded_alignments_path,
             output_paths=padded_alignments_paths,
             index_consensusIDs=index_consensusIDs,
-            samplename=samplename
+            samplename=samplename,
         )
-        
+
         # Build partitioned index for random access to alignments by consensusID
         log.info("Building partitioned alignment index for random access...")
-        index_alignments_partitioned: dict[int, dict[str, list[int]]] = build_alignments_index_partitioned(padded_alignments_paths)
-        total_consensus_with_alignments = sum(len(partition) for partition in index_alignments_partitioned.values())
-        log.info(f"Indexed {total_consensus_with_alignments} consensus sequences with alignments across {len(index_alignments_partitioned)} partitions.")
-        
+        index_alignments_partitioned: dict[int, dict[str, list[int]]] = (
+            build_alignments_index_partitioned(padded_alignments_paths)
+        )
+        total_consensus_with_alignments = sum(
+            len(partition) for partition in index_alignments_partitioned.values()
+        )
+        log.info(
+            f"Indexed {total_consensus_with_alignments} consensus sequences with alignments across {len(index_alignments_partitioned)} partitions."
+        )
+
         # now iterate the alignments in each padded_alignments_paths
         # for each alignment get the corresponding consensus object from the consensus_json_paths
         # and get its core interval on the reference coordinate system via consensus_class.get_consensus_core_alignment_interval_on_reference
-        # this should be done in parallel over each alignments file        
-        core_intervals_on_reference_partitioned: dict[int, dict[str, list[tuple[int, str, int, int]]]] = generate_core_intervals_on_reference(
+        # this should be done in parallel over each alignments file
+        core_intervals_on_reference_partitioned: dict[
+            int, dict[str, list[tuple[int, str, int, int]]]
+        ] = generate_core_intervals_on_reference(
             padded_alignments_paths=padded_alignments_paths,
             index_consensusIDs=index_consensusIDs,
             consensus_json_index_partitioned=consensus_json_index_partitioned,
             consensus_json_paths=consensus_json_paths,
             threads=threads,
-            batch_size=100
+            batch_size=100,
         )
         log.debug(core_intervals_on_reference_partitioned)
         # now we need to find the intersecting trf intervals for each core interval on reference
         # Find TRF overlaps for all core intervals in parallel using bedtools
-        trf_overlaps_on_reference_partitioned: dict[int, dict[str, list[tuple[str, int, int, int]]]] = find_trf_overlaps_for_core_intervals(
+        trf_overlaps_on_reference_partitioned: dict[
+            int, dict[str, list[tuple[str, int, int, int]]]
+        ] = find_trf_overlaps_for_core_intervals(
             core_intervals_on_reference=core_intervals_on_reference_partitioned,
             input_trf=Path(input_trf),
             reference=Path(input_reference),
             threads=threads,
-            tmp_dir=Path(tmp_dir)
+            tmp_dir=Path(tmp_dir),
         )
-        
-        consensusIDs_by_partition = get_consensusIDs_by_partition(index_alignments_partitioned=index_alignments_partitioned)
 
-        svPatterns_paths : dict[int, Path] = {
-            i: Path(tmp_dir) / f"svPatterns_partition_{i}.tsv"
-            for i in range(threads)
+        consensusIDs_by_partition = get_consensusIDs_by_partition(
+            index_alignments_partitioned=index_alignments_partitioned
+        )
+
+        svPatterns_paths: dict[int, Path] = {
+            i: Path(tmp_dir) / f"svPatterns_partition_{i}.tsv" for i in range(threads)
         }
 
         # Prepare arguments for parallel processing
-        log.info(f"Processing consensus objects to SV patterns using {threads} parallel workers...")
+        log.info(
+            f"Processing consensus objects to SV patterns using {threads} parallel workers..."
+        )
         process_args = []
         for partition_index in range(threads):
-            process_args.append(SVPatternProcessingParams(
-                svPatterns_path=svPatterns_paths[partition_index],
-                consensusIDs=list(consensusIDs_by_partition[partition_index]),
-                consensus_json_index_partition=consensus_json_index_partitioned[partition_index],
-                consensus_json_paths=consensus_json_paths,
-                partition_index=partition_index,
-                padded_alignments_path=padded_alignments_paths[partition_index],
-                core_intervals_on_reference=core_intervals_on_reference_partitioned[partition_index],
-                alignments_index_partition=index_alignments_partitioned[partition_index],
-                trf_overlaps_on_reference_partition=trf_overlaps_on_reference_partitioned[partition_index],
-                input_reference=Path(input_reference),
-                samplename=samplename,
-                min_bnd_size=min_bnd_size,
-                min_signal_size=min_signal_size,
-                max_del_size=max_del_size,
-                distance_scale=distance_scale,
-                falloff=falloff,
-                batchsize=100
-            ))
-        
+            process_args.append(
+                SVPatternProcessingParams(
+                    svPatterns_path=svPatterns_paths[partition_index],
+                    consensusIDs=list(consensusIDs_by_partition[partition_index]),
+                    consensus_json_index_partition=consensus_json_index_partitioned[
+                        partition_index
+                    ],
+                    consensus_json_paths=consensus_json_paths,
+                    partition_index=partition_index,
+                    padded_alignments_path=padded_alignments_paths[partition_index],
+                    core_intervals_on_reference=core_intervals_on_reference_partitioned[
+                        partition_index
+                    ],
+                    alignments_index_partition=index_alignments_partitioned[
+                        partition_index
+                    ],
+                    trf_overlaps_on_reference_partition=trf_overlaps_on_reference_partitioned[
+                        partition_index
+                    ],
+                    input_reference=Path(input_reference),
+                    samplename=samplename,
+                    min_bnd_size=min_bnd_size,
+                    min_signal_size=min_signal_size,
+                    max_del_size=max_del_size,
+                    distance_scale=distance_scale,
+                    falloff=falloff,
+                    batchsize=100,
+                )
+            )
+
         # Process partitions in parallel
         with mp.Pool(processes=threads) as pool:
-            list(tqdm(
-                pool.map(_process_consensus_objects_to_svPatterns, process_args),
-                total=threads,
-                desc="Processing consensus sequences to SV patterns"
-            ))
-        
-        log.info(f"Completed parallel processing of SV patterns across {threads} partitions.")
+            list(
+                tqdm(
+                    pool.map(_process_consensus_objects_to_svPatterns, process_args),
+                    total=threads,
+                    desc="Processing consensus sequences to SV patterns",
+                )
+            )
+
+        log.info(
+            f"Completed parallel processing of SV patterns across {threads} partitions."
+        )
 
         # Create a temporary file for concatenated JSON lines
         tmp_svpatterns_json = Path(tmp_dir) / "svpatterns_all.json"
-        
+
         # open each svPatterns file sequentially, read lines and write to tmp file
-        with open(tmp_svpatterns_json, 'w') as outfile:
+        with open(tmp_svpatterns_json, "w") as outfile:
             for partition_idx in range(threads):
                 svp_path = svPatterns_paths[partition_idx]
                 if not svp_path.exists():
-                    log.warning(f"SV patterns file for partition {partition_idx} does not exist at {svp_path}")
+                    log.warning(
+                        f"SV patterns file for partition {partition_idx} does not exist at {svp_path}"
+                    )
                     continue
-                with open(svp_path, 'r') as infile:
+                with open(svp_path, "r") as infile:
                     shutil.copyfileobj(infile, outfile)
-                    if partition_idx < threads - 1:  # Don't add extra newline after last file
-                        outfile.write('\n')
-        
+                    if (
+                        partition_idx < threads - 1
+                    ):  # Don't add extra newline after last file
+                        outfile.write("\n")
+
         log.info(f"Concatenated {threads} SV pattern partition files")
-        
+
         # Create the database and populate it from the temporary JSON file
         log.info(f"Creating SV patterns database at {output_svPatterns}")
         SVpatterns.create_svPatterns_db(database=Path(output_svPatterns))
         SVpatterns.write_svPatterns_to_db(
             database=Path(output_svPatterns),
             svPatterns_file=tmp_svpatterns_json,
-            timeout=30
+            timeout=30,
         )
         log.info(f"Successfully wrote SV patterns to database {output_svPatterns}")
-
 
 
 def get_parser():
@@ -2084,7 +2037,6 @@ def main():
         level=getattr(logging, args.log_level),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
 
     svPatterns_from_consensus_sequences(
         samplename=args.samplename,
@@ -2101,9 +2053,9 @@ def main():
         distance_scale=args.distance_scale,
         falloff=args.falloff,
         tmp_dir_path=args.tmp_dir_path,
-        dont_merge_horizontally=args.dont_merge_horizontally
+        dont_merge_horizontally=args.dont_merge_horizontally,
     )
-    
+
     # Database creation is now handled inside svPatterns_from_consensus_sequences
     return
 

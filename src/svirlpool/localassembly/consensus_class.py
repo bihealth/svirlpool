@@ -66,7 +66,7 @@ class ConsensusPadding:
     readname_left: str
     readname_right: str
     padding_size_left: int  # core interval start
-    padding_size_right: int # len(sequence) - core interval end
+    padding_size_right: int  # len(sequence) - core interval end
     consensus_interval_on_sequence_with_padding: tuple[int, int]
 
 
@@ -275,19 +275,27 @@ def read_consensus_from_db(
 
     return consensus_objects
 
+
 def get_consensus_core_alignment_interval_on_reference(
-    consensus:Consensus,
-    alignment:AlignedSegment) -> tuple[str, int, int]:
+    consensus: Consensus, alignment: AlignedSegment
+) -> tuple[str, int, int]:
     if consensus.consensus_padding is None:
         raise ValueError("Consensus padding is None, cannot determine core interval.")
-    core_start:int = consensus.consensus_padding.consensus_interval_on_sequence_with_padding[0]
-    core_end:int = consensus.consensus_padding.consensus_interval_on_sequence_with_padding[1]
+    core_start: int = (
+        consensus.consensus_padding.consensus_interval_on_sequence_with_padding[0]
+    )
+    core_end: int = (
+        consensus.consensus_padding.consensus_interval_on_sequence_with_padding[1]
+    )
     traced_back_ref_start, traced_back_ref_end = get_interval_on_ref_in_region(
-            a=alignment,
-            start=core_start,
-            end=core_end,
-        )
-    traced_back_ref_start, traced_back_ref_end = min(traced_back_ref_start, traced_back_ref_end), max(traced_back_ref_start, traced_back_ref_end)
+        a=alignment,
+        start=core_start,
+        end=core_end,
+    )
+    traced_back_ref_start, traced_back_ref_end = (
+        min(traced_back_ref_start, traced_back_ref_end),
+        max(traced_back_ref_start, traced_back_ref_end),
+    )
     return (str(alignment.reference_name), traced_back_ref_start, traced_back_ref_end)
 
 

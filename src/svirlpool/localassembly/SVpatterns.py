@@ -1223,11 +1223,11 @@ def write_svPatterns_to_db(
     """
     import json
     from pathlib import Path as PathType
-    
+
     svPatterns_file = PathType(svPatterns_file)
     if not svPatterns_file.exists():
         raise FileNotFoundError(f"SVpatterns file not found: {svPatterns_file}")
-    
+
     query = "INSERT INTO svPatterns (svPatternID, consensusID, crID, svPattern) VALUES (?, ?, ?, ?)"
 
     with sqlite3.connect(
@@ -1236,28 +1236,32 @@ def write_svPatterns_to_db(
         c = conn.cursor()
         cache = []
         pattern_counter = 0
-        
-        with open(svPatterns_file, 'r') as f:
+
+        with open(svPatterns_file, "r") as f:
             for line_num, line in enumerate(f, 1):
-                line = line.rstrip('\n')
+                line = line.rstrip("\n")
                 if not line:  # Skip empty lines
                     continue
-                
+
                 try:
                     # Deserialize SVpattern from JSON
                     svPattern_dict = json.loads(line)
                     # Use the converter to structure the SVpattern from the dict
                     svPattern = converter.structure(svPattern_dict, SVpatternType)  # type: ignore
-                    
+
                     # Generate a unique ID for the SVpattern
                     if svPattern.SVprimitives:
                         consensusID = svPattern.SVprimitives[0].consensusID
                         crID = int(consensusID.split(".")[0])
-                        svPatternID = f"{svPattern.get_sv_type()}.{consensusID}.{pattern_counter}"
+                        svPatternID = (
+                            f"{svPattern.get_sv_type()}.{consensusID}.{pattern_counter}"
+                        )
                     else:
-                        log.warning(f"SVpattern at line {line_num} has no primitives, skipping")
+                        log.warning(
+                            f"SVpattern at line {line_num} has no primitives, skipping"
+                        )
                         continue
-                    
+
                     cache.append((
                         svPatternID,
                         consensusID,
@@ -1265,21 +1269,21 @@ def write_svPatterns_to_db(
                         pickle.dumps(converter.unstructure(svPattern)),
                     ))
                     pattern_counter += 1
-                    
+
                     # Write batch when cache reaches batch_size
                     if len(cache) >= batch_size:
                         c.executemany(query, cache)
                         conn.commit()
                         log.debug(f"Wrote batch of {len(cache)} SVpatterns to database")
                         cache.clear()
-                
+
                 except json.JSONDecodeError as e:
                     log.warning(f"Failed to parse JSON at line {line_num}: {e}")
                     continue
                 except Exception as e:
                     log.warning(f"Failed to process SVpattern at line {line_num}: {e}")
                     continue
-        
+
         # Write remaining records
         if cache:
             c.executemany(query, cache)
@@ -1287,7 +1291,6 @@ def write_svPatterns_to_db(
             log.debug(f"Wrote final batch of {len(cache)} SVpatterns to database")
 
         c.close()
-
 
 
 def read_svPatterns_from_db(

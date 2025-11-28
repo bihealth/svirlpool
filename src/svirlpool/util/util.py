@@ -7,9 +7,7 @@ import csv
 import gzip
 import json
 import logging
-import pickle
 import shlex
-import shutil
 import signal
 import sqlite3
 import subprocess
@@ -77,31 +75,6 @@ def yield_from_extendedSVsignal(
     yield from yield_last_column(
         input=input, dtype=datatypes.ExtendedSVsignal, description=description
     )
-
-
-def load_consensus_sequences_from_db(
-    path_db: Path, silent: bool = False
-) -> dict[str, str]:
-    """produces a dict consensusID:consensus_sequence"""
-    # iterate all consensus objects in database and construct a dict consensusID:consensusObject
-    if not silent:
-        log.info(f"loading consensus sequences from {path_db}...")
-    conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)
-    c = conn.cursor()
-    c.execute("SELECT id,consensus FROM consensuses")
-    results = {}
-    for row in c:
-        try:
-            consensus_object: consensus_class.Consensus = cattrs.structure(
-                pickle.loads(row[1]), consensus_class.Consensus
-            )
-            results[row[0]] = consensus_object.consensus_sequence
-        except Exception as e:
-            log.error(f"Error loading consensus sequence for {row[0]}: {e}")
-            raise ValueError(f"Error loading consensus sequence for {row[0]}: {e}")
-    c.close()
-    conn.close()
-    return results
 
 
 def load_alignments(path: Path) -> list[pysam.AlignedSegment]:
@@ -177,8 +150,7 @@ def parse_alignment(
 
 
 def get_sequences_from_fasta(
-    input: Path | str,
-    sequence_names: list[str]
+    input: Path | str, sequence_names: list[str]
 ) -> dict[str, str]:
     """Fetch sequences as plain strings (faster than SeqRecord)."""
     with pysam.FastaFile(str(input)) as ff:
@@ -187,7 +159,7 @@ def get_sequences_from_fasta(
 
 def align_reads_with_minimap(
     reference: Path | str,
-    reads: Path | str | list[Path|str],
+    reads: Path | str | list[Path | str],
     bamout: Path | str,
     tech: str = "map-ont",
     threads: int = 3,

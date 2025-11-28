@@ -1,17 +1,11 @@
 import logging
-import multiprocessing as mp
-import time
-from collections.abc import Iterator
-from datetime import datetime
 
 import attrs
 import cattrs
 from pysam import AlignedSegment
-from tqdm import tqdm
 
 from ..svcalling import genotyping
 from ..util import datatypes
-from ..util.minimizer_matching import MinimizerIndex
 from ..util.util import Direction, get_read_position_on_ref
 from . import consensus_class
 
@@ -274,9 +268,9 @@ def add_genotypeMeasurements_to_SVprimitives(
 def generate_SVprimitives(
     samplename: str,
     mergedSVs: list[datatypes.MergedSVSignal],
-    consensus:consensus_class.Consensus,
-    consensus_alignment:datatypes.Alignment,
-    core_interval: tuple[str, int, int], # chr, ref start, ref end
+    consensus: consensus_class.Consensus,
+    consensus_alignment: datatypes.Alignment,
+    core_interval: tuple[str, int, int],  # chr, ref start, ref end
     alignmentID: int,
 ) -> list[SVprimitive]:
     """Generates SVprimitives for a given consensus sequence and its alignments."""
@@ -290,14 +284,14 @@ def generate_SVprimitives(
             core_interval[2],
         )
         svp = SVprimitive.from_merged_sv_signal(
-                merged_sv_signal=svCandidate,
-                samplename=samplename,
-                consensusID=consensus.ID,
-                alignmentID=alignmentID,
-                svID=j,
-                aln_is_reverse=consensus_alignment.is_reverse(),
-                consensus_aln_interval=consensus_aln_interval,
-            )
+            merged_sv_signal=svCandidate,
+            samplename=samplename,
+            consensusID=consensus.ID,
+            alignmentID=alignmentID,
+            svID=j,
+            aln_is_reverse=consensus_alignment.is_reverse(),
+            consensus_aln_interval=consensus_aln_interval,
+        )
         svp_cache.append(svp)
     add_genotypeMeasurements_to_SVprimitives(
         svps=svp_cache,
@@ -309,17 +303,17 @@ def generate_SVprimitives(
     svp_cache = [
         svp
         for svp in svp_cache
-        if svp.genotypeMeasurement is not None and len(svp.genotypeMeasurement.supporting_reads_start) > 0
+        if svp.genotypeMeasurement is not None
+        and len(svp.genotypeMeasurement.supporting_reads_start) > 0
     ]
     return svp_cache
-    
-    
-        
+
+
 # def container_result_to_svprimitives(
 #         consensus:consensus_class.Consensus,
 #         consensus_alignments: list[consensus_class.ConsensusAlignment],
 #         ) -> list[SVprimitive]:
-    
+
 #     results : list[SVprimitive] = []
 
 #     for i, consensusAlignment in enumerate(consensus_alignments):
@@ -426,7 +420,6 @@ def generate_SVprimitives(
 #             )
 #             results.append(svPrimitive)
 #     return results
-
 
 
 # def _process_consensus_batch_serialized(
