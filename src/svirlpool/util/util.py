@@ -660,7 +660,7 @@ def get_interval_on_ref_in_region(
     a: pysam.libcalignedsegment.AlignedSegment, start: int, end: int
 ) -> tuple[int, int]:
     # find start and end position on ref
-    start, end = (end, start) if start > end else (start, end)
+    start, end = (end, start) if a.is_reverse else (start, end)
     istart = get_read_position_on_ref(
         alignment=a, position=start, direction=Direction.LEFT
     )

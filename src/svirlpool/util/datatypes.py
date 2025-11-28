@@ -365,7 +365,7 @@ class Alignment:
         )
 
     def unstructure(self):
-        cattrs.unstructure(self)
+        return cattrs.unstructure(self)
 
     def __hash__(self) -> int:
         return hash((

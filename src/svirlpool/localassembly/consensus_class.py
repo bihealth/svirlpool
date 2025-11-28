@@ -287,6 +287,7 @@ def get_consensus_core_alignment_interval_on_reference(
             start=core_start,
             end=core_end,
         )
+    traced_back_ref_start, traced_back_ref_end = min(traced_back_ref_start, traced_back_ref_end), max(traced_back_ref_start, traced_back_ref_end)
     return (str(alignment.reference_name), traced_back_ref_start, traced_back_ref_end)
 
 
