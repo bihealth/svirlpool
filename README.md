@@ -57,6 +57,7 @@ pixi run \
         --threads 1 \
         --samplename muc1test \
         --workdir /tmp/workdir/result \
+        --output /tmp/workdir/result/svirltile.db \
         --alignments examples/muc1/data/muc1.bam \
         --reference examples/muc1/data/muc1.fa \
         --trf examples/muc1/data/muc1.trf.bed \

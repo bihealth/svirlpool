@@ -46,6 +46,13 @@ def get_parser():
         type=os.path.abspath,
     )
     parser_run_wf.add_argument(
+        "--output",
+        help="Output database filename (relative to workdir) or absolute path. Default: svirltile.db",
+        required=False,
+        type=str,
+        default="svirltile.db",
+    )
+    parser_run_wf.add_argument(
         "--alignments",
         help="Path to the bam file",
         required=True,

@@ -99,6 +99,17 @@ cores_per_consensus = config["cores_per_consensus"]
 #avg_doc = config["coverage"]
 #doc_per_haplotype = avg_doc / 2.0
 
+# output database - handle both absolute and relative paths
+# If absolute path is provided, use it as-is
+# If relative path, it will be relative to workdir (set above)
+output_db_path = config.get("output", "svirltile.db")
+if not Path(output_db_path).is_absolute():
+    # Relative path - will be interpreted relative to workdir by Snakemake
+    output_db = output_db_path
+else:
+    # Absolute path - use as-is
+    output_db = output_db_path
+
 cores = workflow.cores #config["cores"]
 
 
@@ -129,7 +140,7 @@ rule all:
         "QC/copy_number_tracks.png",
         'crs_containers.db',
         "consensus_containers.txt",
-        "svirltile.db"
+        output_db
         
 # -----------------------------------------------------------------------------
 # SIGNAL PROCESSING
@@ -627,7 +638,7 @@ rule to_svirltile:
     params:
         samplename=samplename
     output:
-        svirltile_db="svirltile.db",
+        svirltile_db=output_db,
     threads:
         1
     resources:
