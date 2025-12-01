@@ -25,6 +25,14 @@ def construct_interval_trees(
     data: np.ndarray,
 ) -> tuple[dict[str, IntervalTree], dict[str, list[int]]]:
     """Constructs interval trees and position sets from the input data."""
+    if data.shape[0] == 0:
+        log.warning("No data found to construct interval trees.")
+        return {}, {}
+    if data.shape[1] != 4:
+        raise ValueError(
+            f"Data shape is incorrect. Expected 4 columns, got {data.shape[1]} columns."
+        )
+
     chrs = set(data[:, 0])
     intervall_trees = {}
     all_positions: dict[str, list[int]] = {}

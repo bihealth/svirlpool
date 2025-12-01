@@ -646,14 +646,26 @@ def write_partitioned_alignments(
                     f"consensusID {consensusID} not found in index_consensusIDs. "
                     "This should not happen. Please check the input data."
                 )
+            
+            if pysam_aln.reference_end is None:
+                raise ValueError(
+                    f"Alignment for consensusID {consensusID} has no reference_end. "
+                    "This should not happen. Please check the input data."
+                )
 
+            qstart, qend = util.get_interval_on_read_in_region(a=pysam_aln, start=pysam_aln.reference_start, end=pysam_aln.reference_end)
+            
             # Convert pysam alignment to datatypes.Alignment
-            alignment = datatypes.Alignment.from_pysam(pysam_aln, samplename)
+            annotations = {"qstart": qstart, "qend": qend}
+            alignment = datatypes.Alignment.from_pysam(aln=pysam_aln, samplename=samplename, annotations=annotations)
 
             # Write to appropriate partition file: consensusID\tserialized_alignment
+            # This ensures that all alignments of one consensusID go to the same file
             idx = consensusID_to_index[consensusID]
             print(
                 consensusID,
+                qstart,
+                qend,
                 json.dumps(alignment.unstructure()),
                 sep="\t",
                 file=writers[idx],
@@ -662,6 +674,7 @@ def write_partitioned_alignments(
     # Close all writers
     for writer in writers.values():
         writer.close()
+
 
 
 def build_alignments_index(
@@ -783,7 +796,7 @@ def _process_alignment_file_for_core_intervals(
     index_consensusIDs: set[str],
     consensus_json_index_partition: dict[str, int],
     consensus_json_path: Path,
-    batch_size: int = 100,
+    batch_size: int = 35,
 ) -> dict[str, list[tuple[int, str, int, int]]]:
     """Process a single alignment file to extract core intervals on reference.
 
@@ -795,142 +808,109 @@ def _process_alignment_file_for_core_intervals(
         index_consensusIDs: Set of consensus IDs expected in this file
         consensus_json_index_partition: Partitioned index mapping consensusID to byte_offset for this partition only
         consensus_json_path: Path to the consensus TSV file for this partition
-        batch_size: Number of alignments to process per batch
+        batch_size: Number of consensusIDs for which alignments are loaded to process per batch
 
     Returns:
         Dictionary mapping consensusID to list of (alignment_idx, ref_name, core_start_on_ref, core_end_on_ref)
         The alignment_idx corresponds to the order in the alignment file for this consensusID
     """
     core_intervals_on_reference: dict[str, list[tuple[int, str, int, int]]] = {}
-    alignment_counters: dict[str, int] = {}  # Track alignment index per consensusID
 
     log.debug(f"Worker {file_idx}: Processing {padded_alignments_path}")
 
-    alignment_batch = []
-    consensusID_batch = []
-    alignment_idx_batch = []  # Track indices
+    # Batch structure: maps consensusID to list of (qstart, qend, alignment)
+    current_batch: dict[str, list[tuple[int, int, datatypes.Alignment]]] = {}
+    
+    def process_batch(batch: dict[str, list[tuple[int, int, datatypes.Alignment]]]) -> None:
+        """Process a batch of alignments grouped by consensusID."""
+        if not batch:
+            return
+            
+        # Get all unique consensusIDs in this batch
+        batch_consensusIDs = list(batch.keys())
+        
+        # Reconstruct the index format expected by get_consensus_batch_by_ids
+        batch_index = {
+            cid: (file_idx, consensus_json_index_partition[cid])
+            for cid in batch_consensusIDs
+            if cid in consensus_json_index_partition
+        }
+        consensus_objs = get_consensus_batch_by_ids(
+            consensusIDs=batch_consensusIDs,
+            index=batch_index,
+            consensus_paths={file_idx: consensus_json_path},
+        )
+
+        # Process each consensusID's alignments
+        for consensusID, alignments_list in batch.items():
+            consensus_obj = consensus_objs[consensusID]
+            
+            # Sort alignments by (qstart, qend) to ensure consistent ordering
+            alignments_list.sort(key=lambda x: (x[0], x[1]))
+            
+            # Process each alignment with its index
+            for aln_idx, (qstart, qend, alignment) in enumerate(alignments_list):
+                # Convert to pysam for processing
+                pysam_aln = alignment.to_pysam()
+
+                # Get core interval on reference (already traced back from consensus coordinates)
+                ref_name, core_start_on_ref, core_end_on_ref = (
+                    consensus_class.get_consensus_core_alignment_interval_on_reference(
+                        consensus=consensus_obj, alignment=pysam_aln
+                    )
+                )
+                
+                # Skip alignments that don't overlap with the core
+                if core_start_on_ref == core_end_on_ref:
+                    continue
+
+                if consensusID not in core_intervals_on_reference:
+                    core_intervals_on_reference[consensusID] = []
+
+                # Store with alignment index for matching
+                core_intervals_on_reference[consensusID].append((
+                    aln_idx,  # Alignment index within this consensusID (sorted by qstart, qend)
+                    ref_name,
+                    min(core_start_on_ref, core_end_on_ref),
+                    max(core_start_on_ref, core_end_on_ref),
+                ))
 
     # Read serialized alignments from TSV file
+    # File is sorted by: consensusID, qstart, qend
     with open(padded_alignments_path, "r") as f:
         for line in f:
-            fields = line.rstrip().split("\t", 1)
-            if len(fields) < 2:
+            fields = line.rstrip().split("\t", 4)
+            if len(fields) < 4:
                 continue
 
             consensusID = fields[0]
+            qstart = int(fields[1])
+            qend = int(fields[2])
+            
             if consensusID not in index_consensusIDs:
                 raise ValueError(
                     f"consensusID {consensusID} found in alignment file but not in "
                     f"index_consensusIDs for index {file_idx}. This should not happen."
                 )
 
-            # Track alignment index for this consensusID
-            if consensusID not in alignment_counters:
-                alignment_counters[consensusID] = 0
-            current_alignment_idx = alignment_counters[consensusID]
-            alignment_counters[consensusID] += 1
-
             # Deserialize alignment
-            alignment = cattrs.structure(json.loads(fields[1]), datatypes.Alignment)
+            alignment = cattrs.structure(json.loads(fields[3]), datatypes.Alignment)
 
-            # Add to batch
-            alignment_batch.append(alignment)
-            consensusID_batch.append(consensusID)
-            alignment_idx_batch.append(current_alignment_idx)
+            # Check if we need to start a new batch (when we hit a new consensusID)
+            if consensusID not in current_batch:
+                # If batch is full, process it before adding new consensusID
+                if len(current_batch) >= batch_size:
+                    process_batch(current_batch)
+                    current_batch.clear()
+                
+                current_batch[consensusID] = []
+            
+            # Add alignment to current batch
+            current_batch[consensusID].append((qstart, qend, alignment))
 
-            # Process batch when it reaches batch_size
-            if len(alignment_batch) >= batch_size:
-                # Get all consensus objects for this batch at once
-                # Reconstruct the index format expected by get_consensus_batch_by_ids
-                batch_index = {
-                    cid: (file_idx, consensus_json_index_partition[cid])
-                    for cid in consensusID_batch
-                    if cid in consensus_json_index_partition
-                }
-                consensus_objs = get_consensus_batch_by_ids(
-                    consensusIDs=consensusID_batch,
-                    index=batch_index,
-                    consensus_paths={file_idx: consensus_json_path},
-                )
-
-                # Process each alignment in the batch
-                for alignment_item, consensusID_item, aln_idx in zip(
-                    alignment_batch, consensusID_batch, alignment_idx_batch, strict=True
-                ):
-                    consensus_obj = consensus_objs[consensusID_item]
-
-                    # Convert to pysam for processing
-                    pysam_aln = alignment_item.to_pysam()
-
-                    # Get core interval on reference (already traced back from consensus coordinates)
-                    ref_name, core_start_on_ref, core_end_on_ref = (
-                        consensus_class.get_consensus_core_alignment_interval_on_reference(
-                            consensus=consensus_obj, alignment=pysam_aln
-                        )
-                    )
-                    # alignments that are not overlapping with the core show to have the same start and end after back-tracing.
-                    # such alignments are skipped.
-                    if core_start_on_ref == core_end_on_ref:
-                        continue
-
-                    if consensusID_item not in core_intervals_on_reference:
-                        core_intervals_on_reference[consensusID_item] = []
-
-                    # Store with alignment index for matching
-                    core_intervals_on_reference[consensusID_item].append((
-                        aln_idx,  # Alignment index within this consensusID
-                        ref_name,
-                        min(core_start_on_ref, core_end_on_ref),
-                        max(core_start_on_ref, core_end_on_ref),
-                    ))
-
-                # Clear the batch
-                alignment_batch = []
-                consensusID_batch = []
-
-        # Process remaining alignments in the last batch
-        if alignment_batch:
-            # Reconstruct the index format expected by get_consensus_batch_by_ids
-            batch_index = {
-                cid: (file_idx, consensus_json_index_partition[cid])
-                for cid in consensusID_batch
-                if cid in consensus_json_index_partition
-            }
-            consensus_objs = get_consensus_batch_by_ids(
-                consensusIDs=consensusID_batch,
-                index=batch_index,
-                consensus_paths={file_idx: consensus_json_path},
-            )
-
-            for alignment_item, consensusID_item, aln_idx in zip(
-                alignment_batch, consensusID_batch, alignment_idx_batch, strict=True
-            ):
-                consensus_obj = consensus_objs[consensusID_item]
-                pysam_aln = alignment_item.to_pysam()
-
-                core_interval_on_reference = (
-                    consensus_class.get_consensus_core_alignment_interval_on_reference(
-                        consensus=consensus_obj, alignment=pysam_aln
-                    )
-                )
-
-                traced_back_ref_start, traced_back_ref_end = (
-                    util.get_interval_on_ref_in_region(
-                        a=pysam_aln,
-                        start=core_interval_on_reference[1],
-                        end=core_interval_on_reference[2],
-                    )
-                )
-
-                if consensusID_item not in core_intervals_on_reference:
-                    core_intervals_on_reference[consensusID_item] = []
-
-                core_intervals_on_reference[consensusID_item].append((
-                    aln_idx,
-                    str(pysam_aln.reference_name),
-                    min(traced_back_ref_start, traced_back_ref_end),
-                    max(traced_back_ref_start, traced_back_ref_end),
-                ))
+        # Process remaining batch
+        if current_batch:
+            process_batch(current_batch)
 
     log.debug(
         f"Worker {file_idx}: Processed {len(core_intervals_on_reference)} consensus sequences"
@@ -1031,7 +1011,7 @@ def _process_partition_for_trf_overlaps(
     bed_file = tmp_dir / f"core_intervals_{partition_idx}.bed"
     with open(bed_file, "w") as f:
         for consensusID, intervals in core_intervals.items():
-            for _, ref_name, core_start, core_end in intervals:
+            for _, ref_name, core_start, core_end in intervals: # alignment index not needed here.
                 print(ref_name, core_start, core_end, consensusID, sep="\t", file=f)
 
     # Sort the BED file
@@ -1495,17 +1475,16 @@ def get_alignments_for_consensus_from_partition(
         for offset in offsets:
             f.seek(offset)
             line = f.readline()
-            fields = line.rstrip().split("\t", 1)
-            if len(fields) < 2:
+            fields = line.rstrip().split("\t")
+            if len(fields) < 4:  # expected consensusID, qstart, qend, serialized_alignment
                 log.warning(
-                    f"Malformed alignment line at offset {offset} in partition file {alignments_path}"
+                    f"Malformed alignment line at offset {offset} in partition file {alignments_path}. Expected: consensusID, qstart, qend, serialized_alignment, but got: {fields}"
                 )
                 continue
 
             # Deserialize alignment
-            alignment = cattrs.structure(json.loads(fields[1]), datatypes.Alignment)
+            alignment = cattrs.structure(json.loads(fields[-1]), datatypes.Alignment)
             alignments.append(alignment)
-
     return alignments
 
 
@@ -1575,6 +1554,13 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     index_partition=params.alignments_index_partition,
                     alignments_path=params.padded_alignments_path,
                 )
+                # sort alignments by alignment.annotations.qstart
+                for aln in alignments:
+                    if aln.annotations is None or "qstart" not in aln.annotations:
+                        raise ValueError(
+                            f"Alignment for consensus {consensusID} missing 'qstart' in annotations!"
+                        )
+                alignments.sort(key=lambda aln: aln.annotations["qstart"])
 
                 # Get the core intervals for this consensus and create lookup by alignment index
                 core_intervals_with_idx = params.core_intervals_on_reference.get(
@@ -1678,6 +1664,24 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
             )
 
 
+def sort_partitioned_alignments(
+    padded_alignments_paths: dict[int, Path],
+) -> None:
+    """Sort partitioned alignment TSV files by consensusID, qstart, qend.
+    Those are the first three columns in the tsv file."""
+    cmd_sort = "sort -k1,1 -k2,2n -k3,3n " # sort by consensusID, qstart, qend
+    for partition_idx, path in padded_alignments_paths.items():
+        sorted_path = path.with_suffix(".sorted.tsv")
+        with open(sorted_path, "w") as outfile:
+            with open(path, "r") as infile:
+                subprocess.check_call(
+                    shlex.split(cmd_sort), stdin=infile, stdout=outfile
+                )
+        # replace original file with sorted file
+        shutil.move(sorted_path, path)
+        log.info(f"Sorted alignments in partition {partition_idx} and updated file.")
+
+
 def svPatterns_from_consensus_sequences(
     samplename: str,
     input_consensus_container_results: Path | str,
@@ -1754,11 +1758,10 @@ def svPatterns_from_consensus_sequences(
             f"Indexed {total_padded_seqs} padded sequences across {len(padded_sequences_index_partitioned)} partitions."
         )
 
-        tmp_padded_alignments_path: Path = Path(tmp_dir) / "padded_alignments_all.bam"
 
         util.align_reads_with_minimap(
             reference=input_reference,
-            bamout=tmp_padded_alignments_path,
+            bamout=output_consensus_to_reference_alignments,
             reads=[
                 str(padded_sequences_paths[i])
                 for i in range(len(padded_sequences_paths))
@@ -1774,10 +1777,14 @@ def svPatterns_from_consensus_sequences(
         }
 
         write_partitioned_alignments(
-            input_bam=tmp_padded_alignments_path,
+            input_bam=output_consensus_to_reference_alignments,
             output_paths=padded_alignments_paths,
             index_consensusIDs=index_consensusIDs,
             samplename=samplename,
+        )
+        # sort partitioned alignments by consenusID, qstart, qend
+        sort_partitioned_alignments(
+            padded_alignments_paths=padded_alignments_paths
         )
 
         # Build partitioned index for random access to alignments by consensusID

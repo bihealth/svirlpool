@@ -6,6 +6,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
+import json
 
 import attrs  # type: ignore
 import cattrs
@@ -143,15 +144,11 @@ class SVpattern(ABC):
 
     def to_json(self) -> str:
         """Convert SVpattern to JSON string."""
-        import json
-
         return json.dumps(converter.unstructure(self), indent=2)
 
     @classmethod
     def from_json(cls, json_str: str) -> SVpatternType:
         """Create SVpattern from JSON string."""
-        import json
-
         data = json.loads(json_str)
         return converter.structure(data, SVpatternType)
 
@@ -1221,10 +1218,8 @@ def write_svPatterns_to_db(
         timeout: SQLite connection timeout
         batch_size: Number of records to write per batch (default: 1000)
     """
-    import json
-    from pathlib import Path as PathType
 
-    svPatterns_file = PathType(svPatterns_file)
+    svPatterns_file = Path(svPatterns_file)
     if not svPatterns_file.exists():
         raise FileNotFoundError(f"SVpatterns file not found: {svPatterns_file}")
 

@@ -568,7 +568,7 @@ def generate_copynumber_tracks(
     threads: int,
     stay_prob: float,
     dispersion: float,
-    chr_filterlist: list[str] = None,
+    chr_filterlist: list[str] | None = None,
     regions_path: Path | None = None,
     transition_matrix=None,
 ) -> tuple[Path, Path]:
@@ -599,8 +599,14 @@ def generate_copynumber_tracks(
     # step 1: use covtree to compute non-overlapping intervals of coverage
     log.info(f"loading data from {coverage_db}")
     data = covtree.load_reference_data(path_db=coverage_db)
+    # check if data is of the expected form
+    if data.shape[0] == 0:
+        raise ValueError("Coverage data is empty")
+    if data.shape[1] != 4:
+        raise ValueError(
+            f"Coverage data has unexpected number of columns: {data.shape[1]}, expected 4"
+        )
     log.info("constructing interval trees")
-
     intervall_trees_reads, all_positions = covtree.construct_interval_trees(data=data)
     log.info("computing coverages")
     start_time = time.time()
