@@ -567,6 +567,7 @@ def generate_copynumber_tracks(
     output_db: Path,
     threads: int,
     stay_prob: float,
+    bin_size_factor: int,
     dispersion: float,
     chr_filterlist: list[str] | None = None,
     regions_path: Path | None = None,
@@ -647,7 +648,7 @@ def generate_copynumber_tracks(
 
     # step 5: new bin size is 10 * median read length
     median_read_length = int(np.median(all_read_lengths))
-    new_bin_size = 10 * median_read_length
+    new_bin_size = bin_size_factor * median_read_length
 
     # regions might be separated by small gaps (smaller than median_read_length)
     # if that is the case, regions should be merged.
@@ -1016,6 +1017,12 @@ def get_parser():
         "Higher values = more likely to stay in the same state.",
     )
     parser.add_argument(
+        "--bin-size-factor",
+        type=int,
+        default=10,
+        help="Factor to multiply median read length to determine bin size (default: 10)",
+    )
+    parser.add_argument(
         "--chr-filterlist",
         nargs="*",
         default=[],
@@ -1081,6 +1088,7 @@ def main():
         chr_filterlist=args.chr_filterlist,
         regions_path=args.regions,
         threads=args.threads,
+        bin_size_factor=args.bin_size_factor,
         dispersion=args.dispersion,
         stay_prob=args.stay_prob,
     )

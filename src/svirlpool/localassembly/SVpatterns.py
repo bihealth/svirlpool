@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 import pickle
 import sqlite3
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
-import json
 
 import attrs  # type: ignore
 import cattrs
@@ -591,9 +591,7 @@ class TWORELATIONS(Enum):
     INVERSION = 2  # inversions are two BNDs that have different read orientations
     TRANSLOCATION = 3  # two BNDs don't share the same chr
     OVERLAP = 4  # the alignments of the two BNDs overlap on the reference
-    REFGAP = (
-        5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
-    )
+    REFGAP = 5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
     READGAP = 6  # two BNDs are separated by a gap in the read sequence, e.g. insertions
 
     def __lt__(self, other):
