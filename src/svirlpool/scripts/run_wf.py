@@ -7,21 +7,65 @@
 # %%
 import json
 import subprocess
-from pathlib import Path, PosixPath
+from pathlib import Path
 from shlex import split
 
 # %%
 
 
-def config_create_json(config: dict, path_json: PosixPath):
+def check_annotations_file(
+    input: Path,
+    reference_fai: Path,
+) -> None:
+    if not input.exists() or input.stat().st_size == 0:
+        raise FileNotFoundError(
+            f"Annotation file {str(input)} does not exist or is empty."
+        )
+    # read chromosomes from reference_fai
+    with open(reference_fai, "r") as f:
+        reference_chroms = set()
+        for line in f:
+            reference_chroms.add(line.split("\t")[0])
+    # read chromosomes from input annotation file
+    with open(input, "r") as f:
+        input_chroms = set()
+        for line in f:
+            if line.startswith("#") or line.strip() == "":
+                continue
+            input_chroms.add(line.split("\t")[0])
+    # check if all chromosomes in input_chroms are in reference_chroms
+    if not input_chroms.issubset(reference_chroms):
+        missing_chroms = input_chroms - reference_chroms
+        raise ValueError(
+            f"""
+Annotation file {str(input)} contains chromosomes not present in the reference fasta index {str(reference_fai)}.
+Missing chromosomes: {", ".join(missing_chroms)}
+To filter the annotation file, you can use the following bash command:
+bedtools intersect -a {str(input)} -b <(awk '{{print $1"\t0\t"$2}}' {str(reference_fai)}) > {str(input).replace(".bed", ".filtered.bed")}
+            """
+        )
+
+
+def validate_input(args) -> None:
+    reference_fai = Path(str(args.reference) + ".fai")
+    if not reference_fai.exists() or reference_fai.stat().st_size == 0:
+        raise FileNotFoundError(
+            f"Reference fasta index {str(reference_fai)} does not exist or is empty."
+        )
+    # check annotations files
+    check_annotations_file(input=Path(args.trf), reference_fai=reference_fai)
+    check_annotations_file(
+        input=Path(args.mononucleotides), reference_fai=reference_fai
+    )
+
+
+def config_create_json(config: dict, path_json: Path):
     with open(path_json, "w") as f:
         json.dump(config, f)
 
 
 def run_wf(args):
-    # if len(args.alignments) != 1:
-    #     raise ValueError("alignments can only accept one file right now.")
-    # if workdir does not exist, create it
+    validate_input(args)
     if not Path(args.workdir).exists():
         Path(args.workdir).mkdir(parents=True)
     dict_args = vars(args)
