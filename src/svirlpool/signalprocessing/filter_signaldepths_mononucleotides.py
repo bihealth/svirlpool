@@ -10,8 +10,6 @@ from ..util import util
 
 log = logging.getLogger(__name__)
 
-# %%
-
 
 def filter_mononucleotide_exclusive_deletions(
     mononucleotides: Path,
@@ -39,7 +37,7 @@ def filter_mononucleotide_exclusive_deletions(
     )
     util.bed_chr_to_chrID(
         input=mononucleotides,
-        output=tmp_chrID_mononucleotides.name,
+        output=Path(tmp_chrID_mononucleotides.name),
         reference=reference,
     )
 
@@ -53,7 +51,7 @@ def filter_mononucleotide_exclusive_deletions(
         subprocess.run(cmd_intersect, stdout=f)
 
     alignments_to_rafs.compress_and_index_bedlike(
-        sort_numerically=True, input=tmp_out.name, output=output, threads=threads
+        sort_numerically=True, input=Path(tmp_out.name), output=output, threads=threads
     )
 
 
