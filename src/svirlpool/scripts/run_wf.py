@@ -5,6 +5,7 @@
 
 # define a config class that is parsed to a json as the example bewlow
 # %%
+import gzip
 import json
 import subprocess
 from pathlib import Path
@@ -27,12 +28,27 @@ def check_annotations_file(
         for line in f:
             reference_chroms.add(line.split("\t")[0])
     # read chromosomes from input annotation file
-    with open(input, "r") as f:
-        input_chroms = set()
-        for line in f:
-            if line.startswith("#") or line.strip() == "":
-                continue
-            input_chroms.add(line.split("\t")[0])
+    # handle both plain and gzipped files
+    input_chroms = set()
+    try:
+        # try reading as plain text first
+        with open(input, "r") as f:
+            for line in f:
+                if line.startswith("#") or line.strip() == "":
+                    continue
+                input_chroms.add(line.split("\t")[0])
+    except (UnicodeDecodeError, OSError):
+        # if that fails, try reading as gzipped file
+        try:
+            with gzip.open(input, "rt") as f:
+                for line in f:
+                    if line.startswith("#") or line.strip() == "":
+                        continue
+                    input_chroms.add(line.split("\t")[0])
+        except Exception as e:
+            raise ValueError(
+                f"Unable to read annotation file {str(input)} as plain text or gzipped file: {str(e)}"
+            )
     # check if all chromosomes in input_chroms are in reference_chroms
     if not input_chroms.issubset(reference_chroms):
         missing_chroms = input_chroms - reference_chroms
