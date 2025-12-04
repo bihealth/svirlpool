@@ -604,13 +604,6 @@ def write_consensus_files_for_parallel_processing(
     return index_consensusIDs
 
 
-def index_tmp_fastas(paths: list[Path]) -> None:
-    """Indexes temporary fasta files using samtools faidx."""
-    for path in paths:
-        cmd_index = ["samtools", "faidx", str(path)]
-        subprocess.check_call(cmd_index)
-
-
 def write_partitioned_alignments(
     input_bam: Path,
     output_paths: dict[int, Path],
@@ -1749,10 +1742,6 @@ def svPatterns_from_consensus_sequences(
             output_consensus_fasta=output_consensus_fasta,
             padded_sequences_paths=padded_sequences_paths,
         )
-
-        # Build indices for FASTA files (samtools faidx for external tools)
-        log.info("Building samtools FASTA indices...")
-        index_tmp_fastas(paths=list(padded_sequences_paths.values()))
 
         # Build partitioned in-memory indices directly (more efficient than building global then partitioning)
         log.info(
