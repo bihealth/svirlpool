@@ -7,15 +7,13 @@ import csv
 import gzip
 import json
 import logging
-import pickle
 import shlex
-import shutil
 import signal
 import sqlite3
 import subprocess
 import tempfile
 from collections import Counter
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from enum import Enum
 from io import StringIO
 from math import floor
@@ -34,9 +32,6 @@ from intervaltree import Interval
 from sklearn import preprocessing
 from tqdm import tqdm
 
-from ..localassembly import consensus_class
-from ..signalprocessing import alignments_to_rafs
-
 # %%
 from . import datatypes
 
@@ -45,98 +40,41 @@ log = logging.getLogger(__name__)
 # %%
 
 
-def yield_last_column(input: Path, dtype: type) -> Iterable[object]:
+def yield_last_column(input: Path, dtype: type, description: str = "") -> Iterable:
     csv.field_size_limit(2147483647)
     # open gzipped file if compressed, else open as text file
     try:
         with gzip.open(input, "rt") as f:
             reader = csv.reader(f, delimiter="\t", quotechar='"')
-            for line in tqdm(reader):
+            for line in tqdm(reader, desc=description):
                 yield cattrs.structure(json.loads(line[-1]), dtype)
-    except Exception as e:
-        log.error(f"Error reading {input}: {e}")
+    except (gzip.BadGzipFile, OSError, UnicodeDecodeError) as e:
+        # Log and fall back to the other opener
+        log.debug(f"Could not open {input} with gzip.open: {e}. Trying plain open...")
         try:
             with open(input, "r") as f:
                 reader = csv.reader(f, delimiter="\t", quotechar='"')
-                for line in tqdm(reader):
+                for line in tqdm(reader, desc=description):
                     yield cattrs.structure(json.loads(line[-1]), dtype)
-        except Exception as e:
-            log.error(f"Error reading {input}: {e}")
-            raise FileNotFoundError(
-                f"Could not open {input}. Make sure the file exists and is not corrupted."
-            )
+        except FileNotFoundError as e:
+            # Not found: rethrow as it is definitive
+            raise e
 
 
-def yield_from_raf(input: Path) -> Iterable[datatypes.ReadAlignmentFragment]:
-    yield from yield_last_column(input=input, dtype=datatypes.ReadAlignmentFragment)
+def yield_from_raf(
+    input: Path, description: str = ""
+) -> Iterator[datatypes.ReadAlignmentFragment]:
+    yield from yield_last_column(
+        input=input, dtype=datatypes.ReadAlignmentFragment, description=description
+    )
 
 
 def yield_from_extendedSVsignal(
-    input: Path,
-) -> Iterable[datatypes.ExtendedSVsignal]:
-    yield from yield_last_column(input=input, dtype=datatypes.ExtendedSVsignal)
-
-
-def yield_consensus_objects(
-    path_db: Path, consensusIDs: set[str] | None = None, silent: bool = True
-) -> Generator[consensus_class.Consensus, None, None]:
-    """produces a dict consensusID:consensus_sequence"""
-    # iterate all consensus objects in database and construct a dict consensusID:consensusObject
-    if not silent:
-        log.info(f"loading consensus sequences from {path_db}...")
-    try:
-        conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)
-        c = conn.cursor()
-    except sqlite3.OperationalError as e:
-        log.error(
-            f"Could not open database {path_db}. Make sure the file exists and is not corrupted."
-        )
-        raise e
-    if not consensusIDs:
-        c.execute("SELECT id,consensus FROM consensuses")
-        for row in c:
-            consensus_object: consensus_class.Consensus = cattrs.structure(
-                pickle.loads(row[1]), consensus_class.Consensus
-            )
-            yield consensus_object
-    else:
-        placeholders = ",".join(
-            ["?"] * len(consensusIDs)
-        )  # Correctly format placeholders
-        query = f"SELECT id, consensus FROM consensuses WHERE id IN ({placeholders})"
-        c.execute(query, tuple(consensusIDs))  # Pass parameters correctly
-        for row in c:
-            consensus_object: consensus_class.Consensus = cattrs.structure(
-                pickle.loads(row[1]), consensus_class.Consensus
-            )
-            yield consensus_object
-    c.close()
-    conn.close()
-
-
-def load_consensus_sequences_from_db(
-    path_db: Path, silent: bool = False
-) -> dict[str, str]:
-    """produces a dict consensusID:consensus_sequence"""
-    # iterate all consensus objects in database and construct a dict consensusID:consensusObject
-    if not silent:
-        log.info(f"loading consensus sequences from {path_db}...")
-    conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)
-    c = conn.cursor()
-    c.execute("SELECT id,consensus FROM consensuses")
-    results = {}
-    for row in c:
-        try:
-            consensus_object: consensus_class.Consensus = cattrs.structure(
-                pickle.loads(row[1]), consensus_class.Consensus
-            )
-            results[row[0]] = consensus_object.consensus_sequence
-        except Exception as e:
-            log.error(f"Error loading consensus sequence for {row[0]}: {e}")
-            raise ValueError(f"Error loading consensus sequence for {row[0]}: {e}")
-    c.close()
-    conn.close()
-    return results
+    input: Path, description: str = ""
+) -> Iterator[datatypes.ExtendedSVsignal]:
+    yield from yield_last_column(
+        input=input, dtype=datatypes.ExtendedSVsignal, description=description
+    )
 
 
 def load_alignments(path: Path) -> list[pysam.AlignedSegment]:
@@ -211,9 +149,17 @@ def parse_alignment(
     return result
 
 
+def get_sequences_from_fasta(
+    input: Path | str, sequence_names: list[str]
+) -> dict[str, str]:
+    """Fetch sequences as plain strings (faster than SeqRecord)."""
+    with pysam.FastaFile(str(input)) as ff:
+        return {name: ff.fetch(name) for name in sequence_names}
+
+
 def align_reads_with_minimap(
     reference: Path | str,
-    reads: Path | str,
+    reads: Path | str | list[Path | str],
     bamout: Path | str,
     tech: str = "map-ont",
     threads: int = 3,
@@ -226,8 +172,12 @@ def align_reads_with_minimap(
     If timeout is given (seconds), processes will be killed after timeout.
     """
     try:
+        if isinstance(reads, list):
+            reads_str = " ".join(str(r) for r in reads)
+        else:
+            reads_str = str(reads)
         cmd_align = shlex.split(
-            f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads}"
+            f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads_str}"
         )
         cmd_sort = shlex.split(f"samtools sort -O BAM -o {bamout}")
         cmd_index = shlex.split(f"samtools index {bamout}")
@@ -690,7 +640,7 @@ def get_interval_on_ref_in_region(
     a: pysam.libcalignedsegment.AlignedSegment, start: int, end: int
 ) -> tuple[int, int]:
     # find start and end position on ref
-    start, end = (end, start) if start > end else (start, end)
+    start, end = (end, start) if a.is_reverse else (start, end)
     istart = get_read_position_on_ref(
         alignment=a, position=start, direction=Direction.LEFT
     )
@@ -1097,194 +1047,109 @@ def add_hard_clips_to_aligned_tails(input: Path, output: Path) -> None:
     pass
 
 
-def add_clipped_tails_to_alignments(
-    alignments: Path | str,
-    reference: Path | str,
-    output: Path | str,
-    tech: str = "asm5",
-    aln_args: str = "",
-    threads: int = 0,
-    min_clipped_length: int = 300,
-    verbose: bool = False,
-) -> None:
-    log.warning(
-        "%s is deprecated and will be removed in the future. It has no use anymore since aligned virtual fragments are now padded with read sequence."
-    )
-    """adds clipped tails to alignments. The clipped tails are aligned to the reference and added to the original alignment. Known issue: hard clips are missing on the added tails."""
-    read_covered_intervals: dict[str, list[tuple]] = {}
-    readlengths: dict[str, int] = {}
-    # selected_readalignments = dict()
-    for aln in pysam.AlignmentFile(
-        alignments, "rb"
-    ):  # secondary and supplementary alignments are not considered
-        if not aln.is_mapped or aln.is_secondary:
-            continue
-        rl = aln.infer_read_length()  # total read length with clipped ends
-        readlengths[aln.query_name] = rl
-        s, e = alignments_to_rafs.get_start_end(aln)[
-            2:
-        ]  # get start and end of read interval in unclipped read coords
-        if aln.query_name not in read_covered_intervals:
-            read_covered_intervals[aln.query_name] = []
-        read_covered_intervals[aln.query_name].append((s, e))
-        # selected_readalignments[a.query_name] = a
-    if verbose:
-        log.info(f"found {len(read_covered_intervals)} reads with clipped tails")
-    if len(read_covered_intervals) == 0:
-        log.info("no reads with clipped tails found. Copying input to output.")
-        shutil.copy(alignments, output)
-        return
+# def add_clipped_tails_to_alignments(
+#     alignments: Path | str,
+#     reference: Path | str,
+#     output: Path | str,
+#     tech: str = "asm5",
+#     aln_args: str = "",
+#     threads: int = 0,
+#     min_clipped_length: int = 300,
+#     verbose: bool = False,
+# ) -> None:
+#     log.warning(
+#         "%s is deprecated and will be removed in the future. It has no use anymore since aligned virtual fragments are now padded with read sequence."
+#     )
+#     """adds clipped tails to alignments. The clipped tails are aligned to the reference and added to the original alignment. Known issue: hard clips are missing on the added tails."""
+#     read_covered_intervals: dict[str, list[tuple]] = {}
+#     readlengths: dict[str, int] = {}
+#     # selected_readalignments = dict()
+#     for aln in pysam.AlignmentFile(
+#         alignments, "rb"
+#     ):  # secondary and supplementary alignments are not considered
+#         if not aln.is_mapped or aln.is_secondary:
+#             continue
+#         rl = aln.infer_read_length()  # total read length with clipped ends
+#         readlengths[aln.query_name] = rl
+#         s, e = alignments_to_rafs.get_start_end(aln)[
+#             2:
+#         ]  # get start and end of read interval in unclipped read coords
+#         if aln.query_name not in read_covered_intervals:
+#             read_covered_intervals[aln.query_name] = []
+#         read_covered_intervals[aln.query_name].append((s, e))
+#         # selected_readalignments[a.query_name] = a
+#     if verbose:
+#         log.info(f"found {len(read_covered_intervals)} reads with clipped tails")
+#     if len(read_covered_intervals) == 0:
+#         log.info("no reads with clipped tails found. Copying input to output.")
+#         shutil.copy(alignments, output)
+#         return
 
-    # open temporary dir to store fasta files and save alignments to.
-    tmp_dir = tempfile.TemporaryDirectory()
-    # create temporary fasta file in tmp_dir
-    tmp_fasta_unaligned_tails = tempfile.NamedTemporaryFile(
-        suffix=".fasta", dir=tmp_dir.name, delete=False
-    )
-    # sort each read's intervals and process
-    unaligned_intervals: dict[str, list[tuple]] = {}
-    with open(tmp_fasta_unaligned_tails.name, "w") as f:
-        for aln in pysam.AlignmentFile(alignments, "rb"):
-            # check if the alignment is primary (has no hard clippings)
-            if aln.is_secondary or aln.is_supplementary:  # filter all non-primary
-                continue
+#     # open temporary dir to store fasta files and save alignments to.
+#     tmp_dir = tempfile.TemporaryDirectory()
+#     # create temporary fasta file in tmp_dir
+#     tmp_fasta_unaligned_tails = tempfile.NamedTemporaryFile(
+#         suffix=".fasta", dir=tmp_dir.name, delete=False
+#     )
+#     # sort each read's intervals and process
+#     unaligned_intervals: dict[str, list[tuple]] = {}
+#     with open(tmp_fasta_unaligned_tails.name, "w") as f:
+#         for aln in pysam.AlignmentFile(alignments, "rb"):
+#             # check if the alignment is primary (has no hard clippings)
+#             if aln.is_secondary or aln.is_supplementary:  # filter all non-primary
+#                 continue
 
-            unaligned_intervals[aln.query_name] = get_unaligned_intervals(
-                total_length=readlengths[aln.query_name],
-                covered_intervals=read_covered_intervals[aln.query_name],
-            )
-            # save each unaligned interval whose size exceeds min_clipped_length
-            # to the temporary fasta file. add to the name its interval
-            # the uncovered sequences hav to be revcomp if the alignment is revcomp to ensure
-            # direction consistency
-            seq_full = (
-                Seq(aln.query_sequence).reverse_complement()
-                if aln.is_reverse
-                else Seq(aln.query_sequence)
-            )
-            for s, e in unaligned_intervals[aln.query_name]:
-                if e - s >= min_clipped_length:
-                    seq = seq_full[s:e]
-                    print(f">{aln.query_name}_{s}_{e}", file=f)
-                    print(seq, file=f)
+#             unaligned_intervals[aln.query_name] = get_unaligned_intervals(
+#                 total_length=readlengths[aln.query_name],
+#                 covered_intervals=read_covered_intervals[aln.query_name],
+#             )
+#             # save each unaligned interval whose size exceeds min_clipped_length
+#             # to the temporary fasta file. add to the name its interval
+#             # the uncovered sequences hav to be revcomp if the alignment is revcomp to ensure
+#             # direction consistency
+#             seq_full = (
+#                 Seq(aln.query_sequence).reverse_complement()
+#                 if aln.is_reverse
+#                 else Seq(aln.query_sequence)
+#             )
+#             for s, e in unaligned_intervals[aln.query_name]:
+#                 if e - s >= min_clipped_length:
+#                     seq = seq_full[s:e]
+#                     print(f">{aln.query_name}_{s}_{e}", file=f)
+#                     print(seq, file=f)
 
-    log.info("aligning unaligned tails to reference")
-    tmp_aligned_tails = tmp_dir.name + "/alnigned_tails.bam"
-    align_reads_with_minimap(
-        reference=reference,
-        reads=tmp_fasta_unaligned_tails.name,
-        bamout=tmp_aligned_tails,
-        tech=tech,
-        aln_args=aln_args + " --secondary=no",
-        threads=threads,
-    )
-    # BUG: New alignments refer to shortened reads. Their on-read position is cut off.
-    # fix: check the unaligned_intervals for each new alignment and annotate a hard clip to it.
-    # -> add_hard_clips_to_aligned_tails
+#     log.info("aligning unaligned tails to reference")
+#     tmp_aligned_tails = tmp_dir.name + "/alnigned_tails.bam"
+#     align_reads_with_minimap(
+#         reference=reference,
+#         reads=tmp_fasta_unaligned_tails.name,
+#         bamout=tmp_aligned_tails,
+#         tech=tech,
+#         aln_args=aln_args + " --secondary=no",
+#         threads=threads,
+#     )
+#     # BUG: New alignments refer to shortened reads. Their on-read position is cut off.
+#     # fix: check the unaligned_intervals for each new alignment and annotate a hard clip to it.
+#     # -> add_hard_clips_to_aligned_tails
 
-    # merge new and old alignments
-    log.info("merging alignments")
-    cmd_merge = shlex.split(
-        f"samtools merge -f {tmp_dir.name}/merged.bam {alignments} {tmp_dir.name}/aln.bam"
-    )
-    subprocess.check_call(cmd_merge)
-    # output
-    log.info("sorting and indexing merged alignments")
-    cmd_out = shlex.split(f"samtools sort -o {output} {tmp_dir.name}/merged.bam")
-    subprocess.check_call(cmd_out)
-    # index
-    cmd_index = shlex.split(f"samtools index {output}")
-    subprocess.check_call(cmd_index)
-    # remove temporary dir
-    tmp_dir.cleanup()
+#     # merge new and old alignments
+#     log.info("merging alignments")
+#     cmd_merge = shlex.split(
+#         f"samtools merge -f {tmp_dir.name}/merged.bam {alignments} {tmp_dir.name}/aln.bam"
+#     )
+#     subprocess.check_call(cmd_merge)
+#     # output
+#     log.info("sorting and indexing merged alignments")
+#     cmd_out = shlex.split(f"samtools sort -o {output} {tmp_dir.name}/merged.bam")
+#     subprocess.check_call(cmd_out)
+#     # index
+#     cmd_index = shlex.split(f"samtools index {output}")
+#     subprocess.check_call(cmd_index)
+#     # remove temporary dir
+#     tmp_dir.cleanup()
 
 
 # %%
-
-
-def scale_coords(coords: list[int], maxlen: int, line_width: int) -> list[int]:
-    return [int(floor((coord / maxlen) * line_width)) for coord in coords]
-
-
-def display_ascii_alignments(
-    alignments: list[pysam.AlignedSegment],
-    terminal_width: int = 100,
-    filter_density_min_bp: int = 30,
-    filter_density_radius: int = 1000,
-    min_bnd_size: int = 300,
-    min_signal_size: int = 8,
-    min_aln_length: int = 500,
-    max_ref_len: int = 0,
-):
-    if len(alignments) == 0:
-        return
-    dict_alns = {a.reference_name: [] for a in alignments}
-    for refname in dict_alns.keys():
-        dict_alns[refname] = [a for a in alignments if a.reference_name == refname]
-        alns = dict_alns[refname]
-        if max_ref_len < 1:
-            try:
-                max_ref_len = max(
-                    a.reference_start + a.reference_length
-                    for a in alns
-                    if a.reference_length
-                )
-            except Exception as e:
-                log.error(f"Error calculating max_ref_len for {refname}: {e}")
-                continue
-        print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
-        for a in alns:
-            if a.reference_length >= min_aln_length:
-                raf = alignments_to_rafs.parse_ReadAlignmentFragment_from_alignment(
-                    alignment=a,
-                    samplename="no samplename",
-                    filter_density_min_bp=filter_density_min_bp,
-                    filter_density_radius=filter_density_radius,
-                    min_bnd_size=min_bnd_size,
-                    min_signal_size=min_signal_size,
-                )
-                # construct the string.
-                rstart, rend = scale_coords(
-                    [raf.reference_alignment_start, raf.reference_alignment_end],
-                    max_ref_len,
-                    terminal_width,
-                )
-                rlen = rend - rstart
-                line = (
-                    ([" "] * rstart)
-                    + (["<" if a.is_reverse else ">"] * rlen)
-                    + ([" "] * (terminal_width - rend))
-                )
-                # insert insertions and deletions
-                for sv in raf.SV_signals:
-                    if sv.sv_type == 1:  # DEL
-                        start, end = scale_coords(
-                            [sv.ref_start, sv.ref_end], max_ref_len, terminal_width
-                        )
-                        # modify the interval on line
-                        line[start:end] = ["-"] * (end - start)
-                    if sv.sv_type == 0:  # INS
-                        start = scale_coords(
-                            [sv.ref_start], max_ref_len, terminal_width
-                        )[0]
-                        line[start] = "V"
-                    if sv.sv_type == 4:  # BNDR
-                        start = scale_coords(
-                            [sv.ref_start], max_ref_len, terminal_width
-                        )[0]
-                        # check if bndr is hard or soft clipped
-                        line[start - 1] = "R" if a.cigartuples[-1][0] == 5 else "r"
-                    if sv.sv_type == 3:  # BNDL
-                        start = scale_coords([sv.ref_end], max_ref_len, terminal_width)[
-                            0
-                        ]
-                        line[start] = (
-                            ("L" if a.cigartuples[0][0] == 5 else "l")
-                            if line[start] != "R"
-                            else "X"
-                        )
-                print("".join(line) + " " + a.query_name)
-
 
 # def display_ascii_rafs(
 #         rafs:typing.List[datatypes.ReadAlignmentFragment],
