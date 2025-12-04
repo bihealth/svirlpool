@@ -2,6 +2,8 @@
 # %%
 
 import argparse
+import gzip
+import json
 import logging
 import os
 import pickle
@@ -36,7 +38,7 @@ SUPPORTED_SV_TYPES = {"INS", "DEL"}
 # %% FUNCTIONS
 
 
-def parse_candidate_regions_file(filepath: Path) -> dict[str, set[str]]:
+def parse_candidate_regions_file(filepath: Path) -> dict[str, set[int]]:
     """
     Parse a TSV file containing sample names and candidate region IDs.
 
@@ -46,7 +48,7 @@ def parse_candidate_regions_file(filepath: Path) -> dict[str, set[str]]:
     Returns:
         dict mapping samplename to set of candidate region IDs (crIDs)
     """
-    result = {}
+    result: dict[str, set[int]] = {}
     with open(filepath, "r") as f:
         for line in f:
             line = line.strip()
@@ -59,7 +61,7 @@ def parse_candidate_regions_file(filepath: Path) -> dict[str, set[str]]:
                 )
                 continue
             samplename = parts[0]
-            crIDs = set(parts[1].split(","))
+            crIDs = set(map(int, parts[1].split(",")))
             result[samplename] = crIDs
     log.info(f"Parsed candidate regions for {len(result)} samples")
     return result
@@ -310,27 +312,10 @@ def can_merge_svComposites_insertions(
     # - have similar sizes (computes from a combined population of both composites), tested with Cohen's D
     # get population of sizes
 
-    complexities_a: list[np.ndarray] = a.get_inserted_complexity_tracks()
-    complexities_b: list[np.ndarray] = b.get_inserted_complexity_tracks()
-    mean_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_a],
-            weights=[len(c) for c in complexities_a],
-        )
-        if len(complexities_a) > 0
-        else 0.0
-    )
-    mean_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_b],
-            weights=[len(c) for c in complexities_b],
-        )
-        if len(complexities_b) > 0
-        else 0.0
-    )
-    size_a, size_b = abs(a.get_size()), abs(b.get_size())
-    size_tolerance_a = (1.0 - mean_complexity_a) * size_a
-    size_tolerance_b = (1.0 - mean_complexity_b) * size_b
+    size_tolerance_a = sizetolerance_from_SVcomposite(a)
+    size_a = abs(a.get_size())
+    size_tolerance_b = sizetolerance_from_SVcomposite(b)
+    size_b = abs(b.get_size())
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -430,6 +415,43 @@ def can_merge_svComposites_insertions(
     return True
 
 
+def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
+    # if a is sv type insertion or inversion, get inserted complexity tracks
+    mean_complexity: float = 1.0
+    if a.sv_type == "INS" or a.sv_type == "INV":
+        complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
+        if (
+            complexities is None
+            or len(complexities) == 0
+            or np.sum((np.sum(s) for s in complexities)) == 0
+        ):
+            mean_complexity = 0.0
+        else:
+            mean_complexity = float(
+                np.average(
+                    [np.mean(c) for c in complexities],
+                    weights=[len(c) for c in complexities],
+                )
+            )
+    elif a.sv_type == "DEL":
+        complexities: list[np.ndarray] = a.get_reference_complexity_tracks()
+        if (
+            complexities is None
+            or len(complexities) == 0
+            or np.sum((np.sum(s) for s in complexities)) == 0
+        ):
+            mean_complexity = 0.0
+        else:
+            mean_complexity = float(
+                np.average(
+                    [np.mean(c) for c in complexities],
+                    weights=[len(c) for c in complexities],
+                )
+            )
+    size_tolerance = (1.0 - mean_complexity) * float(abs(a.get_size()))
+    return size_tolerance
+
+
 def can_merge_svComposites_deletions(
     a: SVcomposite,
     b: SVcomposite,
@@ -477,27 +499,10 @@ def can_merge_svComposites_deletions(
             )
         return False
 
-    complexities_a: list[np.ndarray] = a.get_reference_complexity_tracks()
-    complexities_b: list[np.ndarray] = b.get_reference_complexity_tracks()
-    mean_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_a],
-            weights=[len(c) for c in complexities_a],
-        )
-        if len(complexities_a) > 0
-        else 0.0
-    )
-    mean_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_b],
-            weights=[len(c) for c in complexities_b],
-        )
-        if len(complexities_b) > 0
-        else 0.0
-    )
-    size_a, size_b = abs(a.get_size()), abs(b.get_size())
-    size_tolerance_a = (1.0 - mean_complexity_a) * size_a
-    size_tolerance_b = (1.0 - mean_complexity_b) * size_b
+    size_tolerance_a = sizetolerance_from_SVcomposite(a)
+    size_a = abs(a.get_size())
+    size_tolerance_b = sizetolerance_from_SVcomposite(b)
+    size_b = abs(b.get_size())
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -659,7 +664,7 @@ def merge_alt_count_dicts(
 
 def merge_insertions(
     insertions: list[SVcomposite],
-    d: int,
+    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -731,7 +736,7 @@ def merge_insertions(
 
 def merge_deletions(
     deletions: list[SVcomposite],
-    d: int,
+    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -820,55 +825,10 @@ def can_merge_svComposites_inversions(
             )
         return False
 
-    # For inversions, we need to consider BOTH reference and inserted complexity
-    # Get reference complexity (the region being inverted)
-    ref_complexities_a: list[np.ndarray] = a.get_reference_complexity_tracks()
-    ref_complexities_b: list[np.ndarray] = b.get_reference_complexity_tracks()
-    mean_ref_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in ref_complexities_a],
-            weights=[len(c) for c in ref_complexities_a],
-        )
-        if len(ref_complexities_a) > 0
-        else 0.0
-    )
-    mean_ref_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in ref_complexities_b],
-            weights=[len(c) for c in ref_complexities_b],
-        )
-        if len(ref_complexities_b) > 0
-        else 0.0
-    )
-
-    # Get inserted complexity (the inverted sequence)
-    ins_complexities_a: list[np.ndarray] = a.get_inserted_complexity_tracks()
-    ins_complexities_b: list[np.ndarray] = b.get_inserted_complexity_tracks()
-    mean_ins_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in ins_complexities_a],
-            weights=[len(c) for c in ins_complexities_a],
-        )
-        if len(ins_complexities_a) > 0
-        else 0.0
-    )
-    mean_ins_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in ins_complexities_b],
-            weights=[len(c) for c in ins_complexities_b],
-        )
-        if len(ins_complexities_b) > 0
-        else 0.0
-    )
-
-    # Use average of reference and inserted complexity for inversions
-    # This balances both aspects: the reference region AND the inverted sequence
-    mean_complexity_a: float = (mean_ref_complexity_a + mean_ins_complexity_a) / 2.0
-    mean_complexity_b: float = (mean_ref_complexity_b + mean_ins_complexity_b) / 2.0
-
-    size_a, size_b = abs(a.get_size()), abs(b.get_size())
-    size_tolerance_a = (1.0 - mean_complexity_a) * size_a
-    size_tolerance_b = (1.0 - mean_complexity_b) * size_b
+    size_tolerance_a = sizetolerance_from_SVcomposite(a)
+    size_a = abs(a.get_size())
+    size_tolerance_b = sizetolerance_from_SVcomposite(b)
+    size_b = abs(b.get_size())
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -899,12 +859,8 @@ def can_merge_svComposites_inversions(
                 f"Size comparison - Trivial case: mean_diff={mean_diff:.1f} <= tolerance_sum={size_tolerance_a + size_tolerance_b:.1f}"
             )
             print(f"  Mean A: {mean_a:.1f}, Mean B: {mean_b:.1f}")
-            print(
-                f"  Tolerance A: {size_tolerance_a:.1f} (ref_complexity={mean_ref_complexity_a:.3f}, ins_complexity={mean_ins_complexity_a:.3f})"
-            )
-            print(
-                f"  Tolerance B: {size_tolerance_b:.1f} (ref_complexity={mean_ref_complexity_b:.3f}, ins_complexity={mean_ins_complexity_b:.3f})"
-            )
+            print(f"  Tolerance A: {size_tolerance_a:.1f}")
+            print(f"  Tolerance B: {size_tolerance_b:.1f}")
     else:
         # Shift means towards each other and calculate Cohen's d
         if mean_a > mean_b:
@@ -935,12 +891,6 @@ def can_merge_svComposites_inversions(
                 f"  Original means - A: {mean_a:.1f}, B: {mean_b:.1f}, diff: {mean_diff:.1f}"
             )
             print(f"  Shifted means - A: {shifted_mean_a:.1f}, B: {shifted_mean_b:.1f}")
-            print(
-                f"  Complexity A - ref: {mean_ref_complexity_a:.3f}, ins: {mean_ins_complexity_a:.3f}, avg: {mean_complexity_a:.3f}"
-            )
-            print(
-                f"  Complexity B - ref: {mean_ref_complexity_b:.3f}, ins: {mean_ins_complexity_b:.3f}, avg: {mean_complexity_b:.3f}"
-            )
             print(
                 f"  Tolerances - A: {size_tolerance_a:.1f}, B: {size_tolerance_b:.1f}"
             )
@@ -996,7 +946,7 @@ def can_merge_svComposites_inversions(
 
 def merge_inversions(
     inversions: list[SVcomposite],
-    d: int,
+    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -1064,9 +1014,9 @@ def merge_inversions(
 
 # horizontal merge
 def generate_svComposites_from_dbs(
-    input: list[str],
+    input: list[str | Path],
     sv_types: list[str],
-    candidate_regions_filter: dict[str, set[str]] | None = None,
+    candidate_regions_filter: dict[str, set[int]] | None = None,
 ) -> list[SVcomposite]:
     svComposites: list[SVcomposite] = []
     for p in input:
@@ -1075,7 +1025,7 @@ def generate_svComposites_from_dbs(
         samplename = metadata.get("samplename")
 
         # Determine if we should filter by crIDs for this sample
-        crIDs_to_query = None
+        crIDs_to_query: set[int] | None = None
         if (
             candidate_regions_filter is not None
             and samplename in candidate_regions_filter
@@ -1357,7 +1307,7 @@ class SVcall:
         FORMAT_field = "GT:GQ:TC:DR:DV:GP"
         format_content: list[Genotype] = []
         for samplename in samplenames:
-            gt: Genotype = self.genotypes.get(samplename, None)
+            gt: Genotype | None = self.genotypes.get(samplename, None)
             if gt is None:
                 tree: IntervalTree | None = covtrees[samplename].get(self.chrname, None)
                 found_intervals: set[Interval] = tree[self.start] if tree else set()
@@ -1372,7 +1322,7 @@ class SVcall:
         # now construct the vcf line
         vcfID = f"{self.svtype}.{str(vcfIDnumber)}"
         format_line = [gt.to_format_field(FORMAT_field) for gt in format_content]
-        refbase: str = refdict.get(f"{self.chrname}:{self.start}")
+        refbase: str | None = refdict.get(f"{self.chrname}:{self.start}", None)
         if refbase is None:
             log.warning(
                 f"Reference base not found for {self.chrname}:{self.start}. Please check the reference dictionary."
@@ -1421,8 +1371,8 @@ def SVcalls_from_SVcomposite(
     # separate cases:
     # 1) insertion & deletion
     result: list[SVcall] = []
-    all_alt_reads: dict[str, set[str]] = (
-        svComposite.get_alt_readnames_per_sample()
+    all_alt_reads: dict[str, set[np.uint64]] = (
+        svComposite.get_alt_readnamehashes_per_sample()
     )  # {samplename: {readname, ...}}
 
     if svComposite.sv_type in ("INS", "DEL"):
@@ -1448,13 +1398,14 @@ def SVcalls_from_SVcomposite(
                     samplename=samplename, total_coverage=0
                 )
                 continue
-            all_reads: set[str] = {
-                it.data for it in covtrees[samplename][chrname][start - 500 : end + 500]
+            all_reads: set[int] = {
+                int(it.data)
+                for it in covtrees[samplename][chrname][start - 500 : end + 500]
             }
-            alt_reads: set[str] = all_reads.intersection(
+            alt_reads: set[int] = all_reads.intersection(
                 all_alt_reads.get(samplename, set())
             )
-            ref_reads: set[str] = all_reads.difference(alt_reads)
+            ref_reads: set[int] = all_reads.difference(alt_reads)
 
             if len(alt_reads) == 0:
                 log.warning(
@@ -1603,7 +1554,9 @@ def get_svComposite_interval_on_reference(
             )
         region: tuple[str, int, int] = svPattern.get_reference_region()
         if find_leftmost_reference_position:
-            weight = [svprimitive.ref_start for svprimitive in svPattern.SVprimitives]
+            weight = min(
+                svprimitive.ref_start for svprimitive in svPattern.SVprimitives
+            )
         else:
             weight = len(svPattern.get_supporting_reads() * svPattern.get_size())
         weighted_regions.append((region, weight))
@@ -1933,7 +1886,7 @@ def write_svCalls_to_vcf(
     with open(tmp_result_unsorted.name, "w") as f:
         # write header
         header = generate_header(
-            reference=reference, samplenames=samplenames, fasta_path=fasta_path
+            reference=Path(reference), samplenames=samplenames, fasta_path=fasta_path
         )
         for line in header:
             print(line, file=f)
@@ -2102,7 +2055,7 @@ def multisample_sv_calling(
     skip_covtrees: bool = False,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
-    samplenames = [svirltile.get_metadata(path)["samplename"] for path in input]
+    samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
 
     # Create covtrees - either real or dummy uniform coverage
     if skip_covtrees:
@@ -2127,7 +2080,7 @@ def multisample_sv_calling(
     )
 
     # Parse candidate regions file if provided
-    candidate_regions_filter = None
+    candidate_regions_filter: dict[str, set[int]] | None = None
     if candidate_regions_file is not None:
         candidate_regions_filter = parse_candidate_regions_file(
             Path(candidate_regions_file)
@@ -2141,6 +2094,12 @@ def multisample_sv_calling(
         sv_types=sv_types,
         candidate_regions_filter=candidate_regions_filter,
     )
+
+    # if tmp dir is provided, dump all svComposites to a compressed json file
+    if tmp_dir_path is not None:
+        save_svComposites_to_json(
+            data=data, output_path=Path(tmp_dir_path) / "all_svComposites.json.gz"
+        )
 
     merged: list[SVcomposite] = merge_svComposites(
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -2156,9 +2115,12 @@ def multisample_sv_calling(
         for svComposite in merged
         if abs(svComposite.get_size()) >= min_sv_size
     ]
-    # if tmp dir is provided, dump all merged svComposites to a pickle file
+
+    # if tmp dir is provided, dump all merged svComposites to a compressed json file
     if tmp_dir_path is not None:
-        save_svComposites_to_pickle(data=merged, output_path=tmp_dir_path)
+        save_svComposites_to_json(
+            data=merged, output_path=Path(tmp_dir_path) / "merged_svComposites.json.gz"
+        )
     svCalls: list[SVcall] = [
         svcall
         for svComposite in merged
@@ -2321,26 +2283,110 @@ if __name__ == "__main__":
 # %%
 
 
-def save_svComposites_to_pickle(
-    data: list[SVcomposite], output_path: Path | str
-) -> None:
-    """Save SVcomposites to a pickle file named 'svcomposites.pckl' in the provided directory."""
-    output_dir = Path(output_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def save_svComposites_to_json(data: list[SVcomposite], output_path: Path | str) -> None:
+    """
+    Save SVcomposites to a JSON file.
 
-    output_file = output_dir / "svcomposites.pckl"
+    Compression is automatically detected from file extension:
+    - .json.gz: compressed with gzip
+    - .json: uncompressed
 
-    with open(output_file, "wb") as f:
-        pickle.dump(data, f)
+    Args:
+        data: List of SVcomposites to serialize
+        output_path: Path to output JSON file
 
-    log.info(f"Saved {len(data)} SVcomposites to {output_file}")
+    Returns:
+        None
+    """
+    output_path = Path(output_path)
+
+    # Create parent directory if it doesn't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Auto-detect compression from extension
+    compress = str(output_path).endswith(".gz")
+
+    # Serialize all SVcomposites
+    serialized_data = [SVpatterns.converter.unstructure(sv) for sv in data]
+
+    # Write to file
+    if compress:
+        # Ensure filename ends with .json.gz
+        if not str(output_path).endswith(".json.gz"):
+            output_path = Path(str(output_path).replace(".json", "") + ".json.gz")
+
+        with gzip.open(output_path, "wt", encoding="utf-8") as f:
+            json.dump(serialized_data, f, indent=2)
+        log.info(f"Saved {len(data)} SVcomposites to compressed JSON: {output_path}")
+    else:
+        # Ensure filename ends with .json
+        if str(output_path).endswith(".gz"):
+            output_path = Path(str(output_path).replace(".gz", ""))
+        if not str(output_path).endswith(".json"):
+            output_path = Path(str(output_path) + ".json")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(serialized_data, f, indent=2)
+        log.info(f"Saved {len(data)} SVcomposites to JSON: {output_path}")
+
+
+def load_svComposites_from_json(input_path: Path | str) -> list[SVcomposite]:
+    """
+    Load SVcomposites from a JSON file.
+
+    Compression is automatically detected from file extension:
+    - .json.gz: decompressed from gzip
+    - .json: read as plain text
+
+    Args:
+        input_path: Path to input JSON file
+
+    Returns:
+        List of SVcomposites
+    """
+    input_path = Path(input_path)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    # Auto-detect compression from extension
+    compressed = str(input_path).endswith(".gz")
+
+    try:
+        if compressed:
+            with gzip.open(input_path, "rt", encoding="utf-8") as f:
+                serialized_data = json.load(f)
+            log.info(
+                f"Loaded {len(serialized_data)} SVcomposites from compressed JSON: {input_path}"
+            )
+        else:
+            with open(input_path, "r", encoding="utf-8") as f:
+                serialized_data = json.load(f)
+            log.info(
+                f"Loaded {len(serialized_data)} SVcomposites from JSON: {input_path}"
+            )
+
+        # Deserialize SVcomposites
+        svcomposites = [
+            SVpatterns.converter.structure(item, SVcomposite)
+            for item in serialized_data
+        ]
+
+        return svcomposites
+
+    except json.JSONDecodeError as e:
+        log.error(f"Failed to parse JSON from {input_path}: {e}")
+        raise
+    except Exception as e:
+        log.error(f"Error loading SVcomposites from {input_path}: {e}")
+        raise
 
 
 def extract_test_svComposites(
     data: list[SVcomposite],
     consensus_ids: list[str],
-    sv_types: list[str] = None,
-    output_path: str | Path = None,
+    sv_types: list[str] | None = None,
+    output_path: str | Path | None = None,
 ) -> list[SVcomposite]:
     # Filter by consensus IDs
     filtered_svComposites = [

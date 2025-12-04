@@ -36,10 +36,7 @@ from scipy.sparse import csr_matrix
 from sklearn.cluster import SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
-from ..util import (
-    datatypes,
-    util,
-)
+from ..util import datatypes, util
 from . import consensus_class
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -911,7 +908,9 @@ def final_consensus(
     )
 
     if verbose:
-        util.display_ascii_alignments(alignments=cut_read_alns, terminal_width=125)
+        alignments_to_rafs.display_ascii_alignments(
+            alignments=cut_read_alns, terminal_width=125
+        )
 
     return result
 
@@ -1089,9 +1088,7 @@ def align_cutreads_to_representative(
     )
 
     if show_ascii_alignments:
-        from ..svirlpool.scripts.util import display_ascii_alignments
-
-        display_ascii_alignments(
+        alignments_to_rafs.display_ascii_alignments(
             alignments=list(pysam.AlignmentFile(tmp_alignments_sam.name, mode="r"))
         )
 
@@ -2562,21 +2559,29 @@ def crs_containers_to_consensus(
     tmp_dir_path: Path | str | None = None,
     verbose: bool = False,
 ) -> None:
-    assert Path(lamassemble_mat).exists(), (
-        f"lamassemble matrix file {lamassemble_mat} does not exist."
-    )
-    assert input.exists(), f"Input file {input} does not exist."
-    assert input.is_file(), f"Input file {input} is not a file."
-    assert output.parent.exists(), f"Output directory {output.parent} does not exist."
-    assert threads > 0, "threads must be greater than 0."
-    if crIDs:
-        assert type(crIDs) == list, "crIDs must be a list of integers."
-        assert len(crIDs) > 0, (
-            "crIDs must be a list of integers with at least one element."
+    if not Path(lamassemble_mat).exists():
+        raise FileNotFoundError(
+            f"lamassemble matrix file {lamassemble_mat} does not exist."
         )
-        assert all(isinstance(crID, int) for crID in crIDs), (
-            "crIDs must be a list of integers."
+    if not input.exists():
+        raise FileNotFoundError(f"Input file {input} does not exist.")
+    if not input.is_file():
+        raise FileNotFoundError(f"Input file {input} is not a file.")
+    if not output.parent.exists():
+        raise FileNotFoundError(f"Output directory {output.parent} does not exist.")
+    if not output.parent.is_dir():
+        raise NotADirectoryError(
+            f"Output directory {output.parent} is not a directory."
         )
+    if threads <= 0:
+        raise ValueError("threads must be greater than 0.")
+    if crIDs is not None:
+        if not isinstance(crIDs, list):
+            raise TypeError("crIDs must be a list of integers.")
+        if len(crIDs) == 0:
+            raise ValueError("crIDs must contain at least one element.")
+        if not all(isinstance(crID, int) for crID in crIDs):
+            raise TypeError("crIDs must be a list of integers.")
     log.info("load data")
     if crIDs:
         existing_crIDs = load_crIDs_from_containers_db(path_db=input)

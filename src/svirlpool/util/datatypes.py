@@ -330,10 +330,16 @@ class Alignment:
     reference_end: int
     samdict: dict
     headerdict: dict
+    annotations: dict | None = None
     samplename: str | None = None
 
     @classmethod
-    def from_pysam(cls, aln: pysam.AlignedSegment, samplename: str | None = None):
+    def from_pysam(
+        cls,
+        aln: pysam.AlignedSegment,
+        samplename: str | None = None,
+        annotations: dict | None = None,
+    ):
         """Construct an Alignment object from a pysam.AlignedSegment."""
         return cls(
             readname=aln.query_name,
@@ -344,6 +350,7 @@ class Alignment:
             samdict=aln.to_dict(),
             headerdict=aln.header.to_dict() if hasattr(aln, "header") else {},
             samplename=samplename,
+            annotations=annotations,
         )
 
     def to_pysam(self) -> pysam.AlignedSegment:
@@ -355,7 +362,6 @@ class Alignment:
         return int(self.samdict["flag"]) & 0x10 != 0
 
     def __eq__(self, value) -> bool:
-        # TODO: compare start and cigar strings, not others
         return (
             self.samdict["ref_pos"] == value.samdict["ref_pos"]
             and self.samdict["ref_name"] == value.samdict["ref_name"]
@@ -365,13 +371,12 @@ class Alignment:
         )
 
     def unstructure(self):
-        cattrs.unstructure(self)
+        return cattrs.unstructure(self)
 
     def __hash__(self) -> int:
         return hash((
             self.readname,
             self.reference_name,
-            self.reference_ID,
             self.samplename,
             self.samdict["cigar"],
         ))

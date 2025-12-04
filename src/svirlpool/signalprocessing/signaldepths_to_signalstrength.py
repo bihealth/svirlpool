@@ -5,7 +5,6 @@ import csv
 import gzip
 import json
 import logging
-import multiprocessing
 import shlex
 import subprocess
 import sys
@@ -261,6 +260,73 @@ def parse_signaldepths_to_npsignals(input: Path) -> npt.NDArray[np.int32]:
     return np.hstack((np_signals, np.array(readHashes).reshape(-1, 1)))
 
 
+def get_chromosomes_from_file(filepath: Path) -> list[int]:
+    """Extract unique chromosome IDs without loading all data."""
+    chroms = set()
+    with open(filepath, "r") as f:
+        for line in f:
+            chrom = int(line.split("\t")[0])
+            chroms.add(chrom)
+    return sorted(chroms)
+
+
+def parse_signaldepths_for_chromosome(
+    filepath: Path, chrom: int
+) -> npt.NDArray[np.int32]:
+    """Load signals only for specified chromosome."""
+    signals = []
+    readnames_for_chr = []
+
+    with open(filepath, "r") as f:
+        for line in f:
+            fields = line.strip().split("\t")
+            if int(fields[0]) == chrom:
+                # Parse numeric fields: chrID, start, end, svType, size, coverage, repeatID
+                signals.append([
+                    int(fields[0]),
+                    int(fields[1]),
+                    int(fields[2]),
+                    int(fields[3]),
+                    int(fields[6]),
+                    int(fields[11]),
+                    int(fields[12]),
+                ])
+                readnames_for_chr.append(fields[7])
+
+    if not signals:
+        return np.array([], dtype=np.int32).reshape(0, 8)
+
+    np_signals = np.array(signals, dtype=np.int32)
+
+    # Create read hash dictionary only for this chromosome
+    readnames_dict = {readname: k for k, readname in enumerate(set(readnames_for_chr))}
+    readHashes = np.array(
+        [readnames_dict[x] for x in readnames_for_chr], dtype=np.int32
+    )
+
+    return np.hstack((np_signals, readHashes.reshape(-1, 1)))
+
+
+def write_chromosome_results(
+    signals_file: Path, chrom: int, values: np.ndarray, writer
+) -> None:
+    """Write results for one chromosome."""
+    idx = 0
+    with open(signals_file, "r") as f:
+        for line in f:
+            fields = line.strip().split("\t")
+            if int(fields[0]) == chrom:
+                eSVs = parse_signalstrengths_to_extendedSVsignal(fields)
+                eSVs.strength = float(values[idx])
+                writer.writerow([
+                    eSVs.chrID,
+                    eSVs.ref_start,
+                    eSVs.ref_end,
+                    json.dumps(eSVs.unstructure()),
+                ])
+                idx += 1
+
+
 def annotate_signals_with_repeats(
     repeats: Path, signals: Path, output: Path, tmp_dir_path: Path | None = None
 ) -> None:
@@ -365,6 +431,7 @@ def signaldepths_to_signalstrength(
     tmp_repeats = tempfile.NamedTemporaryFile(
         suffix=".repeats.bed", dir=tmp_dir_path, delete=False if tmp_dir_path else True
     )
+    log.info("prepare repeats file with only first three columns..")
     with open(repeats, "r") as f:
         with open(tmp_repeats.name, "w") as g:
             for line in f:
@@ -421,48 +488,52 @@ def signaldepths_to_signalstrength(
         repeats=tmp_repeats_chrID.name,
     )
 
-    log.info("parse signaldepths to numpy array..")
-    np_signals = parse_signaldepths_to_npsignals(tmp_signals_with_repeats.name)
-
-    log.info("convolve signal..")
-    # parallelize this with multiprocessing. split np_signals into chunks (each chunk is one chromosome, row 0 is chrID)
-    # and run pseudo_convolve on each chunk. then concatenate the results.
-    # create a set or job arguments for pseudo_convolve
-    jobs_args = [
-        {
-            "np_signals": np_signals[np_signals[:, 0] == refID],
-            "kernelsize": kernel_signal_radius,
-            "flatness": flatness_distance,
-        }
-        for i, refID in enumerate(set(np_signals[:, 0]))
-    ]
-    if threads > 1:
-        with multiprocessing.Pool(threads) as pool:
-            values_signal = np.concatenate(
-                pool.map(process_func, jobs_args, chunksize=1)
-            )
-    else:
-        values_signal = np.concatenate([
-            pseudo_convolve(**kwargs) for kwargs in jobs_args
-        ])
-    # add values_signal to signaldepths. Open signals and to each row add the value_signal and write to output
-    log.info("write output..")
+    log.info("process chromosomes sequentially to reduce memory..")
     tmp_output = tempfile.NamedTemporaryFile(delete=True, suffix=".tsv")
-    with open(tmp_signals_with_repeats.name, "r") as g:
-        with open(tmp_output.name, "w") as f:
-            writer = csv.writer(f, delimiter="\t")
-            for i, line in enumerate(g):
-                line_split = line.strip().split("\t")
-                eSVs: datatypes.ExtendedSVsignal = (
-                    parse_signalstrengths_to_extendedSVsignal(line_split)
-                )
-                eSVs.strength = float(values_signal[i])
-                chrID, start, end = eSVs.chrID, eSVs.ref_start, eSVs.ref_end
-                writer.writerow([chrID, start, end, json.dumps(eSVs.unstructure())])
-                # print(*line_split[:3],json.dumps(eSVs.unstructure()),sep='\t',file=f)
+
+    # Get unique chromosomes from the file without loading everything
+    chromosomes = get_chromosomes_from_file(Path(tmp_signals_with_repeats.name))
+    log.info(f"Found {len(chromosomes)} chromosomes to process")
+
+    with open(tmp_output.name, "w") as f:
+        writer = csv.writer(f, delimiter="\t")
+
+        for chrom in chromosomes:
+            log.info(f"Processing chromosome {chrom}...")
+
+            # Load only signals for this chromosome
+            np_signals_chr = parse_signaldepths_for_chromosome(
+                Path(tmp_signals_with_repeats.name), chrom
+            )
+
+            if np_signals_chr.shape[0] == 0:
+                log.warning(f"No signals found for chromosome {chrom}")
+                continue
+
+            log.info(f"Chromosome {chrom}: {np_signals_chr.shape[0]} signals")
+
+            # Process this chromosome
+            values_signal = pseudo_convolve(
+                np_signals=np_signals_chr,
+                kernelsize=kernel_signal_radius,
+                flatness=flatness_distance,
+            )
+
+            # Write results immediately
+            write_chromosome_results(
+                Path(tmp_signals_with_repeats.name), chrom, values_signal, writer
+            )
+
+            # Free memory explicitly
+            del np_signals_chr
+            del values_signal
+
     # compress output
     alignments_to_rafs.compress_and_index_bedlike(
-        input=tmp_output.name, output=output, threads=threads, sort_numerically=True
+        input=Path(tmp_output.name),
+        output=output,
+        threads=threads,
+        sort_numerically=True,
     )
 
 

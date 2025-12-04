@@ -64,13 +64,15 @@ else:
 
 N_files_per_dir = config["N_files_per_dir"]
 mononucleotides = config["mononucleotides"]
-unique_regions  = config["unique_regions"]
+#unique_regions  = config["unique_regions"]
+
+# signal extraction
+max_coverage_per_region = config.get("max_coverage_per_region", 400)
 
 # candidate regions
 filter_absolute=config["filter_absolute"]
 filter_normalized=config["filter_normalized"]
 min_cr_size=config["min_cr_size"]
-optimal_cr_size=config["optimal_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
 
 # consensus
@@ -96,6 +98,17 @@ min_sv_size     = config["min_sv_size"]
 cores_per_consensus = config["cores_per_consensus"]
 #avg_doc = config["coverage"]
 #doc_per_haplotype = avg_doc / 2.0
+
+# output database - handle both absolute and relative paths
+# If absolute path is provided, use it as-is
+# If relative path, it will be relative to workdir (set above)
+output_db_path = config.get("output", "svirltile.db")
+if not Path(output_db_path).is_absolute():
+    # Relative path - will be interpreted relative to workdir by Snakemake
+    output_db = output_db_path
+else:
+    # Absolute path - use as-is
+    output_db = output_db_path
 
 cores = workflow.cores #config["cores"]
 
@@ -127,7 +140,7 @@ rule all:
         "QC/copy_number_tracks.png",
         'crs_containers.db',
         "consensus_containers.txt",
-        "svirltile.db"
+        output_db
         
 # -----------------------------------------------------------------------------
 # SIGNAL PROCESSING
@@ -145,7 +158,8 @@ rule signalprocessing_alignments_to_rafs:
         min_signal_size=6,
         min_bnd_size=300,
         min_segment_size=250,
-        min_mapq=min_mapq
+        min_mapq=min_mapq,
+        max_coverage_per_region=max_coverage_per_region,
     resources:
         mem_mb=cores*1024,
         runtime=240
@@ -164,6 +178,7 @@ rule signalprocessing_alignments_to_rafs:
         -s {params.samplename} \
         -r {input.regions} \
         -o {output.file} \
+        --max-coverage {params.max_coverage_per_region} \
         --min-signal-size {params.min_signal_size} \
         --min-bnd-size {params.min_bnd_size} \
         --min-segment-size {params.min_segment_size} \
@@ -623,7 +638,7 @@ rule to_svirltile:
     params:
         samplename=samplename
     output:
-        svirltile_db="svirltile.db",
+        svirltile_db=output_db,
     threads:
         1
     resources:

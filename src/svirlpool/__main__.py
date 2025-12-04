@@ -46,6 +46,13 @@ def get_parser():
         type=os.path.abspath,
     )
     parser_run_wf.add_argument(
+        "--output",
+        help="Output database filename (relative to workdir) or absolute path. Default: svirltile.db",
+        required=False,
+        type=str,
+        default="svirltile.db",
+    )
+    parser_run_wf.add_argument(
         "--alignments",
         help="Path to the bam file",
         required=True,
@@ -79,12 +86,12 @@ def get_parser():
         required=True,
         type=os.path.abspath,
     )
-    parser_run_wf.add_argument(
-        "--unique-regions",
-        help="unique regions in bed format",
-        required=True,
-        type=os.path.abspath,
-    )
+    # parser_run_wf.add_argument(
+    #     "--unique-regions",
+    #     help="unique regions in bed format",
+    #     required=True,
+    #     type=os.path.abspath,
+    # )
     parser_run_wf.add_argument(
         "--lamassemble-mat",
         help="lamassamble matrix file used for the final consensus assembly.",
@@ -101,26 +108,18 @@ def get_parser():
         type=int,
         default=1,
     )
-    # parser_run_wf.add_argument(
-    #     "--consensus-mode",
-    #     help="consensus mode [greedy, ava, rapidfuzz] determines the method of consensus clustering and assembly",
-    #     required=False,
-    #     type=str,
-    #     default="greedy",
-    # )
+    parser_run_wf.add_argument(
+        "--max-coverage-per-region",
+        type=int,
+        default=400,
+        help="Maximum coverage threshold. Alignments in regions exceeding this coverage will be skipped. Default is 400.",
+    )
     parser_run_wf.add_argument(
         "--N-files-per-dir",
         help="number of files per directory",
         required=False,
         type=int,
         default=200,
-    )
-    parser_run_wf.add_argument(
-        "--optimal-cr-size",
-        help="optimal candidate region size",
-        required=False,
-        type=int,
-        default=600,
     )
     parser_run_wf.add_argument(
         "--min-cr-size",
