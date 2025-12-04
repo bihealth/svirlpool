@@ -332,10 +332,14 @@ class Alignment:
     headerdict: dict
     annotations: dict | None = None
     samplename: str | None = None
-    
 
     @classmethod
-    def from_pysam(cls, aln: pysam.AlignedSegment, samplename: str | None = None, annotations: dict | None = None):
+    def from_pysam(
+        cls,
+        aln: pysam.AlignedSegment,
+        samplename: str | None = None,
+        annotations: dict | None = None,
+    ):
         """Construct an Alignment object from a pysam.AlignedSegment."""
         return cls(
             readname=aln.query_name,
