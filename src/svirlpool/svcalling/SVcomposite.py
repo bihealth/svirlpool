@@ -58,6 +58,7 @@ class SVcomposite:
             return cls(sv_type=svPatterns[0].get_sv_type(), svPatterns=svPatterns)
         sv_type = svPatterns[0].get_sv_type()
         all_sv_types = {sv.get_sv_type() for sv in svPatterns}
+        # re-calculate the SV size of horizontally merged INS+DEL runs
         if all_sv_types == {
             "INS",
             "DEL",
@@ -82,7 +83,7 @@ class SVcomposite:
 
     @property
     def ref_end(self) -> tuple[str, int]:
-        return max(p.ref_end for p in self.svPatterns)
+        return max((p.chr, p.ref_end) for p in self.svPatterns)
 
     @property
     def repeatIDs(self) -> set[int]:
@@ -107,14 +108,14 @@ class SVcomposite:
     def get_size_populations(self) -> list[int]:
         """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins."""
         return [
-            size for svp in self.svPatterns for size in svp.size_distortions.values()
+            int(size) for svp in self.svPatterns for size in svp.size_distortions.values()
         ]
 
     # def get_most_supported_svPattern(self) -> SVpatterns.SVpatternType:
     #     """Get the SVpattern with the most supporting reads."""
     #     return max(self.svPatterns, key=lambda svp: len(svp.get_supporting_reads()))
 
-    def get_regions(self, tolerance_radius: int = 25) -> list[Interval]:
+    def get_regions(self, tolerance_radius: int = 25) -> list[tuple[str,int,int]]:
         if tolerance_radius <= 0:
             raise ValueError("Tolerance radius must be greater than 0")
         return [
@@ -225,12 +226,14 @@ class SVcomposite:
             # Concatenate alt sequences from the best group
             concatenated_sequence = ""
             for svPattern in best_group:
-                if isinstance(svPattern, SVpatterns.SVpatternInsertion):
-                    concatenated_sequence += pickle.loads(svPattern.inserted_sequence)
-                elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                    concatenated_sequence += pickle.loads(svPattern.inserted_sequence)
+                if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(svPattern, SVpatterns.SVpatternInversion):
+                    seq = svPattern.get_sequence()
+                    if seq is None:
+                        raise ValueError(
+                            f"SVpattern {svPattern} in SVcomposite has no alt sequence set."
+                        )
+                    concatenated_sequence += seq
                 # Add other pattern types as needed
-
             size = self.get_size()
             return concatenated_sequence[:size] if size > 0 else ""
         else:
@@ -272,7 +275,12 @@ class SVcomposite:
             concatenated_sequence = ""
             for svPattern in best_group:
                 if isinstance(svPattern, SVpatterns.SVpatternDeletion):
-                    concatenated_sequence += pickle.loads(svPattern.deleted_sequence)
+                    seq = svPattern.get_sequence()
+                    if seq is None:
+                        raise ValueError(
+                            f"SVpattern {svPattern} in SVcomposite has no ref sequence set."
+                        )
+                    concatenated_sequence += seq
                 # Add other pattern types as needed
 
             size = self.get_size()
@@ -314,13 +322,15 @@ class SVcomposite:
         for svPattern in self.svPatterns:
             seq = ""
             if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
-                svPattern, SVpatterns.SVpatternTranslocation
+                svPattern, SVpatterns.SVpatternInversion
             ):
                 seq = svPattern.get_sequence()
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                seq = svPattern.get_inserted_sequence()
             else:
                 pass
+            if seq is None:
+                raise ValueError(
+                    f"SVpattern {svPattern} in SVcomposite has no alt sequence set."
+                )
             alt_sequences.append(seq)
         return alt_sequences
 
@@ -329,12 +339,9 @@ class SVcomposite:
         complexity_tracks = []
         for svPattern in self.svPatterns:
             if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
-                svPattern, SVpatterns.SVpatternTranslocation
+                svPattern, SVpatterns.SVpatternInversion
             ):
                 comp_track = svPattern.get_sequence_complexity()
-                complexity_tracks.append(comp_track)
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                comp_track = svPattern.sequence_complexity_inserted_sequence()
                 complexity_tracks.append(comp_track)
         return complexity_tracks
 
@@ -346,9 +353,6 @@ class SVcomposite:
             if isinstance(svPattern, SVpatterns.SVpatternDeletion):
                 seq = svPattern.get_sequence()
                 ref_sequences.append(seq)
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                seq = svPattern.get_deleted_sequence()
-                ref_sequences.append(seq)
             else:
                 pass
         return ref_sequences
@@ -359,8 +363,5 @@ class SVcomposite:
         for svPattern in self.svPatterns:
             if isinstance(svPattern, SVpatterns.SVpatternDeletion):
                 comp_track = svPattern.get_sequence_complexity()
-                complexity_tracks.append(comp_track)
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                comp_track = svPattern.sequence_complexity_deleted_sequence()
                 complexity_tracks.append(comp_track)
         return complexity_tracks

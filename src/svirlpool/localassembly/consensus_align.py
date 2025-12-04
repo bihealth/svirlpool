@@ -157,12 +157,8 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 )
 
             # Set sequences based on SVpattern type
-            if isinstance(processed_svp, SVpatterns.SVpatternInsertion):
+            if isinstance(processed_svp, SVpatterns.SVpatternInsertion) or isinstance(processed_svp, SVpatterns.SVpatternInversion):
                 processed_svp.set_sequence(
-                    processed_svp.get_sequence_from_consensus(consensus=consensus)
-                )
-            elif isinstance(processed_svp, SVpatterns.SVpatternInversion):
-                processed_svp.set_inserted_sequence(
                     processed_svp.get_sequence_from_consensus(consensus=consensus)
                 )
             elif isinstance(processed_svp, SVpatterns.SVpatternDeletion):
@@ -243,8 +239,6 @@ def add_reference_sequence_to_svPatterns(
                         x = deepcopy(svp)
                         if x.get_sv_type() == "DEL":
                             x.set_sequence(str(record.seq))
-                        elif x.get_sv_type() == "INV":
-                            x.set_deleted_sequence(str(record.seq))
                         output.append(x)  # append the modified copy
                         svp = None  # remove reference to original to free memory
                     regions[region_key].clear()
@@ -1770,7 +1764,7 @@ def svPatterns_from_consensus_sequences(
             ],
             tech="map-ont",
             threads=threads,
-            aln_args=" --secondary=no ",
+            aln_args=" --secondary=no",
         )
 
         # Parse alignments and write partitioned datatypes.Alignment objects to TSV files
@@ -1813,6 +1807,7 @@ def svPatterns_from_consensus_sequences(
             threads=threads,
             batch_size=100,
         )
+        log.debug("Core intervals on reference by partition:")
         log.debug(core_intervals_on_reference_partitioned)
         # now we need to find the intersecting trf intervals for each core interval on reference
         # Find TRF overlaps for all core intervals in parallel using bedtools

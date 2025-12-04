@@ -31,7 +31,7 @@ from .SVcomposite import SVcomposite
 
 log = logging.getLogger(__name__)
 
-SUPPORTED_SV_TYPES = {"INS", "DEL"}
+SUPPORTED_SV_TYPES = {"INS", "DEL", "INV"}
 # SYMBOLIC_ALLELE_THRESHOLD will be passed as parameter instead of being a constant
 
 
@@ -418,7 +418,7 @@ def can_merge_svComposites_insertions(
 def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
     # if a is sv type insertion or inversion, get inserted complexity tracks
     mean_complexity: float = 1.0
-    if a.sv_type == "INS" or a.sv_type == "INV":
+    if a.sv_type in ("INS","INV"):
         complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
         if (
             complexities is None
@@ -905,16 +905,16 @@ def can_merge_svComposites_inversions(
     for svPattern in a.svPatterns:
         if (
             isinstance(svPattern, SVpatterns.SVpatternInversion)
-            and svPattern.inserted_sequence
         ):
-            inverted_sequences_a.append(pickle.loads(svPattern.inserted_sequence))
+            seq = svPattern.get_sequence()
+            inverted_sequences_a.append(seq)
 
     for svPattern in b.svPatterns:
         if (
             isinstance(svPattern, SVpatterns.SVpatternInversion)
-            and svPattern.inserted_sequence
         ):
-            inverted_sequences_b.append(pickle.loads(svPattern.inserted_sequence))
+            seq = svPattern.get_sequence()
+            inverted_sequences_b.append(seq)
 
     if size_a < 100 and size_b < 100:
         similarity = 1.0  # don't compare k-mers for small inversions, they are too short to be meaningful
@@ -1371,11 +1371,9 @@ def SVcalls_from_SVcomposite(
     # separate cases:
     # 1) insertion & deletion
     result: list[SVcall] = []
-    all_alt_reads: dict[str, set[np.uint64]] = (
-        svComposite.get_alt_readnamehashes_per_sample()
-    )  # {samplename: {readname, ...}}
+    all_alt_reads: dict[str, set[np.uint64]] = svComposite.get_alt_readnamehashes_per_sample()  # {samplename: {readname, ...}}
 
-    if svComposite.sv_type in ("INS", "DEL"):
+    if svComposite.sv_type in SUPPORTED_SV_TYPES:
         chrname, start, end = get_svComposite_interval_on_reference(
             svComposite=svComposite,
             find_leftmost_reference_position=find_leftmost_reference_position,
@@ -1486,7 +1484,7 @@ def SVcalls_from_SVcomposite(
             svComposite.get_alt_sequence() if svtype in ("INS", "INV") else None
         )  # TODO: revcomp if representing consensus sequence is reverse complement (carrying consensus aln is reverse)
         ref_seq: str | None = (
-            svComposite.get_ref_sequence() if svtype in ("DEL", "INV") else None
+            svComposite.get_ref_sequence() if svtype in ("DEL") else None
         )
 
         pass_altreads: bool = (
@@ -1946,7 +1944,8 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import \
+        load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(
@@ -2094,6 +2093,14 @@ def multisample_sv_calling(
         sv_types=sv_types,
         candidate_regions_filter=candidate_regions_filter,
     )
+    if log.level == logging.DEBUG:
+        svtype_counts: dict[str, int] = {}
+        for svComposite in data:
+            svtype = svComposite.sv_type
+            if svtype not in svtype_counts:
+                svtype_counts[svtype] = 0
+            svtype_counts[svtype] += 1
+        log.debug(f"SVcomposite counts by type before merging: {svtype_counts}")
 
     # if tmp dir is provided, dump all svComposites to a compressed json file
     if tmp_dir_path is not None:

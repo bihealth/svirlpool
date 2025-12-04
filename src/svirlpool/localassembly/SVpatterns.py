@@ -400,31 +400,19 @@ class SVpatternComplex(SVpattern):
 @attrs.define
 class SVpatternInversion(SVpattern):
     inserted_sequence: bytes | None = None
-    deleted_sequence: bytes | None = None
-    sequence_complexity_inserted_sequence: bytes | None = (
-        None  # Pickled numpy array of float32
-    )
-    sequence_complexity_deleted_sequence: bytes | None = (
-        None  # Pickled numpy array of float32
-    )
+    sequence_complexity: bytes | None = None  # Pickled numpy array of float32
 
-    # needs to have an interface to retrieve the inverted sequence
-    # can be a method that receives the compressed core sequence
-    # and infers if it is rev-comp or needs to rev-comp it given the svprimitives.
-    # cases:
-    #   1) 4-relation:
-    #       - middle aligned fragment (aln_is_reverse) -> correct orientation of the consensus sequence
-    #       - middle aligned fragment (aln_is_reverse == False) -> needs to rev-comp the consensus sequence
     def get_sv_type(self) -> str:
         return "INV"
 
-    def set_inserted_sequence(
+    def set_sequence(
         self, sequence: str, sequence_complexity_max_length: int = 300
     ) -> None:
+        """Set the inserted sequence and compute its complexity."""
         self.inserted_sequence = pickle.dumps(sequence)
         if len(sequence) <= sequence_complexity_max_length:
             dna_iter = iter(sequence)
-            self.sequence_complexity_inserted_sequence = pickle.dumps(
+            self.sequence_complexity = pickle.dumps(
                 complexity_local_track(
                     dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
                 )
@@ -432,9 +420,9 @@ class SVpatternInversion(SVpattern):
         else:
             # Create dummy placeholder with 1.0 values for long sequences
             dummy_complexity = np.ones(len(sequence), dtype=np.float16)
-            self.sequence_complexity_inserted_sequence = pickle.dumps(dummy_complexity)
+            self.sequence_complexity = pickle.dumps(dummy_complexity)
 
-    def get_inserted_sequence(self) -> str | None:
+    def get_sequence(self) -> str | None:
         """Retrieve the inserted sequence by unpickling."""
         if self.inserted_sequence is None:
             return None
@@ -443,78 +431,40 @@ class SVpatternInversion(SVpattern):
         except Exception:
             return None
 
-    def set_deleted_sequence(
-        self, sequence: str, sequence_complexity_max_length: int = 300
-    ) -> None:
-        self.deleted_sequence = pickle.dumps(sequence)
-        if len(sequence) <= sequence_complexity_max_length:
-            dna_iter = iter(sequence)
-            self.sequence_complexity_deleted_sequence = pickle.dumps(
-                complexity_local_track(
-                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
-                )
-            )
-        else:
-            # Create dummy placeholder with 1.0 values for long sequences
-            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
-            self.sequence_complexity_deleted_sequence = pickle.dumps(dummy_complexity)
-
-    def get_deleted_sequence(self) -> str | None:
-        """Retrieve the deleted sequence by unpickling."""
-        if self.deleted_sequence is None:
+    def get_sequence_complexity(self) -> np.ndarray | None:
+        """Retrieve the sequence complexity scores."""
+        if self.sequence_complexity is None:
             return None
         try:
-            return pickle.loads(self.deleted_sequence)
+            return pickle.loads(self.sequence_complexity)
         except Exception:
             return None
 
-    def get_inserted_sequence_complexity(self) -> np.ndarray | None:
-        """Retrieve the inserted sequence complexity scores."""
-        if self.sequence_complexity_inserted_sequence is None:
-            return None
-        try:
-            return pickle.loads(self.sequence_complexity_inserted_sequence)
-        except Exception:
-            return None
-
-    def get_deleted_sequence_complexity(self) -> np.ndarray | None:
-        """Retrieve the deleted sequence complexity scores."""
-        if self.sequence_complexity_deleted_sequence is None:
-            return None
-        try:
-            return pickle.loads(self.sequence_complexity_deleted_sequence)
-        except Exception:
-            return None
-
-    def get_mean_inserted_complexity(self) -> float | None:
-        """Get the mean complexity score for inserted sequence."""
-        complexity = self.get_inserted_sequence_complexity()
+    def get_mean_complexity(self) -> float | None:
+        """Get the mean complexity score across the sequence."""
+        complexity = self.get_sequence_complexity()
         if complexity is not None and len(complexity) > 0:
             return float(np.mean(complexity))
         return None
 
-    def get_mean_deleted_complexity(self) -> float | None:
-        """Get the mean complexity score for deleted sequence."""
-        complexity = self.get_deleted_sequence_complexity()
-        if complexity is not None and len(complexity) > 0:
-            return float(np.mean(complexity))
-        return None
-
-    def get_min_inserted_complexity(self) -> float | None:
-        """Get the minimum complexity score for inserted sequence."""
-        complexity = self.get_inserted_sequence_complexity()
+    def get_min_complexity(self) -> float | None:
+        """Get the minimum complexity score in the sequence."""
+        complexity = self.get_sequence_complexity()
         if complexity is not None and len(complexity) > 0:
             return float(np.min(complexity))
         return None
 
-    def get_min_deleted_complexity(self) -> float | None:
-        """Get the minimum complexity score for deleted sequence."""
-        complexity = self.get_deleted_sequence_complexity()
-        if complexity is not None and len(complexity) > 0:
-            return float(np.min(complexity))
-        return None
+    # needs to have an interface to retrieve the inverted sequence
+    # can be a method that receives the compressed core sequence
+    # and infers if it is rev-comp or needs to rev-comp it given the svprimitives.
+    # cases:
+    #   1) 4-relation:
+    #       - middle aligned fragment (aln_is_reverse) -> correct orientation of the consensus sequence
+    #       - middle aligned fragment (aln_is_reverse == False) -> needs to rev-comp the consensus sequence
 
     def get_sequence_from_consensus(self, consensus: Consensus) -> str:
+        if consensus.consensus_padding is None:
+            raise ValueError("Consensus sequence is not set in the Consensus object")
         core_sequence_start: int = consensus.consensus_padding.padding_size_left
         s = self.SVprimitives[0].read_start - core_sequence_start
         e = (
@@ -528,36 +478,6 @@ class SVpatternInversion(SVpattern):
         end = self.SVprimitives[2].ref_start
         start, end = (end, start) if start > end else (start, end)
         return (chr, start, end)
-
-    def get_inv_sequence(self, core_sequence: bytes, core_sequence_start: int) -> str:
-        """
-        Returns the inverted (relative to the reference strand) sequence based on the core sequence and the SVprimitives.
-        All SVprimitives must be of the same consensusID and sorted by their ref_start.
-        """
-        if not all(
-            svpr.consensusID == self.SVprimitives[0].consensusID
-            for svpr in self.SVprimitives
-        ):
-            raise ValueError("All SVprimitives must have the same consensusID")
-        if not all(
-            self.SVprimitives[i].ref_start <= self.SVprimitives[i + 1].ref_start
-            for i in range(len(self.SVprimitives) - 1)
-        ):
-            raise ValueError("SVprimitives must be sorted by ref_start")
-
-        seq: str = pickle.loads(core_sequence)
-        if len(self.SVprimitives) == 4:
-            seq = seq[
-                self.SVprimitives[1].ref_start
-                - core_sequence_start : self.SVprimitives[2].ref_start
-                - core_sequence_start
-            ]
-            if self.SVprimitives[1].aln_is_reverse:
-                return seq
-            else:
-                return str(Seq(seq).reverse_complement())
-        else:
-            raise ValueError("Inversion attributes must have 4 primitives")
 
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inversion."""
@@ -577,7 +497,10 @@ SVpatternType = (
     | SVpatternTranslocation
     | SVpatternSingleBreakend
     | SVpatternComplex
-    | SVpatternInversion
+    | SVpatternInversion # Balanced Inversion
+    | SVpatternInvertedDeletion # Inverted Deletion
+    | SVpatternInvertedDuplication # Inverted Duplication
+    | SVpatternInversionCluster # Inversion Cluster
 )
 
 # endregion
@@ -888,24 +811,22 @@ def parse_SVprimitives_to_SVpatterns(
             possible_inversions_from_BNDs(svps=breakends, fourrelations=fourrelations)
         )
         for a, b, c, d in indices_inversions:
-            if (
-                a in used_indices
-                or b in used_indices
-                or c in used_indices
-                or d in used_indices
-            ):
-                continue
-            result.append(
-                SVpatternInversion(
-                    SVprimitives=[
-                        breakends[a],
-                        breakends[b],
-                        breakends[c],
-                        breakends[d],
-                    ]
+            if not (
+                    a in used_indices
+                    or b in used_indices
+                    or c in used_indices
+                    or d in used_indices):
+                result.append(
+                    SVpatternInversion(
+                        SVprimitives=[
+                            breakends[a],
+                            breakends[b],
+                            breakends[c],
+                            breakends[d],
+                        ]
+                    )
                 )
-            )
-            used_indices.update([a, b, c, d])
+                used_indices.update([a, b, c, d])
 
     if len(breakends) >= 2 and len(used_indices) < len(breakends):
         tworelations = two_relations_of_group(

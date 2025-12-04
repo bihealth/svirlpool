@@ -5,6 +5,7 @@
 
 import csv
 import gzip
+import io
 import json
 import logging
 import shlex
@@ -794,6 +795,38 @@ def write_sequences_to_fasta(
 def index_reference(path: Path):
     cmd = shlex.split(f"samtools faidx {path}")
     subprocess.check_call(cmd)
+
+
+def seqrecord_to_dict(record):
+    """Convert SeqRecord to JSON-serializable dict"""
+    return {
+        "id": record.id,
+        "name": record.name,
+        "description": record.description,
+        "seq": str(record.seq),
+        "annotations": record.annotations,
+        "letter_annotations": {k: list(v) for k, v in record.letter_annotations.items()},
+        "features": [
+            {
+                "type": f.type,
+                "location": str(f.location),
+                "qualifiers": f.qualifiers
+            } for f in record.features
+        ]
+    }
+
+def dict_to_seqrecord(data):
+    """Reconstruct SeqRecord from dict"""
+    from Bio.Seq import Seq
+    record = SeqRecord(
+        seq=Seq(data["seq"]),
+        id=data["id"],
+        name=data["name"],
+        description=data["description"]
+    )
+    record.annotations = data["annotations"]
+    # Add features if needed
+    return record
 
 
 # re-implement, but so that the path to the alignments is passed as a parameter

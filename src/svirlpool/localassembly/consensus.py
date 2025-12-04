@@ -1246,11 +1246,11 @@ def consensus_while_clustering(
             tmp_all_reads = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
                 prefix="all_reads.",
-                suffix=".fastq",
+                suffix=".fasta",
                 delete=False if tmp_dir_path else True,
             )
             with open(tmp_all_reads.name, "w") as f:
-                SeqIO.write(pool.values(), f, "fastq")
+                SeqIO.write(pool.values(), f, "fasta")
             # 2) align all reads to each other with minimap2
             tmp_all_vs_all_sam = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
@@ -1995,7 +1995,7 @@ def score_ras_from_alignments(
     rafs_scores_dict = {}
     for ras, score in zip(rass, rass_scores, strict=True):
         if ras.read_name in rafs_scores_dict:
-            if rafs_scores_dict[ras.read_name] < score:
+            if rafs_scores_dict[ras.read_name] > score:
                 rafs_scores_dict[ras.read_name] = score
         else:
             rafs_scores_dict[ras.read_name] = float(score)
