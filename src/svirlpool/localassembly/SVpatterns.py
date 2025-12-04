@@ -751,7 +751,7 @@ def possible_inversions_from_BNDs(
     # an inversion is present if there exists a 4-hop and a 4-inv
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), x in fourrelations.items():
-        if x == set([FOURRELATIONS.HOP, FOURRELATIONS.INVERSION]):
+        if x == {FOURRELATIONS.HOP, FOURRELATIONS.INVERSION}:
             # create a SVcomplex from the group
             results.append((a, b, c, d))
     return results
@@ -770,7 +770,7 @@ def possible_insertions_from_BNDs(
         return []
     results: list[tuple[int, int]] = []
     for (a, b), x in tworelations.items():
-        if x == set([TWORELATIONS.REFCLOSED, TWORELATIONS.READGAP]):
+        if x == {TWORELATIONS.REFCLOSED, TWORELATIONS.READGAP}:
             results.append((a, b))
     return results
 
@@ -789,7 +789,7 @@ def possible_deletions_from_BNDs(
         return []
     results: list[tuple[int, int]] = []
     for (a, b), x in tworelations.items():
-        if x == set([TWORELATIONS.READCLOSED, TWORELATIONS.REFGAP]):
+        if x == {TWORELATIONS.READCLOSED, TWORELATIONS.REFGAP}:
             results.append((a, b))
     return results
 
