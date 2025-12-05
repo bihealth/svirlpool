@@ -40,6 +40,7 @@ dev = [
     "coverage>=7.6.12",
     "freezegun>=1.5.1",
     "hatch>=1.14.0",
+    "jupyter>=1.1.0",
     "pyright>=1.1.394",
     "pytest>=8.3.4",
     "pytest-coverage>=0.0",

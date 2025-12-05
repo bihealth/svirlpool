@@ -5,7 +5,6 @@
 
 import csv
 import gzip
-import io
 import json
 import logging
 import shlex
@@ -805,24 +804,25 @@ def seqrecord_to_dict(record):
         "description": record.description,
         "seq": str(record.seq),
         "annotations": record.annotations,
-        "letter_annotations": {k: list(v) for k, v in record.letter_annotations.items()},
+        "letter_annotations": {
+            k: list(v) for k, v in record.letter_annotations.items()
+        },
         "features": [
-            {
-                "type": f.type,
-                "location": str(f.location),
-                "qualifiers": f.qualifiers
-            } for f in record.features
-        ]
+            {"type": f.type, "location": str(f.location), "qualifiers": f.qualifiers}
+            for f in record.features
+        ],
     }
+
 
 def dict_to_seqrecord(data):
     """Reconstruct SeqRecord from dict"""
     from Bio.Seq import Seq
+
     record = SeqRecord(
         seq=Seq(data["seq"]),
         id=data["id"],
         name=data["name"],
-        description=data["description"]
+        description=data["description"],
     )
     record.annotations = data["annotations"]
     # Add features if needed

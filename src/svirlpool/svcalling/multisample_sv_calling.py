@@ -418,7 +418,7 @@ def can_merge_svComposites_insertions(
 def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
     # if a is sv type insertion or inversion, get inserted complexity tracks
     mean_complexity: float = 1.0
-    if a.sv_type in ("INS","INV"):
+    if a.sv_type in ("INS", "INV"):
         complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
         if (
             complexities is None
@@ -903,16 +903,12 @@ def can_merge_svComposites_inversions(
     inverted_sequences_b = []
 
     for svPattern in a.svPatterns:
-        if (
-            isinstance(svPattern, SVpatterns.SVpatternInversion)
-        ):
+        if isinstance(svPattern, SVpatterns.SVpatternInversion):
             seq = svPattern.get_sequence()
             inverted_sequences_a.append(seq)
 
     for svPattern in b.svPatterns:
-        if (
-            isinstance(svPattern, SVpatterns.SVpatternInversion)
-        ):
+        if isinstance(svPattern, SVpatterns.SVpatternInversion):
             seq = svPattern.get_sequence()
             inverted_sequences_b.append(seq)
 
@@ -1371,7 +1367,9 @@ def SVcalls_from_SVcomposite(
     # separate cases:
     # 1) insertion & deletion
     result: list[SVcall] = []
-    all_alt_reads: dict[str, set[np.uint64]] = svComposite.get_alt_readnamehashes_per_sample()  # {samplename: {readname, ...}}
+    all_alt_reads: dict[str, set[np.uint64]] = (
+        svComposite.get_alt_readnamehashes_per_sample()
+    )  # {samplename: {readname, ...}}
 
     if svComposite.sv_type in SUPPORTED_SV_TYPES:
         chrname, start, end = get_svComposite_interval_on_reference(
@@ -1944,8 +1942,7 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import \
-        load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(

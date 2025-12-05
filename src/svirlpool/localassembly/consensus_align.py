@@ -79,6 +79,7 @@ def svPrimitives_to_svPatterns(
     """
     Converts a list of SVprimitives to a list of SVpatterns.
     This is done by parsing the SVprimitives and creating SVpatterns from them.
+    IMPORTANT: SVprimitives are in the order of their alignment position on the consensus sequence.
     """
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
@@ -157,7 +158,9 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 )
 
             # Set sequences based on SVpattern type
-            if isinstance(processed_svp, SVpatterns.SVpatternInsertion) or isinstance(processed_svp, SVpatterns.SVpatternInversion):
+            if isinstance(processed_svp, SVpatterns.SVpatternInsertion) or isinstance(
+                processed_svp, SVpatterns.SVpatternInversion
+            ):
                 processed_svp.set_sequence(
                     processed_svp.get_sequence_from_consensus(consensus=consensus)
                 )
@@ -1572,7 +1575,9 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     for aln_idx, ref_name, core_start, core_end in core_intervals_with_idx
                 }
 
-                for alignment_idx, alignment in enumerate(alignments):
+                for alignment_idx, alignment in enumerate(
+                    alignments
+                ):  # alignment_idx order on consensus sequence!
                     # Match by alignment index
                     if alignment_idx not in core_interval_by_idx:
                         log.warning(
@@ -1623,7 +1628,8 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     )
                 # now the sv patterns can be created from the svPrimitives
             svPrimitives = sorted(
-                svPrimitives, key=lambda svp: (svp.consensusID, svp.read_start)
+                svPrimitives,
+                key=lambda svp: (svp.consensusID, svp.alignment_idx, svp.read_start),
             )
             log.debug(
                 f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences"

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import pickle
 
 import attrs  # type: ignore
 import numpy as np  # type: ignore
-from intervaltree import Interval, IntervalTree  # type: ignore
+from intervaltree import IntervalTree  # type: ignore
 from xxhash import xxh64
 
 from ..localassembly import SVpatterns
@@ -108,14 +107,16 @@ class SVcomposite:
     def get_size_populations(self) -> list[int]:
         """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins."""
         return [
-            int(size) for svp in self.svPatterns for size in svp.size_distortions.values()
+            int(size)
+            for svp in self.svPatterns
+            for size in svp.size_distortions.values()
         ]
 
     # def get_most_supported_svPattern(self) -> SVpatterns.SVpatternType:
     #     """Get the SVpattern with the most supporting reads."""
     #     return max(self.svPatterns, key=lambda svp: len(svp.get_supporting_reads()))
 
-    def get_regions(self, tolerance_radius: int = 25) -> list[tuple[str,int,int]]:
+    def get_regions(self, tolerance_radius: int = 25) -> list[tuple[str, int, int]]:
         if tolerance_radius <= 0:
             raise ValueError("Tolerance radius must be greater than 0")
         return [
@@ -226,7 +227,9 @@ class SVcomposite:
             # Concatenate alt sequences from the best group
             concatenated_sequence = ""
             for svPattern in best_group:
-                if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(svPattern, SVpatterns.SVpatternInversion):
+                if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
+                    svPattern, SVpatterns.SVpatternInversion
+                ):
                     seq = svPattern.get_sequence()
                     if seq is None:
                         raise ValueError(

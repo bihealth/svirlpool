@@ -497,10 +497,10 @@ SVpatternType = (
     | SVpatternTranslocation
     | SVpatternSingleBreakend
     | SVpatternComplex
-    | SVpatternInversion # Balanced Inversion
-    | SVpatternInvertedDeletion # Inverted Deletion
-    | SVpatternInvertedDuplication # Inverted Duplication
-    | SVpatternInversionCluster # Inversion Cluster
+    | SVpatternInversion  # Balanced Inversion
+    # | SVpatternInvertedDeletion # Inverted Deletion
+    # | SVpatternInvertedDuplication # Inverted Duplication
+    # | SVpatternInversionCluster # Inversion Cluster
 )
 
 # endregion
@@ -677,6 +677,11 @@ def possible_inversions_from_BNDs(
         if x == {FOURRELATIONS.HOP, FOURRELATIONS.INVERSION}:
             # create a SVcomplex from the group
             results.append((a, b, c, d))
+        else:
+            # debugging logging
+            log.info(
+                f"XXX Four-relation {a},{b},{c},{d} does not form an inversion. Relations: {x} of consenususID {svps[0].consensusID}"
+            )
     return results
 
 
@@ -781,16 +786,29 @@ def parse_SVprimitives_to_SVpatterns(
 ) -> list[SVpatternType]:
     """
     Parses Sv patterns from the SVprimitives of one consensus. All SVprimitives must have the same consensusID.
+    IMPORTANT: SVprimitives must not be sorted! They are supposed to be in read order as they were parsed in the order of alignments.
     """
     if not all(svp.consensusID == SVprimitives[0].consensusID for svp in SVprimitives):
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )
-
+    # DEBUG START
+    # if SVprimitives[0].consensusID == "2.0":
+    #     # write function input to debugging json file with structured SVpatterns
+    #     debug_file_out_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/SVpatterns/svpattern_INV_parsing.json"
+    #     with open(debug_file_out_path, "w") as debug_file_out:
+    #         json.dump(
+    #             {
+    #                 "SVprimitives": [svp.unstructure() for svp in SVprimitives]
+    #             },
+    #             debug_file_out,
+    #             indent=4,
+    #         )
     # parse primitives to simple SV types (INS, DEL, BND)
+    # DEBUG END
+
     result: list[SVpatternType] = []
 
-    # at first, separate INDELS from breakends
     indels = [svp for svp in SVprimitives if svp.sv_type <= 2]
     breakends = [svp for svp in SVprimitives if svp.sv_type > 2]
 
@@ -812,10 +830,11 @@ def parse_SVprimitives_to_SVpatterns(
         )
         for a, b, c, d in indices_inversions:
             if not (
-                    a in used_indices
-                    or b in used_indices
-                    or c in used_indices
-                    or d in used_indices):
+                a in used_indices
+                or b in used_indices
+                or c in used_indices
+                or d in used_indices
+            ):
                 result.append(
                     SVpatternInversion(
                         SVprimitives=[
