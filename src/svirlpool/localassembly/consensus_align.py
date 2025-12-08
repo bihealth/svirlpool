@@ -84,7 +84,6 @@ def svPrimitives_to_svPatterns(
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
         return []
-    _current_consensusID = SVprimitives[0].consensusID  # FIXME: unused?
 
     # Group SVprimitives by consensusID
     grouped_svprimitives = {}
@@ -650,7 +649,7 @@ def write_partitioned_alignments(
             )
 
             # Convert pysam alignment to datatypes.Alignment
-            annotations = {"qstart": qstart, "qend": qend}
+            annotations = {"qstart": qstart, "qend": qend, "qmid": (qstart + qend) // 2}
             alignment = datatypes.Alignment.from_pysam(
                 aln=pysam_aln, samplename=samplename, annotations=annotations
             )
@@ -1564,7 +1563,8 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         raise ValueError(
                             f"Alignment for consensus {consensusID} missing 'qstart' in annotations!"
                         )
-                alignments.sort(key=lambda aln: aln.annotations["qstart"])
+                alignments.sort(key=lambda aln: aln.annotations["qmid"]) # alignments need to be sorted by mid point of query sequence
+                # to have all break ends in the right order for sv pattern generation
 
                 # Get the core intervals for this consensus and create lookup by alignment index
                 core_intervals_with_idx = params.core_intervals_on_reference.get(
@@ -1607,7 +1607,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         reference_name=alignment.reference_name,
                         min_bnd_size=params.min_bnd_size,
                         min_signal_size=params.min_signal_size,
-                    )
+                    ) # sorted in order of consensus sequence
 
                     log.debug(
                         f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals"
@@ -1627,10 +1627,6 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         f"Consensus {consensusID} alignment {alignment_idx}: Generated {len(svPrimitives)} SV primitives so far"
                     )
                 # now the sv patterns can be created from the svPrimitives
-            svPrimitives = sorted(
-                svPrimitives,
-                key=lambda svp: (svp.consensusID, svp.alignment_idx, svp.read_start),
-            )
             log.debug(
                 f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences"
             )

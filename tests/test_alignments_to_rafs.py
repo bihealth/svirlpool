@@ -4,12 +4,11 @@ from gzip import open as gzopen
 from pathlib import Path
 
 import cattrs
-from pysam import AlignmentFile
+from pysam import AlignedSegment, AlignmentFile
 
-from svirlpool.localassembly.consensus import parse_ReadAlignmentSignals_from_alignment
-from svirlpool.signalprocessing.alignments_to_rafs import (
-    get_start_end,
-)
+from svirlpool.localassembly.consensus import \
+    parse_ReadAlignmentSignals_from_alignment
+from svirlpool.signalprocessing.alignments_to_rafs import get_start_end
 from svirlpool.util import util
 from svirlpool.util.datatypes import Alignment, ReadAlignmentSignals, SVsignal
 
@@ -83,7 +82,7 @@ def test_get_start_end() -> None:
 # this tests parse_SVsignals_from_alignment and get_start_end
 def test_consensus_parse_ReadAlignmentSignals_from_alignment() -> None:
     # dummy data
-    alignments: list[Alignment] = [
+    alignments: list[AlignedSegment] = [
         a.to_pysam()
         for a in load_alignments(
             DATA_DIR / "alignments_to_rafs.dummy_inversion.json.gz"
@@ -155,9 +154,10 @@ def test_consensus_parse_ReadAlignmentSignals_from_alignment() -> None:
     ]
     for res, exp in zip(results, expected, strict=True):
         assert res == exp
+    
     # real world data
     # parse pysam alignments from sam file
-    alignments = list(AlignmentFile(DATA_DIR / "real_inversion_balanced.bam", "rb"))
+    alignments = list(AlignmentFile(str(DATA_DIR / "real_inversion_balanced.bam"), "rb"))
     results = [
         parse_ReadAlignmentSignals_from_alignment(
             samplename="test", alignment=aln, min_signal_size=1000, min_bnd_size=100
@@ -166,7 +166,7 @@ def test_consensus_parse_ReadAlignmentSignals_from_alignment() -> None:
     ]
     results = sorted(results, key=lambda x: (x.read_name, x.SV_signals[0].ref_start))
     expected = [
-        ReadAlignmentSignals(
+        ReadAlignmentSignals( # A
             samplename="test",
             read_name="2.0",
             reference_name="1",
@@ -182,7 +182,7 @@ def test_consensus_parse_ReadAlignmentSignals_from_alignment() -> None:
                 )
             ],
         ),
-        ReadAlignmentSignals(
+        ReadAlignmentSignals( # B
             samplename="test",
             read_name="2.0",
             reference_name="1",
@@ -196,7 +196,7 @@ def test_consensus_parse_ReadAlignmentSignals_from_alignment() -> None:
                     size=71680,
                     sv_type=3,
                 ),  # this is correct and it makes me sleep not very well
-                SVsignal(
+                SVsignal( # C
                     ref_start=197757984,
                     ref_end=197757984,
                     read_start=44841,
@@ -206,7 +206,7 @@ def test_consensus_parse_ReadAlignmentSignals_from_alignment() -> None:
                 ),
             ],
         ),
-        ReadAlignmentSignals(
+        ReadAlignmentSignals( # D
             samplename="test",
             read_name="2.0",
             reference_name="1",

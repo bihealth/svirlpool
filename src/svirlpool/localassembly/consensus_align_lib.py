@@ -646,7 +646,7 @@ def parse_sv_signals_from_consensus(
     min_bnd_size: int = 200,
 ) -> list[datatypes.MergedSVSignal]:
     """
-    Parse SV signals from consensus alignment.
+    Parse SV signals from consensus alignment. Returned items are sorted by their position on the consensus.
     """
     # parse sv signals from alignments
     sv_signals: list[datatypes.SVsignal] = (
@@ -703,7 +703,7 @@ def parse_sv_signals_from_consensus(
                 f"merged signal {merged_signal} has no alt_sequence. All breakends need to have an alt_sequence!"
             )
 
-    return sorted(merged_sv_signals, key=lambda x: x.ref_start)
+    return sorted(merged_sv_signals, key=lambda x: x.read_start)
 
 
 # # def add_ref_sequences_to_MergedSVSignals(merged_svs:list[datatypes.MergedSVSignal], path_reference:str) -> list[datatypes.MergedSVSignal]:

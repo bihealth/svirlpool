@@ -26,7 +26,7 @@ from svirlpool.localassembly.SVprimitives import SVprimitive
 # the fiel was then gzipped -> "svpattern_INV_parsing.json.gz"
 
 
-def test_parse_SVprimitives_to_SVpatterns() -> None:
+def test_four_relations_of_group() -> None:
     # load the svPrimitives to a list from the gzipped json file
     test_data_path = (
         Path(__file__).parent / "data" / "SVpatterns" / "svpattern_INV_parsing.json.gz"
@@ -36,8 +36,20 @@ def test_parse_SVprimitives_to_SVpatterns() -> None:
     SVprimitives = cattrs.structure(data["SVprimitives"], list[SVprimitive])
     # 1) test fourrelations parsing
     breakends = [svp for svp in SVprimitives if svp.sv_type > 2]
-    fourrelations = SVpatterns.four_relations_of_group(group=breakends)
-    # it should contain at least one SVpatterns.FOURRELATIONS.INVERSION
-    assert SVpatterns.FOURRELATIONS.INVERSION in fourrelations, (
-        f"Expected at least one INVERSION in fourrelations, got {fourrelations}"
+    result = SVpatterns.four_relations_of_group(group=breakends)
+    expected = {(0, 1, 2, 3): {SVpatterns.FOURRELATIONS.INVERSION}}
+    assert expected == result, f"Expected {expected}, but got {result}"
+
+    # second test
+    test_data_path2 = (
+        Path(__file__).parent / "data" / "SVpatterns" / "svpattern_INV2_parsing.json.gz"
     )
+    with gzopen(test_data_path2, "rt") as f:
+        data2 = json.load(f)
+    SVprimitives2 = cattrs.structure(data2["SVprimitives"], list[SVprimitive])
+    # 1) test fourrelations parsing
+    breakends2 = [svp for svp in SVprimitives2 if svp.sv_type > 2]
+    result2 = SVpatterns.four_relations_of_group(group=breakends2)
+    expected2 = {(0, 1, 2, 3): {SVpatterns.FOURRELATIONS.INVERSION}}
+    assert expected2 == result2, f"Expected {expected2}, but got {result2}"
+

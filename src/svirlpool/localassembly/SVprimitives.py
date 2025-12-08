@@ -271,7 +271,7 @@ def generate_SVprimitives(
     consensus: consensus_class.Consensus,
     consensus_alignment: datatypes.Alignment,
     core_interval: tuple[str, int, int],  # chr, ref start, ref end
-    alignmentID: int,
+    alignmentID: int, # ID following alignment order
 ) -> list[SVprimitive]:
     """Generates SVprimitives for a given consensus sequence and its alignments."""
     if consensus.consensus_padding is None:

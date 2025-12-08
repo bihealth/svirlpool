@@ -3,11 +3,7 @@
 import argparse
 import os
 
-from .scripts import (
-    cut_reads_from_alns,
-    get_consensus_sequences,
-    run_wf,
-)
+from .scripts import cut_reads_from_alns, get_consensus_sequences, run_wf
 from .svcalling import multisample_sv_calling
 from .version import get_versions
 
@@ -241,8 +237,8 @@ def get_parser():
         type=str,
         nargs="+",
         required=False,
-        default=["DEL", "INS"],
-        help=f"List of structural variant types to call. Default: DEL INS. Allowed: {str(multisample_sv_calling.SUPPORTED_SV_TYPES)}.",
+        default=["DEL", "INS", "INV"],
+        help=f"List of structural variant types to call. Default: DEL INS INV. Allowed: {str(multisample_sv_calling.SUPPORTED_SV_TYPES)}.",
     )
     parser_run_sv_calling.add_argument(
         "--min-sv-size",
