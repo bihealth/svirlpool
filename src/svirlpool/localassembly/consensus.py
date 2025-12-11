@@ -2088,7 +2088,7 @@ def _get_all_read_padding_intervals(
                 min(data[cutread.name][0], cutread_description_dict["start"]),
                 max(data[cutread.name][1], cutread_description_dict["end"]),
             )
-    result: dict[str, tuple[int, int, int, int]] = {}
+    result: dict[str, tuple[int, int, int, int, bool]] = {}
     # now add the read length to each entry
     for readname, (start, end) in data.items():
         if readname in read_records:
@@ -2104,7 +2104,7 @@ def _get_all_read_padding_intervals(
 
 
 def _get_padding_sizes_per_read(
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
 ) -> dict[str, tuple[int, int]]:
     """Generates a dict[readname, (left padding size, right padding size)] for all reads in the consensus object."""
     """A padding is the sequence that overshoots the cutread alignment on the left and right side (in the orientation of the consensus)."""
@@ -2133,7 +2133,7 @@ def _get_padding_read_names_of_consensus(
 
 
 def _get_read_padding_intervals(
-    read_paddings_for_consensus: dict[str, tuple[int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_read_names_of_consensus: tuple[str, str],
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Returns the left and right intervals on the two padding reads, ignorant toward clipped bases."""
@@ -2151,7 +2151,7 @@ def _get_read_padding_intervals(
 
 def _create_padding_object(
     cons: consensus_class.Consensus,
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_sizes_per_read: dict[str, tuple[int, int]],
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
@@ -2359,8 +2359,8 @@ def process_consensus_container(
         for crID, readnames in dict_unused_read_names.items():
             for readname in readnames:
                 # get the read sequence from the alignment file
-                with pysam.AlignmentFile(path_alignments, "rb") as samfile:
-                    read_seqRecord = samfile.fetch(readname=readname)
+                with pysam.AlignmentFile(str(path_alignments), "rb") as samfile:
+                    read_seqRecord = samfile.fetch(contig=readname)
                     for read in read_seqRecord:
                         read_sequence_object = datatypes.SequenceObject(
                             id=read.query_name,

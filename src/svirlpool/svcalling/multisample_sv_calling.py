@@ -1036,7 +1036,13 @@ def generate_svComposites_from_dbs(
             database=Path(p), crIDs=crIDs_to_query
         )
 
+        # count the type of each svPattern
+        # then print the counts
+        sv_type_counts: dict[str, int] = {}
+        for svp in svPatterns:
+            sv_type_counts[svp.get_sv_type()] = sv_type_counts.get(svp.get_sv_type(), 0) + 1
         log.info(f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}")
+        log.info(f"SV type counts for sample {samplename}: {sv_type_counts}")
 
         svComposites.extend(
             svPatterns_to_horizontally_merged_svComposites(
@@ -1942,7 +1948,8 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import \
+        load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(

@@ -1757,6 +1757,17 @@ def svPatterns_from_consensus_sequences(
             f"Indexed {total_padded_seqs} padded sequences across {len(padded_sequences_index_partitioned)} partitions."
         )
 
+        # util.align_reads_with_last(
+        #     reference=input_reference,
+        #     bamout=output_consensus_to_reference_alignments,
+        #     reads=[
+        #         str(padded_sequences_paths[i])
+        #         for i in range(len(padded_sequences_paths))
+        #     ],
+        #     aln_args="-uRY4",
+        #     threads=threads,
+        # )
+
         util.align_reads_with_minimap(
             reference=input_reference,
             bamout=output_consensus_to_reference_alignments,

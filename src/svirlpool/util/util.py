@@ -229,32 +229,111 @@ def align_reads_with_minimap(
             log_handle.close()
 
 
-# def align_reads_with_minimap(
-#         reference:Path,
-#         reads:str,
-#         bamout:str,
-#         tech:str="map-ont",
-#         threads:int=3,
-#         aln_args:str="",
-#         logfile:Path|None=None) -> None:
-#     cmd_align_ = f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads}"
-#     print(f"+ {cmd_align_}", file=sys.stderr)
-#     cmd_align = shlex.split(cmd_align_)
-#     cmd_compress = shlex.split("samtools view -b")
-#     cmd_sort = shlex.split(f"samtools sort -o {bamout}")
-#     cmd_index = shlex.split(f"samtools index {bamout}")
-#     if logfile is None:
-#         logfile = Path(f"{bamout}.log")
-#     with open(logfile, "wt") as logf:
-#         #logf = open(logfile, "wt")
-#         p_align = subprocess.Popen(cmd_align, stdout=subprocess.PIPE, stderr=logf)
-#         p_compress= subprocess.Popen(cmd_compress,stdin=p_align.stdout, stdout=subprocess.PIPE, stderr=logf)
-#         p_align.stdout.close()
-#         p_sort= subprocess.Popen(cmd_sort,stdin=p_compress.stdout, stderr=logf)
-#         p_compress.stdout.close()
-#         p_sort.communicate()
-#         subprocess.call(cmd_index)
-#     #logf.close()
+def align_reads_with_last(
+    reference: Path | str,
+    reads: Path | str | list[Path | str],
+    bamout: Path | str,
+    aln_args: str = "-uRY4",
+    threads: int = 4,
+    logfile: Path | None = None,
+    timeout: float | None = None,
+    train_file: Path | None = None,
+    lastdb_prefix: Path | None = None,
+) -> None:
+    # >lastdb --help -P64 -uRY4 hs37d5.last.db hs37d5.fa
+    # >last-train -P64 -Q0 ../../../../../../references/hs37d5/hs37d5.last.db consensus.fasta > train/consensus.train
+    # >lastal -P64 --split -p train/consensus.train /data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/hs37d5.last.db consensus.fasta > consensus.maf
+    # then convert to bam with maf-convert sam
+    # 1) create header, e.g.
+    # maf-convert sam consensus.maf > new_alns.sam
+    # >samtools view -bt ref.fai new_alns.sam > new_alns.bam
+    # >samtools sort -o new_alns.sorted.bam new_alns.bam
+    # >samtools index new_alns.sorted.bam
+    
+    # Prepare reads string once
+    if isinstance(reads, list):
+        reads_str = " ".join(str(r) for r in reads)
+    else:
+        reads_str = str(reads)
+    
+    log_handle = open(logfile, "wt") if logfile else None
+    try:
+        # 1. create lastdb
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1. soft link the reference, so that the lastdb files are created in tmpdir
+            ref_link = Path(tmpdir) / "reference.fa"
+            subprocess.check_call(["ln", "-s", str(reference), str(ref_link)])
+            # and link the fasta index (.fai) as well
+            fai_link = Path(tmpdir) / "reference.fa.fai"
+            subprocess.check_call(["ln", "-s", str(reference) + ".fai", str(fai_link)])
+            
+            # now generate the lastdb
+            if lastdb_prefix is None:
+                lastdb_prefix = Path(tmpdir) / "reference.lastdb"
+                cmd_lastdb = shlex.split(f"lastdb -P{threads} {aln_args} {str(lastdb_prefix)} {ref_link}")
+                log.debug(" ".join(cmd_lastdb))
+                subprocess.check_call(cmd_lastdb, stderr=log_handle)
+            
+            # 2. train last
+            if train_file is None:
+                train_file = Path(tmpdir) / "last.train"
+                cmd_last_train = shlex.split(f"last-train -P{threads} -Q0 {str(lastdb_prefix)} {reads_str}")
+                log.debug(" ".join(cmd_last_train))
+                with open(train_file, "wt") as train_f:
+                    subprocess.check_call(cmd_last_train, stdout=train_f, stderr=log_handle)
+            
+            # 3. align with lastal and write to MAF file
+            maf_file = Path(tmpdir) / "alignments.maf"
+            cmd_lastal = shlex.split(f"lastal -P{threads} --split -p {str(train_file)} {str(lastdb_prefix)} {reads_str}")
+            log.debug(" ".join(cmd_lastal))
+            with open(maf_file, "wt") as maf_f:
+                try:
+                    subprocess.check_call(
+                        cmd_lastal,
+                        stdout=maf_f,
+                        stderr=log_handle,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    log.error("Alignment with lastal timed out...")
+                    raise TimeoutError(
+                        "Alignment with lastal timed out after the specified time limit."
+                    )
+            
+            # 4. convert MAF to SAM with maf-convert
+            sam_file = Path(tmpdir) / "alignments.sam"
+            cmd_maf_convert = shlex.split(f"maf-convert sam {str(maf_file)}")
+            log.debug(" ".join(cmd_maf_convert))
+            with open(sam_file, "wt") as sam_f:
+                subprocess.check_call(
+                    cmd_maf_convert,
+                    stdout=sam_f,
+                    stderr=log_handle,
+                )
+            
+            # 5. convert SAM to BAM with header using samtools view
+            bam_unsorted = Path(tmpdir) / "alignments.unsorted.bam"
+            cmd_view = shlex.split(f"samtools view -bt {str(reference)}.fai {str(sam_file)}")
+            log.debug(" ".join(cmd_view))
+            with open(bam_unsorted, "wb") as bam_f:
+                subprocess.check_call(
+                    cmd_view,
+                    stdout=bam_f,
+                    stderr=log_handle,
+                )
+            
+            # 6. sort BAM
+            cmd_sort = shlex.split(f"samtools sort -O BAM -o {bamout} {str(bam_unsorted)}")
+            log.debug(" ".join(cmd_sort))
+            subprocess.check_call(cmd_sort, stderr=log_handle)
+            
+            # 7. index BAM
+            log.info(f"indexing {bamout}")
+            cmd_index = shlex.split(f"samtools index {bamout}")
+            subprocess.check_call(cmd_index, stderr=log_handle)
+    finally:
+        if log_handle:
+            log_handle.close()
 
 
 def align_reads_with_ngmlr(
@@ -264,7 +343,7 @@ def align_reads_with_ngmlr(
     tech: str = "ont",
     threads: int = 3,
     aln_args: str = "",
-):
+) -> None:
     # first cat all consensus sequences into one fasta file
     cmd_cat = shlex.split("cat " + reads)
     # write to temp fasta
@@ -291,15 +370,15 @@ def align_reads_with_ngmlr(
 
 
 def align_reads_with_winnowmap(
-    reference: Path, reads: Path, bamout: Path, tech: str, rep_k15: Path = Path("")
-):
+    reference: Path, reads: Path, bamout: Path, tech: str, rep_k15: Path | None = None
+) -> None:
     if tech not in ["map-pb", "map-ont", "asm5", "asm10", "asm20"]:
         raise ValueError(f"tech must be either 'map-pb' or 'map-ont', not {tech}")
     # if no rep_k15 is provided, then it must be computed beforehand.
     # create temporary merylDB file
     tmp_merylDB = tempfile.NamedTemporaryFile(suffix=".merylDB", delete=False)
     rep_k15_file = tempfile.NamedTemporaryFile(suffix=".rep15.txt", delete=False)
-    if rep_k15 == Path(""):
+    if rep_k15 is None:
         rep_k15 = Path(rep_k15_file.name)
         cmd_k15_count = shlex.split(
             f"meryl count k=15 output {tmp_merylDB.name} {reference}"
@@ -642,10 +721,10 @@ def get_interval_on_ref_in_region(
     # find start and end position on ref
     start, end = (end, start) if a.is_reverse else (start, end)
     istart = get_read_position_on_ref(
-        alignment=a, position=start, direction=Direction.LEFT
+        alignment=a, position=start, direction=Direction.RIGHT if a.is_reverse else Direction.LEFT
     )
     iend = get_read_position_on_ref(
-        alignment=a, position=end, direction=Direction.RIGHT
+        alignment=a, position=end, direction=Direction.LEFT if a.is_reverse else Direction.RIGHT
     )
     return istart, iend
 
@@ -814,7 +893,7 @@ def seqrecord_to_dict(record):
     }
 
 
-def dict_to_seqrecord(data):
+def dict_to_seqrecord(data:dict) -> SeqRecord:
     """Reconstruct SeqRecord from dict"""
     from Bio.Seq import Seq
 
