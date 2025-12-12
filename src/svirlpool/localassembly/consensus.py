@@ -2052,7 +2052,6 @@ def create_padding_for_consensus(
     padding = _create_padding_object(
         cons=consensus_object,
         read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_sizes_per_read=padding_sizes_per_read,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
@@ -2152,7 +2151,6 @@ def _get_read_padding_intervals(
 def _create_padding_object(
     cons: consensus_class.Consensus,
     read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
-    padding_sizes_per_read: dict[str, tuple[int, int]],
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
@@ -2181,11 +2179,11 @@ def _create_padding_object(
         sequence=str(padded_consensus_sequence),
         readname_left=padding_reads[0],
         readname_right=padding_reads[1],
-        padding_size_left=padding_sizes_per_read[padding_reads[0]][0],
-        padding_size_right=padding_sizes_per_read[padding_reads[1]][1],
+        padding_size_left= len(left_padding),
+        padding_size_right=len(right_padding),
         consensus_interval_on_sequence_with_padding=(
-            padding_sizes_per_read[padding_reads[0]][0],
-            padding_sizes_per_read[padding_reads[0]][0] + len(cons.consensus_sequence),
+            len(left_padding),
+            len(padded_consensus_sequence) - len(right_padding)
         ),
     )
     return new_padding
@@ -2339,6 +2337,9 @@ def process_consensus_container(
     regions_for_cn_query = [
         (cr.chr, cr.referenceStart, cr.referenceEnd) for cr in crs_dict.values()
     ]
+    if verbose:
+        for cr in crs_dict.values():
+            print(f"CR region on ref: {cr.chr}:{cr.referenceStart}-{cr.referenceEnd}")
     max_copy_number = copynumber_tracks.query_copynumber_from_regions(
         bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
     )
@@ -2731,8 +2732,8 @@ def get_consensus_parser(
         "--buffer-clipped-sequence",
         type=int,
         required=False,
-        default=5000,
-        help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read.",
+        default=500,
+        help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read. This should never be larger than --min-cr-size in the 'svirlpool run' command.",
     )
     parser.add_argument(
         "--timeout",

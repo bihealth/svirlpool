@@ -115,7 +115,6 @@ def debug_stuff() -> None:
     padding = consensus._create_padding_object(
         cons=consensus_object1,
         read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_sizes_per_read=padding_sizes_per_read,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records1,
@@ -169,8 +168,10 @@ def debug_stuff() -> None:
     # expected = ("6", 169093104, 169093633)
 
 def test_get_read_position_on_ref_inversion11() -> None:
-    alns = DATA_DIR / "util" / "inv.11.bam"
+    alns = DATA_DIR / "consensus_class" / "inv.11.bam"
     pysam_alignments = list(pysam.AlignmentFile(alns).fetch())
+    # filter for alignments with query name "11.0"
+    pysam_alignments = [aln for aln in pysam_alignments if aln.query_name == "11.0"]
     #for each alignment, query regular positions on the read
     query_positions = list(range(0,70_000, 500))
     point_result_pairs:dict[int, list[tuple[int,int]]] = {}
