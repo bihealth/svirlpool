@@ -2031,6 +2031,32 @@ def create_padding_for_consensus(
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
 ) -> consensus_class.ConsensusPadding:
+    # DEBUG: write input to a json file to test it.
+    # consensus_object can easily be serialized with .unsutructure() and then json dumped
+    # SeqRecord objects are serialized with util.seqrecord_to_dict()
+    if consensus_object.ID in ["11.1", "11.0"]:
+        # remove letter annotations from sequences in cutreads and read_records for better readability
+        for cutread in cutreads.values():
+            cutread.letter_annotations = {}
+        for read in read_records.values():
+            read.letter_annotations = {}
+        output_path = f"/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus/consensus_padding.{consensus_object.ID}.json"
+        with open(output_path, "w") as f:
+            json.dump(
+                {
+                    "consensus_object": consensus_object.unstructure(),
+                    "cutreads": {
+                        name: util.seqrecord_to_dict(cutread)
+                        for name, cutread in cutreads.items()
+                    },
+                    "read_records": {
+                        name: util.seqrecord_to_dict(read)
+                        for name, read in read_records.items()
+                    },
+                },
+                f,
+                indent=4,
+            )
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
 
     read_paddings_for_consensus = _get_all_read_padding_intervals(
