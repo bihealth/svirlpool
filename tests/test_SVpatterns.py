@@ -52,4 +52,3 @@ def test_four_relations_of_group() -> None:
     result2 = SVpatterns.four_relations_of_group(group=breakends2)
     expected2 = {(0, 1, 2, 3): {SVpatterns.FOURRELATIONS.INVERSION}}
     assert expected2 == result2, f"Expected {expected2}, but got {result2}"
-

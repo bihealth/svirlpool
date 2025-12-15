@@ -4,10 +4,9 @@ from gzip import open as gzopen
 from pathlib import Path
 
 import cattrs
-from pysam import AlignedSegment, AlignmentFile
+from pysam import AlignedSegment
 
-from svirlpool.localassembly.consensus import \
-    parse_ReadAlignmentSignals_from_alignment
+from svirlpool.localassembly.consensus import parse_ReadAlignmentSignals_from_alignment
 from svirlpool.signalprocessing.alignments_to_rafs import get_start_end
 from svirlpool.util import util
 from svirlpool.util.datatypes import Alignment, ReadAlignmentSignals, SVsignal

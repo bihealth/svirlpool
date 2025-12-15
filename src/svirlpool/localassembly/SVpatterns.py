@@ -171,8 +171,10 @@ class SVpattern(ABC):
 class SVpatternSingleBreakend(SVpattern):
     def get_sv_type(self) -> str:
         return "BND"
+
     def get_size(self) -> int:
         return 0
+
 
 @attrs.define
 class SVpatternDeletion(SVpattern):
@@ -372,6 +374,7 @@ class SVpatternInsertion(SVpattern):
 @attrs.define
 class SVpatternInvertedTranslocation(SVpattern):
     """A translocation where both breakends are aligned to different strands."""
+
     def get_sv_type(self) -> str:
         return "TRANS-INV"
 
@@ -482,11 +485,12 @@ class SVpatternInversion(SVpattern):
         else:
             return abs(self.SVprimitives[3].ref_end - self.SVprimitives[0].ref_start)
 
+
 @attrs.define
 class SVpatternInversionDeletion(SVpattern):
     def get_sv_type(self) -> str:
         return "INV-DEL"
-    
+
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inverted deletion."""
         if len(self.SVprimitives) != 4:
@@ -496,11 +500,12 @@ class SVpatternInversionDeletion(SVpattern):
         else:
             return abs(self.SVprimitives[3].ref_end - self.SVprimitives[0].ref_start)
 
+
 @attrs.define
 class SVpatternInversionDuplication(SVpattern):
     def get_sv_type(self) -> str:
         return "INV-DUP"
-    
+
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inverted duplication."""
         if len(self.SVprimitives) != 4:
@@ -510,11 +515,12 @@ class SVpatternInversionDuplication(SVpattern):
         else:
             return abs(self.SVprimitives[3].ref_end - self.SVprimitives[0].ref_start)
 
+
 @attrs.define
 class SVpatternInversionTranslocation(SVpattern):
     def get_sv_type(self) -> str:
         return "INV-TRANS"
-    
+
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inverted translocation."""
         if len(self.SVprimitives) != 4:
@@ -534,9 +540,9 @@ SVpatternType = (
     | SVpatternSingleBreakend
     | SVpatternComplex
     | SVpatternInversion  # Balanced Inversion
-    | SVpatternInversionDeletion # Inverted Deletion
-    | SVpatternInversionDuplication # Inverted Duplication
-    | SVpatternInversionTranslocation # Inverted Translocation (4-relation HOP)
+    | SVpatternInversionDeletion  # Inverted Deletion
+    | SVpatternInversionDuplication  # Inverted Duplication
+    | SVpatternInversionTranslocation  # Inverted Translocation (4-relation HOP)
 )
 
 # endregion
@@ -550,7 +556,9 @@ class TWORELATIONS(Enum):
     INVERSION = 2  # inversions are two BNDs that have different read orientations
     TRANSLOCATION = 3  # two BNDs don't share the same chr
     OVERLAP = 4  # the alignments of the two BNDs overlap on the reference
-    REFGAP = 5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
+    REFGAP = (
+        5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
+    )
     READGAP = 6  # two BNDs are separated by a gap in the read sequence, e.g. insertions
 
     def __lt__(self, other):
@@ -675,7 +683,8 @@ def four_relations_of_group(
             if a.chr != b.chr:
                 tags.add(FOURRELATIONS.HOP)
             elif not interval_ad.overlaps(
-                min(b.ref_start, c.ref_end), max(b.ref_end, c.ref_start)):
+                min(b.ref_start, c.ref_end), max(b.ref_end, c.ref_start)
+            ):
                 tags.add(FOURRELATIONS.HOP)
         # INVERSION - reverse aln is equal between breakends a,d and b,c but not between a,b and c,d
         if (
@@ -717,7 +726,7 @@ def possible_inversions_deletions_from_BNDs(
     margin: int = 5,
 ) -> list[tuple[int, int, int, int]]:
     """Calls inverted deletions from a group of SVprimitives. The returned list of 4-tuples contains the indices of the SVprimitives that can form an inverted deletion.
-    
+
     An inverted deletion is an inversion where the inner interval (b,c) is shorter than the outer interval (a,d) by more than the margin.
     """
     if len(svps) < 4:
@@ -726,22 +735,26 @@ def possible_inversions_deletions_from_BNDs(
         raise ValueError(
             "All SVprimitives must be of type BND to call inverted deletions"
         )
-    
+
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), relations in fourrelations.items():
         if FOURRELATIONS.INVERSION not in relations:
             continue
-        
+
         svp_a, svp_b, svp_c, svp_d = svps[a], svps[b], svps[c], svps[d]
-        
+
         # Calculate intervals on the reference
-        interval_ad_size = abs(max(svp_a.ref_end, svp_d.ref_end) - min(svp_a.ref_start, svp_d.ref_start))
-        interval_bc_size = abs(max(svp_b.ref_end, svp_c.ref_end) - min(svp_b.ref_start, svp_c.ref_start))
-        
+        interval_ad_size = abs(
+            max(svp_a.ref_end, svp_d.ref_end) - min(svp_a.ref_start, svp_d.ref_start)
+        )
+        interval_bc_size = abs(
+            max(svp_b.ref_end, svp_c.ref_end) - min(svp_b.ref_start, svp_c.ref_start)
+        )
+
         # Check if interval (b,c) is shorter than (a,d) by more than margin
         if interval_bc_size < interval_ad_size - margin:
             results.append((a, b, c, d))
-    
+
     return results
 
 
@@ -751,7 +764,7 @@ def possible_inversions_duplications_from_BNDs(
     margin: int = 5,
 ) -> list[tuple[int, int, int, int]]:
     """Calls inverted duplications from a group of SVprimitives. The returned list of 4-tuples contains the indices of the SVprimitives that can form an inverted duplication.
-    
+
     An inverted duplication is an inversion where the inner interval (b,c) is longer than the outer interval (a,d) by more than the margin AND there is no HOP.
     """
     if len(svps) < 4:
@@ -760,24 +773,28 @@ def possible_inversions_duplications_from_BNDs(
         raise ValueError(
             "All SVprimitives must be of type BND to call inverted duplications"
         )
-    
+
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), relations in fourrelations.items():
         if FOURRELATIONS.INVERSION not in relations:
             continue
         if FOURRELATIONS.HOP in relations:
             continue
-        
+
         svp_a, svp_b, svp_c, svp_d = svps[a], svps[b], svps[c], svps[d]
-        
+
         # Calculate intervals on the reference
-        interval_ad_size = abs(max(svp_a.ref_end, svp_d.ref_end) - min(svp_a.ref_start, svp_d.ref_start))
-        interval_bc_size = abs(max(svp_b.ref_end, svp_c.ref_end) - min(svp_b.ref_start, svp_c.ref_start))
-        
+        interval_ad_size = abs(
+            max(svp_a.ref_end, svp_d.ref_end) - min(svp_a.ref_start, svp_d.ref_start)
+        )
+        interval_bc_size = abs(
+            max(svp_b.ref_end, svp_c.ref_end) - min(svp_b.ref_start, svp_c.ref_start)
+        )
+
         # Check if interval (b,c) is longer than (a,d) by more than margin
         if interval_bc_size > interval_ad_size + margin:
             results.append((a, b, c, d))
-    
+
     return results
 
 
@@ -786,7 +803,7 @@ def possible_inversions_translocations_from_BNDs(
     fourrelations: dict[tuple[int, int, int, int], set[FOURRELATIONS]],
 ) -> list[tuple[int, int, int, int]]:
     """Calls inverted translocations from a group of SVprimitives. The returned list of 4-tuples contains the indices of the SVprimitives that can form an inverted translocation.
-    
+
     An inverted translocation is an inversion where there is a HOP (the middle segment is translocated).
     """
     if len(svps) < 4:
@@ -795,15 +812,13 @@ def possible_inversions_translocations_from_BNDs(
         raise ValueError(
             "All SVprimitives must be of type BND to call inverted translocations"
         )
-    
+
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), relations in fourrelations.items():
         if FOURRELATIONS.INVERSION in relations and FOURRELATIONS.HOP in relations:
             results.append((a, b, c, d))
-    
+
     return results
-
-
 
 
 def possible_insertions_from_BNDs(
@@ -913,7 +928,7 @@ def parse_SVprimitives_to_SVpatterns(
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )
-    #DEBUG START
+    # DEBUG START
     # if SVprimitives[0].consensusID == "4.0":
     #     # write function input to debugging json file with structured SVpatterns
     #     debug_file_out_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/SVpatterns/svpattern_INV2_parsing.json"
@@ -925,7 +940,7 @@ def parse_SVprimitives_to_SVpatterns(
     #             debug_file_out,
     #             indent=4,
     #         )
-    #parse primitives to simple SV types (INS, DEL, BND)
+    # parse primitives to simple SV types (INS, DEL, BND)
     # DEBUG END
 
     result: list[SVpatternType] = []
@@ -947,29 +962,33 @@ def parse_SVprimitives_to_SVpatterns(
     # 4-relations based parsing for inversions and complex SVs
     if len(breakends) == 4:
         fourrelations = four_relations_of_group(group=breakends)
-        
+
         checks = [
             (possible_inversions_deletions_from_BNDs, SVpatternInversionDeletion),
             (possible_inversions_duplications_from_BNDs, SVpatternInversionDuplication),
-            (possible_inversions_translocations_from_BNDs, SVpatternInversionTranslocation),
-            (possible_inversions_from_BNDs, SVpatternInversion)]
-        
+            (
+                possible_inversions_translocations_from_BNDs,
+                SVpatternInversionTranslocation,
+            ),
+            (possible_inversions_from_BNDs, SVpatternInversion),
+        ]
+
         for check, pattern_class in checks:
             # early stop if not more than 4 unsused breakends are left
             if len(used_indices) + 4 > len(breakends):
                 break
             indices = check(svps=breakends, fourrelations=fourrelations)
-            for a,b,c,d in indices:
+            for a, b, c, d in indices:
                 if not (
-                         a in used_indices
-                      or b in used_indices
-                      or c in used_indices
-                      or d in used_indices
-                 ):
+                    a in used_indices
+                    or b in used_indices
+                    or c in used_indices
+                    or d in used_indices
+                ):
                     bnds = [breakends[i] for i in (a, b, c, d)]
                     result.append(pattern_class(SVprimitives=bnds))
                     used_indices.update({a, b, c, d})
-    
+
     # 2-realtions based parsing for insertions, deletions, translocations
     if len(breakends) >= 2 and len(used_indices) < len(breakends):
         tworelations = two_relations_of_group(
@@ -1201,19 +1220,28 @@ def _unstructure_svpattern_complex(obj):
 def _unstructure_svpattern_inversion_deletion(obj):
     base_converter = cattrs.Converter()
     base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {"type": "SVpatternInversionDeletion", "data": base_converter.unstructure(obj)}
+    return {
+        "type": "SVpatternInversionDeletion",
+        "data": base_converter.unstructure(obj),
+    }
 
 
 def _unstructure_svpattern_inversion_duplication(obj):
     base_converter = cattrs.Converter()
     base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {"type": "SVpatternInversionDuplication", "data": base_converter.unstructure(obj)}
+    return {
+        "type": "SVpatternInversionDuplication",
+        "data": base_converter.unstructure(obj),
+    }
 
 
 def _unstructure_svpattern_inversion_translocation(obj):
     base_converter = cattrs.Converter()
     base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {"type": "SVpatternInversionTranslocation", "data": base_converter.unstructure(obj)}
+    return {
+        "type": "SVpatternInversionTranslocation",
+        "data": base_converter.unstructure(obj),
+    }
 
 
 converter.register_unstructure_hook(

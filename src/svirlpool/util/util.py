@@ -249,13 +249,13 @@ def align_reads_with_last(
     # >samtools view -bt ref.fai new_alns.sam > new_alns.bam
     # >samtools sort -o new_alns.sorted.bam new_alns.bam
     # >samtools index new_alns.sorted.bam
-    
+
     # Prepare reads string once
     if isinstance(reads, list):
         reads_str = " ".join(str(r) for r in reads)
     else:
         reads_str = str(reads)
-    
+
     log_handle = open(logfile, "wt") if logfile else None
     try:
         # 1. create lastdb
@@ -266,25 +266,33 @@ def align_reads_with_last(
             # and link the fasta index (.fai) as well
             fai_link = Path(tmpdir) / "reference.fa.fai"
             subprocess.check_call(["ln", "-s", str(reference) + ".fai", str(fai_link)])
-            
+
             # now generate the lastdb
             if lastdb_prefix is None:
                 lastdb_prefix = Path(tmpdir) / "reference.lastdb"
-                cmd_lastdb = shlex.split(f"lastdb -P{threads} {aln_args} {str(lastdb_prefix)} {ref_link}")
+                cmd_lastdb = shlex.split(
+                    f"lastdb -P{threads} {aln_args} {str(lastdb_prefix)} {ref_link}"
+                )
                 log.debug(" ".join(cmd_lastdb))
                 subprocess.check_call(cmd_lastdb, stderr=log_handle)
-            
+
             # 2. train last
             if train_file is None:
                 train_file = Path(tmpdir) / "last.train"
-                cmd_last_train = shlex.split(f"last-train -P{threads} -Q0 {str(lastdb_prefix)} {reads_str}")
+                cmd_last_train = shlex.split(
+                    f"last-train -P{threads} -Q0 {str(lastdb_prefix)} {reads_str}"
+                )
                 log.debug(" ".join(cmd_last_train))
                 with open(train_file, "wt") as train_f:
-                    subprocess.check_call(cmd_last_train, stdout=train_f, stderr=log_handle)
-            
+                    subprocess.check_call(
+                        cmd_last_train, stdout=train_f, stderr=log_handle
+                    )
+
             # 3. align with lastal and write to MAF file
             maf_file = Path(tmpdir) / "alignments.maf"
-            cmd_lastal = shlex.split(f"lastal -P{threads} --split -p {str(train_file)} {str(lastdb_prefix)} {reads_str}")
+            cmd_lastal = shlex.split(
+                f"lastal -P{threads} --split -p {str(train_file)} {str(lastdb_prefix)} {reads_str}"
+            )
             log.debug(" ".join(cmd_lastal))
             with open(maf_file, "wt") as maf_f:
                 try:
@@ -299,7 +307,7 @@ def align_reads_with_last(
                     raise TimeoutError(
                         "Alignment with lastal timed out after the specified time limit."
                     )
-            
+
             # 4. convert MAF to SAM with maf-convert
             sam_file = Path(tmpdir) / "alignments.sam"
             cmd_maf_convert = shlex.split(f"maf-convert sam {str(maf_file)}")
@@ -310,10 +318,12 @@ def align_reads_with_last(
                     stdout=sam_f,
                     stderr=log_handle,
                 )
-            
+
             # 5. convert SAM to BAM with header using samtools view
             bam_unsorted = Path(tmpdir) / "alignments.unsorted.bam"
-            cmd_view = shlex.split(f"samtools view -bt {str(reference)}.fai {str(sam_file)}")
+            cmd_view = shlex.split(
+                f"samtools view -bt {str(reference)}.fai {str(sam_file)}"
+            )
             log.debug(" ".join(cmd_view))
             with open(bam_unsorted, "wb") as bam_f:
                 subprocess.check_call(
@@ -321,12 +331,14 @@ def align_reads_with_last(
                     stdout=bam_f,
                     stderr=log_handle,
                 )
-            
+
             # 6. sort BAM
-            cmd_sort = shlex.split(f"samtools sort -O BAM -o {bamout} {str(bam_unsorted)}")
+            cmd_sort = shlex.split(
+                f"samtools sort -O BAM -o {bamout} {str(bam_unsorted)}"
+            )
             log.debug(" ".join(cmd_sort))
             subprocess.check_call(cmd_sort, stderr=log_handle)
-            
+
             # 7. index BAM
             log.info(f"indexing {bamout}")
             cmd_index = shlex.split(f"samtools index {bamout}")
@@ -723,9 +735,7 @@ def get_interval_on_ref_in_region(
     istart = get_read_position_on_ref(
         alignment=a, position=start, direction=Direction.NONE
     )
-    iend = get_read_position_on_ref(
-        alignment=a, position=end, direction=Direction.NONE
-    )
+    iend = get_read_position_on_ref(alignment=a, position=end, direction=Direction.NONE)
     return istart, iend
 
 
@@ -893,7 +903,7 @@ def seqrecord_to_dict(record):
     }
 
 
-def dict_to_seqrecord(data:dict) -> SeqRecord:
+def dict_to_seqrecord(data: dict) -> SeqRecord:
     """Reconstruct SeqRecord from dict"""
     from Bio.Seq import Seq
 

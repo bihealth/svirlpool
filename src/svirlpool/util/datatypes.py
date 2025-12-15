@@ -382,7 +382,6 @@ class Alignment:
         ))
 
 
-
 # used to merge sv signals in case they are on the same repeat
 # all sv signals can be merged to merged_sv_signalsrepeat
 # singleton objects: with only one original signal and no repeatID
@@ -414,4 +413,3 @@ class MergedSVSignal(SVsignal):
             return "".join(self.original_ref_sequences)[: self.size]
         else:
             return "".join(self.original_ref_sequences)
-

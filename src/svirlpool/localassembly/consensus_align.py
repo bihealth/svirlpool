@@ -1563,7 +1563,9 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         raise ValueError(
                             f"Alignment for consensus {consensusID} missing 'qstart' in annotations!"
                         )
-                alignments.sort(key=lambda aln: aln.annotations["qmid"]) # alignments need to be sorted by mid point of query sequence
+                alignments.sort(
+                    key=lambda aln: aln.annotations["qmid"]
+                )  # alignments need to be sorted by mid point of query sequence
                 # to have all break ends in the right order for sv pattern generation
 
                 # Get the core intervals for this consensus and create lookup by alignment index
@@ -1607,7 +1609,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         reference_name=alignment.reference_name,
                         min_bnd_size=params.min_bnd_size,
                         min_signal_size=params.min_signal_size,
-                    ) # sorted in order of consensus sequence
+                    )  # sorted in order of consensus sequence
 
                     log.debug(
                         f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals"
