@@ -453,8 +453,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/dc/93/b69052907d032b00c40cb656d21438ec00b3a471733de137a3f65a49a0a0/pyright-1.1.407-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0b/8b/6300fb80f858cda1c51ffa17075df5d846757081d11ab4aa35cef9e6258b/pytest-9.0.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/ee/49/1377b49de7d0c1ce41292161ea0f721913fa8722c19fb9c1e3aa0367eecb/pytest_cov-7.0.0-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/71/9b/7b4700c462628e169bd859c6368d596a6aedc87936bde733bead9f875fce/pytest_cover-3.0.0-py2.py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/5b/4b/d95b052f87db89a2383233c0754c45f6d3b427b7a4bcb771ac9316a6fae1/pytest_coverage-0.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/cc/06253936f4a7fa2e0f48dfe6d851d9c56df896a9ab09ac019d70b760619c/pytest_mock-3.15.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/87/d5/81d38a91c1fdafb6711f053f5a9b92ff788013b19821257c2c38c1e132df/pytest_sugar-1.1.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl
@@ -3337,18 +3335,6 @@ packages:
   - pytest-xdist ; extra == 'testing'
   - virtualenv ; extra == 'testing'
   requires_python: '>=3.9'
-- pypi: https://files.pythonhosted.org/packages/71/9b/7b4700c462628e169bd859c6368d596a6aedc87936bde733bead9f875fce/pytest_cover-3.0.0-py2.py3-none-any.whl
-  name: pytest-cover
-  version: 3.0.0
-  sha256: 578249955eb3b5f3991209df6e532bb770b647743b7392d3d97698dc02f39ebb
-  requires_dist:
-  - pytest-cov>=2.0
-- pypi: https://files.pythonhosted.org/packages/5b/4b/d95b052f87db89a2383233c0754c45f6d3b427b7a4bcb771ac9316a6fae1/pytest_coverage-0.0-py2.py3-none-any.whl
-  name: pytest-coverage
-  version: '0.0'
-  sha256: dedd084c5e74d8e669355325916dc011539b190355021b037242514dee546368
-  requires_dist:
-  - pytest-cover
 - pypi: https://files.pythonhosted.org/packages/5a/cc/06253936f4a7fa2e0f48dfe6d851d9c56df896a9ab09ac019d70b760619c/pytest_mock-3.15.1-py3-none-any.whl
   name: pytest-mock
   version: 3.15.1
@@ -3913,7 +3899,7 @@ packages:
 - pypi: ./
   name: svirlpool
   version: 0.1.0
-  sha256: f2a2177f8a3255b225085a7b22392961c03b5e42230ee679ca4211e023eae146
+  sha256: 417e1242ee2f5eb106e774e35ad2da57af788ba2a0166f78896107346bf76a1c
   requires_dist:
   - numpy>=2.3.4,<3
   - pandas>=2.3.3,<3

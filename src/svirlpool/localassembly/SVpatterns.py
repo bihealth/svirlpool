@@ -36,12 +36,17 @@ class SVpattern(ABC):
         if not self.SVprimitives or len(self.SVprimitives) == 0:
             raise ValueError("SVpattern must contain at least one SVprimitive")
 
+    @classmethod
     @abstractmethod
-    def get_sv_type(self) -> str:
+    def get_sv_type(cls) -> str:
         pass
 
     @abstractmethod
     def get_size(self) -> int:
+        pass
+
+    @abstractmethod
+    def get_reference_region(self) -> tuple[str, int, int]:
         pass
 
     @property
@@ -167,13 +172,28 @@ class SVpattern(ABC):
         return regions
 
 
+def _get_first_svp_on_reference_start_pos(svp:SVpattern) -> tuple[str,int,int]:
+    # pick first of SVpatterns after sorting them by chr, start
+    _svps = sorted(svp.SVprimitives, key=lambda svp: (svp.chr, svp.ref_start))
+    chr = _svps[0].chr
+    start = _svps[0].ref_start
+    end = _svps[-1].ref_end
+    return (chr, min(start, end), max(start, end))
+
 @attrs.define
 class SVpatternSingleBreakend(SVpattern):
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "BND"
 
     def get_size(self) -> int:
         return 0
+
+    def get_reference_region(self) -> tuple[str, int, int]:
+        chr = self.SVprimitives[0].chr
+        start = self.SVprimitives[0].ref_start
+        end = self.SVprimitives[0].ref_end
+        return (chr, min(start, end), max(start, end))
 
 
 @attrs.define
@@ -181,7 +201,8 @@ class SVpatternDeletion(SVpattern):
     deleted_sequence: bytes | None = None
     sequence_complexity: bytes | None = None  # Pickled numpy array of float32
 
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "DEL"
 
     def is_inter_alignment(self) -> bool:
@@ -270,7 +291,8 @@ class SVpatternInsertion(SVpattern):
     inserted_sequence: bytes | None = None
     sequence_complexity: bytes | None = None  # Pickled numpy array of float32
 
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "INS"
 
     def set_sequence(
@@ -375,31 +397,44 @@ class SVpatternInsertion(SVpattern):
 class SVpatternInvertedTranslocation(SVpattern):
     """A translocation where both breakends are aligned to different strands."""
 
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "TRANS-INV"
 
     def get_size(self) -> int:
         """Returns the size of the inverted translocation."""
         return abs(self.SVprimitives[-1].read_end - self.SVprimitives[0].read_start)
 
+    def get_reference_region(self) -> tuple[str, int, int]:
+        return _get_first_svp_on_reference_start_pos(self)
+
 
 @attrs.define
 class SVpatternTranslocation(SVpattern):
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "TRANS"
 
     def get_size(self) -> int:
         return abs(self.SVprimitives[-1].read_start - self.SVprimitives[0].read_end)
 
+    def get_reference_region(self) -> tuple[str, int, int]:
+        return _get_first_svp_on_reference_start_pos(self)
+
 
 @attrs.define
 class SVpatternComplex(SVpattern):
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "CPX"
 
     def get_size(self) -> int:
         """Returns the size of the complex SV re-arrangement."""
         return abs(self.SVprimitives[-1].read_end - self.SVprimitives[0].read_start)
+
+    def get_reference_region(self) -> tuple[str, int, int]:
+        return _get_first_svp_on_reference_start_pos(self)
+
 
 
 @attrs.define
@@ -407,7 +442,8 @@ class SVpatternInversion(SVpattern):
     inserted_sequence: bytes | None = None
     sequence_complexity: bytes | None = None  # Pickled numpy array of float32
 
-    def get_sv_type(self) -> str:
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "INV"
 
     def set_sequence(
@@ -469,8 +505,9 @@ class SVpatternInversion(SVpattern):
         )  # this applies to bot a single insertion or a bnd->insertion
         return consensus.consensus_sequence[s:e]
 
+    # alway return the inner region of the inversion
     def get_reference_region(self) -> tuple[str, int, int]:
-        chr = self.SVprimitives[0].chr
+        chr = self.SVprimitives[1].chr
         start = self.SVprimitives[1].ref_start
         end = self.SVprimitives[2].ref_start
         start, end = (end, start) if start > end else (start, end)
@@ -487,48 +524,37 @@ class SVpatternInversion(SVpattern):
 
 
 @attrs.define
-class SVpatternInversionDeletion(SVpattern):
-    def get_sv_type(self) -> str:
+class SVpatternInversionDeletion(SVpatternInversion):
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "INV-DEL"
+    def get_size(self, inner: bool = False) -> int:
+        """Returns the size of the inverted deletion."""
+        return super().get_size(inner=inner)
 
+@attrs.define
+class SVpatternInversionDuplication(SVpatternInversion):
+    @classmethod
+    def get_sv_type(cls) -> str:
+        return "INV-DUP"
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inverted deletion."""
-        if len(self.SVprimitives) != 4:
-            raise ValueError("Inverted deletion must have 4 primitives")
-        if inner:
-            return abs(self.SVprimitives[2].ref_start - self.SVprimitives[1].ref_start)
-        else:
-            return abs(self.SVprimitives[3].ref_end - self.SVprimitives[0].ref_start)
-
+        return super().get_size(inner=inner)
 
 @attrs.define
-class SVpatternInversionDuplication(SVpattern):
-    def get_sv_type(self) -> str:
-        return "INV-DUP"
-
-    def get_size(self, inner: bool = True) -> int:
-        """Returns the size of the inverted duplication."""
-        if len(self.SVprimitives) != 4:
-            raise ValueError("Inverted duplication must have 4 primitives")
-        if inner:
-            return abs(self.SVprimitives[2].ref_start - self.SVprimitives[1].ref_start)
-        else:
-            return abs(self.SVprimitives[3].ref_end - self.SVprimitives[0].ref_start)
-
-
-@attrs.define
-class SVpatternInversionTranslocation(SVpattern):
-    def get_sv_type(self) -> str:
+class SVpatternInversionTranslocation(SVpatternInversion):
+    @classmethod
+    def get_sv_type(cls) -> str:
         return "INV-TRANS"
 
     def get_size(self, inner: bool = True) -> int:
-        """Returns the size of the inverted translocation."""
-        if len(self.SVprimitives) != 4:
-            raise ValueError("Inverted translocation must have 4 primitives")
-        if inner:
-            return abs(self.SVprimitives[2].ref_end - self.SVprimitives[1].ref_start)
-        else:
-            return abs(self.SVprimitives[3].ref_end - self.SVprimitives[0].ref_start)
+        """Returns the size of the inverted alignment on the reference,
+        which is super's get_size(inner=true)"""
+        if not inner:
+            raise ValueError(
+                "Inverted Translocation size can only be calculated for inner region."
+            )
+        return super().get_size(inner=True)
 
 
 # Use Union for better type hints
@@ -556,9 +582,7 @@ class TWORELATIONS(Enum):
     INVERSION = 2  # inversions are two BNDs that have different read orientations
     TRANSLOCATION = 3  # two BNDs don't share the same chr
     OVERLAP = 4  # the alignments of the two BNDs overlap on the reference
-    REFGAP = (
-        5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
-    )
+    REFGAP = 5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
     READGAP = 6  # two BNDs are separated by a gap in the read sequence, e.g. insertions
 
     def __lt__(self, other):

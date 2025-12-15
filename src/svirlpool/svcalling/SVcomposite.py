@@ -8,15 +8,14 @@ from intervaltree import IntervalTree  # type: ignore
 from xxhash import xxh64
 
 from ..localassembly import SVpatterns
-
-# from .datatypes import SV_TYPE_DICT
+from ..svcalling.multisample_sv_calling import SUPPORTED_SV_TYPES
 
 
 @attrs.define
 class SVcomposite:
     """Composite structural variant from one or more consensus sequences (across samples), built from one or more SVpattern instances."""
 
-    sv_type: str
+    sv_type: type[SVpatterns.SVpatternType]
     svPatterns: list[SVpatterns.SVpatternType]
 
     def __attrs_post_init__(self):
@@ -45,7 +44,7 @@ class SVcomposite:
     @classmethod
     def from_SVpattern(cls, svPattern: SVpatterns.SVpatternType) -> SVcomposite:
         """Build a composite from a single SVpattern, inferring the sv_type."""
-        return cls(sv_type=svPattern.get_sv_type(), svPatterns=[svPattern])
+        return cls(sv_type=type(svPattern), svPatterns=[svPattern])
 
     @classmethod
     def from_SVpatterns(cls, svPatterns: list[SVpatterns.SVpatternType]) -> SVcomposite:
@@ -54,25 +53,25 @@ class SVcomposite:
             raise ValueError("Must provide at least one SVpattern")
         # if the sv types of the SVpatterns are INS and DEL, compute the total number of insertions and deletions, where its abs(ins - del)
         if len(svPatterns) == 1:
-            return cls(sv_type=svPatterns[0].get_sv_type(), svPatterns=svPatterns)
-        sv_type = svPatterns[0].get_sv_type()
-        all_sv_types = {sv.get_sv_type() for sv in svPatterns}
+            return cls(sv_type=type(svPatterns[0]), svPatterns=svPatterns)
+        sv_type = type(svPatterns[0])
+        all_sv_types = {type(sv) for sv in svPatterns}
         # re-calculate the SV size of horizontally merged INS+DEL runs
         if all_sv_types == {
-            "INS",
-            "DEL",
+            SVpatterns.SVpatternInsertion,
+            SVpatterns.SVpatternDeletion,
         }:  # compositions of INS and DEL can occur, e.g. in tandem repeats
             ins_count = sum(
-                sv.get_size() for sv in svPatterns if sv.get_sv_type() == "INS"
+                sv.get_size() for sv in svPatterns if isinstance(sv, SVpatterns.SVpatternInsertion)
             )
             del_count = sum(
-                sv.get_size() for sv in svPatterns if sv.get_sv_type() == "DEL"
+                sv.get_size() for sv in svPatterns if isinstance(sv, SVpatterns.SVpatternDeletion)
             )
             inserted_bases = ins_count - del_count
             if inserted_bases > 0:
-                sv_type = "INS"
+                sv_type = SVpatterns.SVpatternInsertion
             else:
-                sv_type = "DEL"
+                sv_type = SVpatterns.SVpatternDeletion
 
         return cls(sv_type=sv_type, svPatterns=svPatterns)
 
@@ -109,6 +108,7 @@ class SVcomposite:
         return [
             int(size)
             for svp in self.svPatterns
+            if svp.size_distortions is not None
             for size in svp.size_distortions.values()
         ]
 
@@ -144,58 +144,48 @@ class SVcomposite:
         return alt_readnames
 
     def get_size(self) -> int:
-        if self.sv_type in ("INS", "DEL", "INV"):
-            # Group SVpatterns by (samplename, consensusID) - same logic as get_alt_sequence
-            groups = {}
-            for svPattern in self.svPatterns:
-                key = (svPattern.samplename, svPattern.consensusID)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(svPattern)
+        # Group SVpatterns by (samplename, consensusID) - same logic as get_alt_sequence
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
 
-            if not groups:
-                return 0
+        if not groups:
+            return 0
 
-            # Find the group with maximum supporting unique reads - same logic as get_alt_sequence
-            best_group = None
-            max_supporting_reads = 0
+        # Find the group with maximum supporting unique reads - same logic as get_alt_sequence
+        best_group = None
+        max_supporting_reads = 0
 
-            for group_patterns in groups.values():
-                # Get all unique supporting reads from this group
-                all_supporting_reads = set()
-                for svPattern in group_patterns:
-                    all_supporting_reads.update(svPattern.get_supporting_reads())
+        for group_patterns in groups.values():
+            # Get all unique supporting reads from this group
+            all_supporting_reads = set()
+            for svPattern in group_patterns:
+                all_supporting_reads.update(svPattern.get_supporting_reads())
 
-                if len(all_supporting_reads) > max_supporting_reads:
-                    max_supporting_reads = len(all_supporting_reads)
-                    best_group = group_patterns
+            if len(all_supporting_reads) > max_supporting_reads:
+                max_supporting_reads = len(all_supporting_reads)
+                best_group = group_patterns
 
-            if best_group is None:
-                return 0
+        if best_group is None:
+            return 0
 
-            # Calculate summed size from the best group only
-            summed_bp = 0
-            for svPattern in best_group:
-                value = svPattern.get_size()
-                if svPattern.get_sv_type() == "INS":
-                    summed_bp += value
-                elif svPattern.get_sv_type() == "DEL":
-                    summed_bp -= value
-                elif svPattern.get_sv_type() == "INV":
-                    summed_bp += value
-                else:
-                    raise ValueError(
-                        f"Unexpected SV type {svPattern.get_sv_type()} in SVcomposite {self}"
-                    )
+        # Calculate summed size from the best group only
+        summed_bp = 0
+        for svPattern in best_group:
+            value = svPattern.get_size()
+            if isinstance(svPattern, SVpatterns.SVpatternDeletion):
+                summed_bp -= value
+            else:
+                summed_bp += value
 
-            return abs(summed_bp)  # Return absolute value for size
-        else:
-            raise ValueError(
-                f"SVcomposite.get_size() called on SVcomposite with sv_type {self.sv_type}, which is not supported. Only INS,DEL,INV are supported right now."
-            )
+        return abs(summed_bp)  # Return absolute value for size
+
 
     def get_alt_sequence(self) -> str:
-        if self.sv_type in ("INS", "INV"):
+        if self.sv_type in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternInversion, SVpatterns.SVpatternInversionDeletion, SVpatterns.SVpatternInversionDuplication, SVpatterns.SVpatternInversionTranslocation):
             # Group SVpatterns by (samplename, consensusID)
             groups = {}
             for svPattern in self.svPatterns:
@@ -241,11 +231,11 @@ class SVcomposite:
             return concatenated_sequence[:size] if size > 0 else ""
         else:
             raise ValueError(
-                f"get_alt_sequence called on SVcomposite with sv_type {self.sv_type}, which is not supported. Only INS,INV are supported."
+                f"get_alt_sequence called on SVcomposite with sv_type {self.sv_type.__name__}, which is not supported. Only INS,INV and related inversion types are supported."
             )
 
     def get_ref_sequence(self) -> str:
-        if self.sv_type == "DEL":
+        if self.sv_type == SVpatterns.SVpatternDeletion:
             # Group SVpatterns by (samplename, consensusID)
             groups = {}
             for svPattern in self.svPatterns:
@@ -287,10 +277,10 @@ class SVcomposite:
                 # Add other pattern types as needed
 
             size = self.get_size()
-            return concatenated_sequence[:size] if size > 0 else ""
+            return concatenated_sequence[:size] if size > 0 else "" 
         else:
             raise ValueError(
-                f"get_ref_sequence called on SVcomposite with sv_type {self.sv_type}, which is not supported. Only DEL is supported."
+                f"get_ref_sequence called on SVcomposite with sv_type {self.sv_type.__name__}, which is not supported. Only DEL is supported."
             )
 
     def overlaps_any(self, other: SVcomposite, tolerance_radius: int = 50) -> bool:

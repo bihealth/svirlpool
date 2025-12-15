@@ -4,6 +4,7 @@ from gzip import open as gzopen
 from pathlib import Path
 
 import cattrs
+import pytest
 from pysam import AlignmentFile
 
 from svirlpool.localassembly import consensus_class
@@ -76,12 +77,12 @@ def test_get_interval_on_ref_in_region():
 
 def test_get_consensus_core_alignment_interval_on_reference_inv():
     # test 11.0 and 11.1
-    alignments_path = DATA_DIR / "consensus_class" / "inv.11.bam"
-    try:
-        alignments = list(AlignmentFile(str(alignments_path)).fetch())
-    except Exception as e:
-        raise RuntimeError(f"Error loading alignments from {alignments_path}: {e}")
-    # test 11.0
+    alignments_path = DATA_DIR / "consensus_class" / "inv.11.alignments.json.gz"
+
+    alignments = [aln.to_pysam() for aln in load_alignments(
+        alignments_path
+    )]
+
     alignments_110 = [aln for aln in alignments if aln.query_name == "11.0"]
 
     cons1 = load_test_data("INV.110.consensus.json.gz")
@@ -120,3 +121,4 @@ def test_get_consensus_core_alignment_interval_on_reference_inv():
 
     for i, res in results2.items():
         assert res == expected2[i], f"Alignment {i}: got {res}, expected {expected2[i]}"
+
