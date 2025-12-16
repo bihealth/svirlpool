@@ -239,8 +239,16 @@ def add_reference_sequence_to_svPatterns(
                 if region_key in regions:
                     for svp in regions[region_key]:
                         x = deepcopy(svp)
-                        if x.get_sv_type() == "DEL":
+                        if type(x) is SVpatterns.SVpatternDeletion:
                             x.set_sequence(str(record.seq))
+                        elif type(x) in (SVpatterns.SVpatternInversion,
+                                        SVpatterns.SVpatternInversionDuplication,
+                                        SVpatterns.SVpatternInversionDeletion,
+                                        SVpatterns.SVpatternInversionTranslocation):
+                            x.set_deleted_sequence(sequence=str(record.seq),write_complexity=False)
+                        else:
+                            raise ValueError(
+                                f"SVpattern type {type(x)} not supported for reference sequence assignment. This should not happen. Please check the input data.")
                         output.append(x)  # append the modified copy
                         svp = None  # remove reference to original to free memory
                     regions[region_key].clear()
@@ -855,6 +863,8 @@ def _process_alignment_file_for_core_intervals(
                         consensus=consensus_obj, alignment=pysam_aln
                     )
                 )
+                # TODO: not all consensus intervals are present for 7.0. Since its a joint region (7.0 and 8.0),
+                # meybe only overlaps with 7.0 are parsed?
 
                 # Skip alignments that don't overlap with the core
                 if core_start_on_ref == core_end_on_ref:
@@ -1519,7 +1529,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
     import sys
 
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format=f"[Worker {params.partition_index}] %(levelname)s - %(message)s",
         stream=sys.stderr,
         force=True,
@@ -1557,6 +1567,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     index_partition=params.alignments_index_partition,
                     alignments_path=params.padded_alignments_path,
                 )
+                         
                 # sort alignments by alignment.annotations.qstart
                 for aln in alignments:
                     if aln.annotations is None or "qstart" not in aln.annotations:
@@ -1582,9 +1593,8 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                 ):  # alignment_idx order on consensus sequence!
                     # Match by alignment index
                     if alignment_idx not in core_interval_by_idx:
-                        log.warning(
-                            f"No core interval found for alignment {alignment_idx} of {consensusID}"
-                        )
+                        log.debug(
+                            f"No core interval found for alignment {alignment_idx} of {consensusID}. Intervals available: {core_intervals_with_idx}")
                         continue
 
                     # Filter trf intervals to those overlapping with this alignment's reference
@@ -1614,6 +1624,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     log.debug(
                         f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals"
                     )
+                    
                     # now SV signals are parsed for this alignment
                     svPrimitives.extend(
                         SVprimitives.generate_SVprimitives(
@@ -1822,8 +1833,6 @@ def svPatterns_from_consensus_sequences(
             threads=threads,
             batch_size=100,
         )
-        log.debug("Core intervals on reference by partition:")
-        log.debug(core_intervals_on_reference_partitioned)
         # now we need to find the intersecting trf intervals for each core interval on reference
         # Find TRF overlaps for all core intervals in parallel using bedtools
         trf_overlaps_on_reference_partitioned: dict[
@@ -1973,8 +1982,8 @@ def get_parser():
     parser.add_argument(
         "--min-bnd-size",
         type=int,
-        default=200,
-        help="Minimum size of BND signal to consider (default: 200).",
+        default=50,
+        help="Minimum size of BND signal to consider (default: 50).",
     )
     parser.add_argument(
         "--max-del-size",

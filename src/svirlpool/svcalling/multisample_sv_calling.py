@@ -31,22 +31,24 @@ from .SVcomposite import SVcomposite
 
 log = logging.getLogger(__name__)
 
-SUPPORTED_SV_TYPES:set[type[SVpatterns.SVpatternType]] = {
-    SVpatterns.SVpatternInsertion,
-    SVpatterns.SVpatternDeletion,
-    SVpatterns.SVpatternInversion,
+SUPPORTED_SV_TYPES:frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInversionDeletion,
     SVpatterns.SVpatternInversionDuplication,
     SVpatterns.SVpatternInversionTranslocation,
-}
+    SVpatterns.SVpatternInsertion,
+    SVpatterns.SVpatternDeletion,
+    SVpatterns.SVpatternInversion,
+})
 
-SUPPORTED_SV_TYPE_STRINGS: set[str] = {
+SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
     pattern_type.get_sv_type() for pattern_type in SUPPORTED_SV_TYPES
-}
+})
+# Add a sorted list constant for consistent ordering and help text
+SUPPORTED_SV_TYPE_STRINGS_LIST: list[str] = sorted(list(SUPPORTED_SV_TYPE_STRINGS))
+
 SUPPORTED_SV_TYPE_STRINGS_INVERSE: dict[str, type[SVpatterns.SVpatternType]] = {
     pattern_type.get_sv_type(): pattern_type for pattern_type in SUPPORTED_SV_TYPES
 }
-
 
 # %% FUNCTIONS
 
@@ -212,24 +214,41 @@ def svPatterns_to_horizontally_merged_svComposites(
         """Map SV types to group keys. INS and DEL are grouped together as INDEL."""
         if sv_type_cls in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion):
             return "INDEL"
-        return sv_type_cls.__name__
+        return sv_type_cls.get_sv_type()
+
+    # debug start
+    sv_pattern_types_count: dict[str, int] = {}
+    for svp in svPatterns:
+        sv_pattern_types_count[svp.get_sv_type()] = (
+            sv_pattern_types_count.get(svp.get_sv_type(), 0) + 1
+        )
+    log.debug(f"Starting horizontal merging of {len(svPatterns)} SVpatterns. of types: {sv_pattern_types_count}")
+    # debug end
+    # +++++ here all sv types are present +++++ #
 
     result: list[SVcomposite] = []
     if len(svPatterns) == 0:
         log.warning(f"No SVpatterns found in {svPatterns}. Returning empty list.")
         return result
     # filter by size and type
-    _svPatterns = [
-        svp
-        for svp in svPatterns
-        if svp.get_size() is not None and type(svp) in sv_types
-    ]
+    _svPatterns = []
+    for svp in svPatterns:
+        if type(svp) not in sv_types:
+            log.debug(f"Skipping SVpattern of unsupported type: {svp.get_sv_type()}")  # debug
+            continue
+        elif svp.get_size() is None:
+            log.debug(f"Skipping SVpattern with undefined size: {svp}")  # debug
+            continue
+        else:
+            _svPatterns.append(svp)
+    
     # sort svPatterns by consensusID and read_start
     _svPatterns = sorted(_svPatterns, key=lambda x: (x.consensusID, type(x).__name__))
 
     groups = groupby(
         _svPatterns, key=lambda x: (x.consensusID, get_sv_group_key(type(x)))
     )
+    
     # loop svPatterns of each group and connect them if they share at least one repeatID
     for (_consensusID, _sv_type), group in groups:
         group = list(group)
@@ -1063,14 +1082,22 @@ def generate_svComposites_from_dbs(
             sv_type_counts[svp.get_sv_type()] = (
                 sv_type_counts.get(svp.get_sv_type(), 0) + 1
             )
-        log.info(f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}")
-        log.info(f"SV type counts for sample {samplename}: {sv_type_counts}")
+        log.info(f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}: {sv_type_counts}")
 
         svComposites.extend(
             svPatterns_to_horizontally_merged_svComposites(
                 svPatterns, sv_types=sv_types
             )
         )
+        # after horizontal merging, count again teh types of sv composites
+        sv_composite_type_counts: dict[str, int] = {}
+        for svc in svComposites:
+            sv_composite_type_counts[svc.sv_type.get_sv_type()] = (
+                sv_composite_type_counts.get(svc.sv_type.get_sv_type(), 0) + 1
+            )
+        log.debug(f"After horizontal merging, total SVcomposites for sample {samplename}: {sv_composite_type_counts}")
+        
+        
     return svComposites
 
 
@@ -1188,7 +1215,6 @@ def merge_svComposites(
     # the condition of a merge attempt would be that the reciprocal overlap is greater than 50%
     # however, it must be prevented that contradictory merges are made, e.g. A-B and B-C but A-C is not valid.
     
-
     for svComposite in svComposites:
         
         if svComposite.sv_type in (
@@ -1197,9 +1223,11 @@ def merge_svComposites(
                 SVpatterns.SVpatternInvertedTranslocation,
                 SVpatterns.SVpatternInversionTranslocation):
             cpx_groups[svComposite.sv_type.get_sv_type()].append(svComposite)
+            print("added to cpx group: ", svComposite.sv_type.get_sv_type())
         else:
             chr_name = svComposite.ref_start[0]  # Get chromosome from ref_start tuple
             chr_groups[chr_name].append(svComposite)
+            print("added to chr group: ", chr_name, " sv_type: ", svComposite.sv_type.get_sv_type())
 
     log.info(f"Found {len(chr_groups)} chromosomes with variants")
     for chr_name, group in chr_groups.items():
@@ -1417,9 +1445,7 @@ def SVcalls_from_SVcomposite(
     # separate cases:
     # 1) insertion & deletion
     result: list[SVcall] = []
-    all_alt_reads: dict[str, set[np.uint64]] = (
-        svComposite.get_alt_readnamehashes_per_sample()
-    )  # {samplename: {readname, ...}}
+    all_alt_reads: dict[str, set[np.uint64]] = svComposite.get_alt_readnamehashes_per_sample()  # {samplename: {readname, ...}}
 
     if svComposite.sv_type in SUPPORTED_SV_TYPES:
         chrname, start, end = get_svComposite_interval_on_reference(
@@ -1534,10 +1560,20 @@ def SVcalls_from_SVcomposite(
         # acquire the correct DNA sequences by querying all inserted sequences from the
         # given SVpatterns
         alt_seq: str | None = (
-            svComposite.get_alt_sequence() if svtype in ("INS", "INV") else None
+            svComposite.get_alt_sequence() if svComposite.sv_type in (
+                SVpatterns.SVpatternInsertion,
+                SVpatterns.SVpatternInversion,
+                SVpatterns.SVpatternInversionDuplication,
+                SVpatterns.SVpatternInversionDeletion,
+                SVpatterns.SVpatternInversionTranslocation) else None
         )  # TODO: revcomp if representing consensus sequence is reverse complement (carrying consensus aln is reverse)
         ref_seq: str | None = (
-            svComposite.get_ref_sequence() if svtype in ("DEL") else None
+            svComposite.get_ref_sequence() if svComposite.sv_type in (
+                SVpatterns.SVpatternDeletion,
+                SVpatterns.SVpatternInversion,
+                SVpatterns.SVpatternInversionDuplication,
+                SVpatterns.SVpatternInversionDeletion,
+                SVpatterns.SVpatternInversionTranslocation) else None
         )
 
         pass_altreads: bool = (
@@ -1798,7 +1834,7 @@ def genotype_likelihood(
         return dict.fromkeys(genotype_probs.keys(), uniform_prob)
 
     probabilities = {
-        genotype: likelihood / total_likelihood
+        genotype: float(likelihood / total_likelihood)
         for genotype, likelihood in likelihoods.items()
     }
 
@@ -2137,20 +2173,25 @@ def multisample_sv_calling(
     sv_types_set: set[type[SVpatterns.SVpatternType]] = {
         SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv] for sv in sv_types if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE
     }
+    # debug - check what types are in sv_types_set
+    if verbose:
+        log.info(
+            f"SV types to be processed: {', '.join([t.__name__ for t in sv_types_set])}"
+        )
     
     data: list[SVcomposite] = generate_svComposites_from_dbs(
         input=input,
         sv_types=sv_types_set,
         candidate_regions_filter=candidate_regions_filter,
     )
-    if log.level == logging.DEBUG:
+    if verbose:
         svtype_counts: dict[str, int] = {}
         for svComposite in data:
             svtype = svComposite.sv_type.__name__
             if svtype not in svtype_counts:
                 svtype_counts[svtype] = 0
             svtype_counts[svtype] += 1
-        log.debug(f"SVcomposite counts by type before merging: {svtype_counts}")
+        log.info(f"SVcomposite counts by type before merging: {svtype_counts}")
 
     # if tmp dir is provided, dump all svComposites to a compressed json file
     if tmp_dir_path is not None:
@@ -2164,18 +2205,19 @@ def multisample_sv_calling(
         max_cohens_d=max_cohens_d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
+        threads=threads,
         verbose=verbose,
     )
 
     # debug print all sv types of all merged svComposites
-    if log.level == logging.DEBUG:
+    if verbose:
         svtype_counts_merged: dict[str, int] = {}
         for svComposite in merged:
             svtype = svComposite.sv_type.__name__
             if svtype not in svtype_counts_merged:
                 svtype_counts_merged[svtype] = 0
             svtype_counts_merged[svtype] += 1
-        log.debug(f"SVcomposite counts by type after merging: {svtype_counts_merged}")
+        log.info(f"SVcomposite counts by type after merging: {svtype_counts_merged}")
 
     merged = [
         svComposite
@@ -2215,6 +2257,12 @@ def multisample_sv_calling(
 
 
 def run(args) -> None:
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+
     multisample_sv_calling(
         input=args.input,
         output=args.output,
@@ -2235,10 +2283,7 @@ def run(args) -> None:
     )
 
 
-def get_parser():
-    parser = argparse.ArgumentParser(
-        description="Multiple sample SV calling from precomputed svirltile files per sample."
-    )
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--input",
         help="Paths to the per sample svirltiles.",
@@ -2260,9 +2305,9 @@ def get_parser():
     )
     parser.add_argument(
         "--sv-types",
-        help=f"List of structural variant types to include. Default: ['INS', 'DEL']. Allowed are {SUPPORTED_SV_TYPES}.",
+        help=f"List of structural variant types to include. Default: all supported types. Allowed are {SUPPORTED_SV_TYPE_STRINGS_LIST}.",
         nargs="+",
-        default=SUPPORTED_SV_TYPE_STRINGS,
+        default=SUPPORTED_SV_TYPE_STRINGS_LIST,
     )
     parser.add_argument(
         "--max_cohens_d",
@@ -2325,8 +2370,22 @@ def get_parser():
         default=False,
     )
     parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set the logging level (default: INFO).",
+    )
+    parser.add_argument(
         "--verbose", help="Enable verbose output.", action="store_true", default=False
     )
+
+
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description="Multiple sample SV calling from precomputed svirltile files per sample."
+    )
+    add_arguments(parser)
     return parser
 
 
@@ -2339,6 +2398,24 @@ def main():
     """Main entry point for the consensus script."""
     parser = get_parser()
     args = parser.parse_args()
+
+    # Convert string log level to logging constant
+    log_level = getattr(logging, args.log_level.upper())
+
+    if args.logfile:
+        # Configure logging to file
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            handlers=[logging.FileHandler(str(args.logfile)), logging.StreamHandler()],
+        )
+    else:
+        # Configure logging to console only
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            handlers=[logging.StreamHandler()],
+        )
     run(args)
     return
 

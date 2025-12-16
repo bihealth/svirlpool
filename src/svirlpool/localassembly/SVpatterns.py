@@ -440,6 +440,7 @@ class SVpatternComplex(SVpattern):
 @attrs.define
 class SVpatternInversion(SVpattern):
     inserted_sequence: bytes | None = None
+    deleted_sequence: bytes | None = None
     sequence_complexity: bytes | None = None  # Pickled numpy array of float32
 
     @classmethod
@@ -447,11 +448,11 @@ class SVpatternInversion(SVpattern):
         return "INV"
 
     def set_sequence(
-        self, sequence: str, sequence_complexity_max_length: int = 300
+        self, sequence: str, sequence_complexity_max_length: int = 300, write_complexity: bool = True
     ) -> None:
         """Set the inserted sequence and compute its complexity."""
         self.inserted_sequence = pickle.dumps(sequence)
-        if len(sequence) <= sequence_complexity_max_length:
+        if len(sequence) <= sequence_complexity_max_length and write_complexity:
             dna_iter = iter(sequence)
             self.sequence_complexity = pickle.dumps(
                 complexity_local_track(
@@ -463,6 +464,25 @@ class SVpatternInversion(SVpattern):
             dummy_complexity = np.ones(len(sequence), dtype=np.float16)
             self.sequence_complexity = pickle.dumps(dummy_complexity)
 
+
+    def set_deleted_sequence(
+        self, sequence: str, sequence_complexity_max_length: int = 300, write_complexity: bool = True
+    ) -> None:
+        """Set the deleted sequence and compute its complexity."""
+        self.deleted_sequence = pickle.dumps(sequence)
+        if len(sequence) <= sequence_complexity_max_length and write_complexity:
+            dna_iter = iter(sequence)
+            self.sequence_complexity = pickle.dumps(
+                complexity_local_track(
+                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
+                )
+            )
+        else:
+            # Create dummy placeholder with 1.0 values for long sequences
+            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
+            self.sequence_complexity = pickle.dumps(dummy_complexity)
+
+
     def get_sequence(self) -> str | None:
         """Retrieve the inserted sequence by unpickling."""
         if self.inserted_sequence is None:
@@ -471,6 +491,16 @@ class SVpatternInversion(SVpattern):
             return pickle.loads(self.inserted_sequence)
         except Exception:
             return None
+
+    def get_deleted_sequence(self) -> str | None:
+        """Retrieve the deleted sequence by unpickling."""
+        if self.deleted_sequence is None:
+            return None
+        try:
+            return pickle.loads(self.deleted_sequence)
+        except Exception:
+            return None
+
 
     def get_sequence_complexity(self) -> np.ndarray | None:
         """Retrieve the sequence complexity scores."""
@@ -506,10 +536,11 @@ class SVpatternInversion(SVpattern):
         return consensus.consensus_sequence[s:e]
 
     # alway return the inner region of the inversion
-    def get_reference_region(self) -> tuple[str, int, int]:
-        chr = self.SVprimitives[1].chr
-        start = self.SVprimitives[1].ref_start
-        end = self.SVprimitives[2].ref_start
+    def get_reference_region(self, inner:bool=False) -> tuple[str, int, int]:
+        idx = (1,2) if inner else (0,3)
+        chr = self.SVprimitives[idx[0]].chr
+        start = self.SVprimitives[idx[0]].ref_start
+        end = self.SVprimitives[idx[1]].ref_start
         start, end = (end, start) if start > end else (start, end)
         return (chr, start, end)
 
@@ -528,18 +559,26 @@ class SVpatternInversionDeletion(SVpatternInversion):
     @classmethod
     def get_sv_type(cls) -> str:
         return "INV-DEL"
+    
     def get_size(self, inner: bool = False) -> int:
         """Returns the size of the inverted deletion."""
         return super().get_size(inner=inner)
+    
+    def get_reference_region(self, inner:bool=False) -> tuple[str, int, int]:
+        return super().get_reference_region(inner=inner)
 
 @attrs.define
 class SVpatternInversionDuplication(SVpatternInversion):
     @classmethod
     def get_sv_type(cls) -> str:
         return "INV-DUP"
+   
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inverted deletion."""
         return super().get_size(inner=inner)
+   
+    def get_reference_region(self, inner:bool=True) -> tuple[str, int, int]:
+        return super().get_reference_region(inner=inner)
 
 @attrs.define
 class SVpatternInversionTranslocation(SVpatternInversion):
@@ -555,6 +594,18 @@ class SVpatternInversionTranslocation(SVpatternInversion):
                 "Inverted Translocation size can only be calculated for inner region."
             )
         return super().get_size(inner=True)
+    
+    def get_reference_region(self, inner:bool=True) -> tuple[str, int, int]:
+        # outer region can be calculated if the two outer breakends are on the same chr
+        if inner:
+            return super().get_reference_region(inner=True)
+        elif self.SVprimitives[0].chr != self.SVprimitives[3].chr:
+            log.warning(
+                "Inverted Translocation outer reference region cannot be calculated for different chromosomes. Returning inner region."
+            )
+            return super().get_reference_region(inner=True)
+        else:
+            return super().get_reference_region(inner=False)
 
 
 # Use Union for better type hints
@@ -952,6 +1003,12 @@ def parse_SVprimitives_to_SVpatterns(
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )
+    
+    if SVprimitives and SVprimitives[0].consensusID == "7.0":
+        print(f"DEBUG: parse_SVprimitives_to_SVpatterns input for 7.0: {len(SVprimitives)} primitives")
+        for i, svp in enumerate(SVprimitives):
+            print(f"  {i}: {svp}")
+
     # DEBUG START
     # if SVprimitives[0].consensusID == "4.0":
     #     # write function input to debugging json file with structured SVpatterns
@@ -972,6 +1029,11 @@ def parse_SVprimitives_to_SVpatterns(
     indels = [svp for svp in SVprimitives if svp.sv_type <= 2]
     breakends = [svp for svp in SVprimitives if svp.sv_type > 2]
 
+    if SVprimitives and SVprimitives[0].consensusID == "7.0":
+        print(f"DEBUG: Breakends for 7.0: {len(breakends)}")
+        for i, svp in enumerate(breakends):
+            print(f"  BND {i}: {svp}")
+
     used_indices: set[int] = set()
 
     for svp in indels:
@@ -986,6 +1048,8 @@ def parse_SVprimitives_to_SVpatterns(
     # 4-relations based parsing for inversions and complex SVs
     if len(breakends) == 4:
         fourrelations = four_relations_of_group(group=breakends)
+        if SVprimitives and SVprimitives[0].consensusID == "7.0":
+             print(f"DEBUG: fourrelations for 7.0: {fourrelations}")
 
         checks = [
             (possible_inversions_deletions_from_BNDs, SVpatternInversionDeletion),
@@ -1018,6 +1082,8 @@ def parse_SVprimitives_to_SVpatterns(
         tworelations = two_relations_of_group(
             group=breakends, max_del_size=max_del_size
         )
+        if SVprimitives and SVprimitives[0].consensusID == "7.0":
+             print(f"DEBUG: tworelations for 7.0: {tworelations}")
 
         idx_tuples_insertions: list[tuple[int, int]] = possible_insertions_from_BNDs(
             svps=breakends, tworelations=tworelations
@@ -1490,7 +1556,4 @@ def read_svPatterns_from_db(
             raise e
         c.close()
 
-    return svPatterns
-    return svPatterns
-    return svPatterns
     return svPatterns

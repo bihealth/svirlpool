@@ -8,7 +8,6 @@ from intervaltree import IntervalTree  # type: ignore
 from xxhash import xxh64
 
 from ..localassembly import SVpatterns
-from ..svcalling.multisample_sv_calling import SUPPORTED_SV_TYPES
 
 
 @attrs.define
@@ -185,103 +184,93 @@ class SVcomposite:
 
 
     def get_alt_sequence(self) -> str:
-        if self.sv_type in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternInversion, SVpatterns.SVpatternInversionDeletion, SVpatterns.SVpatternInversionDuplication, SVpatterns.SVpatternInversionTranslocation):
-            # Group SVpatterns by (samplename, consensusID)
-            groups = {}
-            for svPattern in self.svPatterns:
-                key = (svPattern.samplename, svPattern.consensusID)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(svPattern)
+        # Group SVpatterns by (samplename, consensusID)
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
 
-            if not groups:
-                return ""
+        if not groups:
+            return ""
 
-            # Find the group with maximum supporting unique reads
-            best_group = None
-            max_supporting_reads = 0
+        # Find the group with maximum supporting unique reads
+        best_group = None
+        max_supporting_reads = 0
 
-            for group_patterns in groups.values():
-                # Get all unique supporting reads from this group
-                all_supporting_reads = set()
-                for svPattern in group_patterns:
-                    all_supporting_reads.update(svPattern.get_supporting_reads())
+        for group_patterns in groups.values():
+            # Get all unique supporting reads from this group
+            all_supporting_reads = set()
+            for svPattern in group_patterns:
+                all_supporting_reads.update(svPattern.get_supporting_reads())
 
-                if len(all_supporting_reads) > max_supporting_reads:
-                    max_supporting_reads = len(all_supporting_reads)
-                    best_group = group_patterns
+            if len(all_supporting_reads) > max_supporting_reads:
+                max_supporting_reads = len(all_supporting_reads)
+                best_group = group_patterns
 
-            if best_group is None:
-                return ""
+        if best_group is None:
+            return ""
 
-            # Concatenate alt sequences from the best group
-            concatenated_sequence = ""
-            for svPattern in best_group:
-                if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
-                    svPattern, SVpatterns.SVpatternInversion
-                ):
-                    seq = svPattern.get_sequence()
-                    if seq is None:
-                        raise ValueError(
-                            f"SVpattern {svPattern} in SVcomposite has no alt sequence set."
-                        )
-                    concatenated_sequence += seq
-                # Add other pattern types as needed
-            size = self.get_size()
-            return concatenated_sequence[:size] if size > 0 else ""
-        else:
-            raise ValueError(
-                f"get_alt_sequence called on SVcomposite with sv_type {self.sv_type.__name__}, which is not supported. Only INS,INV and related inversion types are supported."
-            )
+        # Concatenate alt sequences from the best group
+        concatenated_sequence = ""
+        for svPattern in best_group:
+            if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
+                svPattern, SVpatterns.SVpatternInversion
+            ):
+                seq = svPattern.get_sequence()
+                if seq is None:
+                    raise ValueError(
+                        f"SVpattern {svPattern} in SVcomposite has no alt sequence set."
+                    )
+                concatenated_sequence += seq
+            # Add other pattern types as needed
+        size = self.get_size()
+        return concatenated_sequence[:size] if size > 0 else ""
 
     def get_ref_sequence(self) -> str:
-        if self.sv_type == SVpatterns.SVpatternDeletion:
-            # Group SVpatterns by (samplename, consensusID)
-            groups = {}
-            for svPattern in self.svPatterns:
-                key = (svPattern.samplename, svPattern.consensusID)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(svPattern)
+        # Group SVpatterns by (samplename, consensusID)
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
 
-            if not groups:
-                return ""
+        if not groups:
+            return ""
 
-            # Find the group with maximum supporting unique reads
-            best_group = None
-            max_supporting_reads = 0
+        # Find the group with maximum supporting unique reads
+        best_group = None
+        max_supporting_reads = 0
 
-            for group_patterns in groups.values():
-                # Get all unique supporting reads from this group
-                all_supporting_reads = set()
-                for svPattern in group_patterns:
-                    all_supporting_reads.update(svPattern.get_supporting_reads())
+        for group_patterns in groups.values():
+            # Get all unique supporting reads from this group
+            all_supporting_reads = set()
+            for svPattern in group_patterns:
+                all_supporting_reads.update(svPattern.get_supporting_reads())
 
-                if len(all_supporting_reads) > max_supporting_reads:
-                    max_supporting_reads = len(all_supporting_reads)
-                    best_group = group_patterns
+            if len(all_supporting_reads) > max_supporting_reads:
+                max_supporting_reads = len(all_supporting_reads)
+                best_group = group_patterns
 
-            if best_group is None:
-                return ""
+        if best_group is None:
+            return ""
 
-            # Concatenate reference sequences from the best group
-            concatenated_sequence = ""
-            for svPattern in best_group:
-                if isinstance(svPattern, SVpatterns.SVpatternDeletion):
-                    seq = svPattern.get_sequence()
-                    if seq is None:
-                        raise ValueError(
-                            f"SVpattern {svPattern} in SVcomposite has no ref sequence set."
-                        )
-                    concatenated_sequence += seq
-                # Add other pattern types as needed
+        # Concatenate reference sequences from the best group
+        concatenated_sequence = ""
+        for svPattern in best_group:
+            if type(svPattern) is SVpatterns.SVpatternDeletion:
+                seq = svPattern.get_sequence()
+                if seq is None:
+                    raise ValueError(
+                        f"SVpattern {svPattern} in SVcomposite has no ref sequence set."
+                    )
+                concatenated_sequence += seq
+            # Add other pattern types as needed
 
-            size = self.get_size()
-            return concatenated_sequence[:size] if size > 0 else "" 
-        else:
-            raise ValueError(
-                f"get_ref_sequence called on SVcomposite with sv_type {self.sv_type.__name__}, which is not supported. Only DEL is supported."
-            )
+        size = self.get_size()
+        return concatenated_sequence[:size] if size > 0 else "" 
 
     def overlaps_any(self, other: SVcomposite, tolerance_radius: int = 50) -> bool:
         if self.repeatIDs.intersection(other.repeatIDs):

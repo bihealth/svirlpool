@@ -391,8 +391,7 @@ def run(args, **kwargs):
     write_cut_reads_to_output_file(dict_cut_reads=dict_cut_reads, output=args.output)
 
 
-def get_parser():
-    parser = argparse.ArgumentParser(description="")
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-i",
         "--input",
@@ -420,6 +419,11 @@ def get_parser():
         default=1000,
         help="The maximum number of bases that are included in the cut sequences, if they have been hard or soft clipped within the region bounds. Defaults to 1000.",
     )
+
+
+def get_parser():
+    parser = argparse.ArgumentParser(description="")
+    add_arguments(parser)
     return parser
 
 

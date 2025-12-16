@@ -1,9 +1,7 @@
 # %%
 
-import cProfile
-import io
+
 import logging
-import pstats
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,57 +18,6 @@ from . import consensus_class
 log = logging.getLogger(__name__)
 
 # %%
-
-
-def profile_parse_sv_signals_from_consensus(
-    samplename: str,
-    consensusAlignment: consensus_class.ConsensusAlignment,
-    consensus_sequence: str,
-    interval_core: tuple[int, int] | None = None,
-    min_signal_size: int = 5,
-    min_bnd_size: int = 200,
-    profile_output_path: Path | str | None = None,
-) -> tuple[list[datatypes.MergedSVSignal], str]:
-    """
-    Profile the parse_sv_signals_from_consensus function and return results with profiling stats.
-
-    Args:
-        Same as parse_sv_signals_from_consensus
-        profile_output_path: Optional path to save detailed profiling stats
-
-    Returns:
-        tuple: (results from function, profiling stats as string)
-    """
-    # Create a profiler
-    profiler = cProfile.Profile()
-
-    # Run the function under profiling
-    profiler.enable()
-    results = parse_sv_signals_from_consensus(
-        samplename=samplename,
-        consensusAlignment=consensusAlignment,
-        consensus_sequence=consensus_sequence,
-        interval_core=interval_core,
-        min_signal_size=min_signal_size,
-        min_bnd_size=min_bnd_size,
-    )
-    profiler.disable()
-
-    # Generate stats
-    stats_stream = io.StringIO()
-    stats = pstats.Stats(profiler, stream=stats_stream)
-    stats.sort_stats("cumulative")
-    stats.print_stats(20)  # Show top 20 functions
-
-    profiling_output = stats_stream.getvalue()
-
-    # Optionally save detailed stats to file
-    if profile_output_path:
-        with open(profile_output_path, "w") as f:
-            f.write(profiling_output)
-        log.info(f"Detailed profiling stats saved to {profile_output_path}")
-
-    return results, profiling_output
 
 
 # %%
@@ -643,7 +590,7 @@ def parse_sv_signals_from_consensus(
     interval_core: tuple[int, int],
     trf_intervals: list[tuple[int, int, int]],
     min_signal_size: int = 5,
-    min_bnd_size: int = 200,
+    min_bnd_size: int = 50,
 ) -> list[datatypes.MergedSVSignal]:
     """
     Parse SV signals from consensus alignment. Returned items are sorted by their position on the consensus.
@@ -657,7 +604,12 @@ def parse_sv_signals_from_consensus(
             min_bnd_size=min_bnd_size,
         ).SV_signals
     )
-
+    # DEBUG print parsed sv signals if consensusID is 7.0
+    if pysam_alignment.query_name == "7.0":
+        for sv_signal in sv_signals:
+            print("======================================================================================================================")
+            print(f"parsed sv signal:: type:{sv_signal.sv_type} ref_start:{sv_signal.ref_start} ref_end:{sv_signal.ref_end} read_start:{sv_signal.read_start} read_end:{sv_signal.read_end} size:{sv_signal.size}")
+            print("======================================================================================================================")
     # if interval_core is given: this describes the actual start and end of the consensus sequence
     # filter any signals whose read_start and read_end are not fully inside interval_core
     if interval_core is not None:
