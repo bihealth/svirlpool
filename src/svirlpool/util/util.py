@@ -732,11 +732,9 @@ def get_interval_on_ref_in_region(
 ) -> tuple[int, int]:
     # find start and end position on ref
     start, end = (end, start) if a.is_reverse else (start, end)
-    istart = get_read_position_on_ref(
-        alignment=a, position=start, direction=Direction.NONE
-    )
+    istart = get_read_position_on_ref(alignment=a, position=start, direction=Direction.NONE)
     iend = get_read_position_on_ref(alignment=a, position=end, direction=Direction.NONE)
-    return istart, iend
+    return min(iend, istart), max(iend, istart)
 
 
 # %%

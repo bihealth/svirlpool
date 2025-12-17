@@ -1003,12 +1003,6 @@ def parse_SVprimitives_to_SVpatterns(
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )
-    
-    if SVprimitives and SVprimitives[0].consensusID == "7.0":
-        print(f"DEBUG: parse_SVprimitives_to_SVpatterns input for 7.0: {len(SVprimitives)} primitives")
-        for i, svp in enumerate(SVprimitives):
-            print(f"  {i}: {svp}")
-
     # DEBUG START
     # if SVprimitives[0].consensusID == "4.0":
     #     # write function input to debugging json file with structured SVpatterns
@@ -1029,11 +1023,6 @@ def parse_SVprimitives_to_SVpatterns(
     indels = [svp for svp in SVprimitives if svp.sv_type <= 2]
     breakends = [svp for svp in SVprimitives if svp.sv_type > 2]
 
-    if SVprimitives and SVprimitives[0].consensusID == "7.0":
-        print(f"DEBUG: Breakends for 7.0: {len(breakends)}")
-        for i, svp in enumerate(breakends):
-            print(f"  BND {i}: {svp}")
-
     used_indices: set[int] = set()
 
     for svp in indels:
@@ -1048,8 +1037,6 @@ def parse_SVprimitives_to_SVpatterns(
     # 4-relations based parsing for inversions and complex SVs
     if len(breakends) == 4:
         fourrelations = four_relations_of_group(group=breakends)
-        if SVprimitives and SVprimitives[0].consensusID == "7.0":
-             print(f"DEBUG: fourrelations for 7.0: {fourrelations}")
 
         checks = [
             (possible_inversions_deletions_from_BNDs, SVpatternInversionDeletion),
@@ -1082,8 +1069,6 @@ def parse_SVprimitives_to_SVpatterns(
         tworelations = two_relations_of_group(
             group=breakends, max_del_size=max_del_size
         )
-        if SVprimitives and SVprimitives[0].consensusID == "7.0":
-             print(f"DEBUG: tworelations for 7.0: {tworelations}")
 
         idx_tuples_insertions: list[tuple[int, int]] = possible_insertions_from_BNDs(
             svps=breakends, tworelations=tworelations

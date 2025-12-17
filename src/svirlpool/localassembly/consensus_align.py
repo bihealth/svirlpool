@@ -852,8 +852,28 @@ def _process_alignment_file_for_core_intervals(
             # Sort alignments by (qstart, qend) to ensure consistent ordering
             alignments_list.sort(key=lambda x: (x[0], x[1]))
 
+
+            # DEBUG START
+            # files: INV.1.aln.json.gz  INV.1.consensus.json.gz  INV.2.aln.json.gz  INV.2.consensus.json.gz
+            # to save _process_alignment_file_for_core_intervals debug data:
+            if consensus_obj.ID == "7.0":
+                cons = consensus_obj.unstructure()
+                consensus_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.7.consensus.json"
+                with open(consensus_path, "w") as debug_f:
+                    json.dump(cons, debug_f, indent=4)
+                aln_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.7.alignments.json"
+                # and save the alignments
+                with open(aln_path, "w") as debug_f:
+                    aln_list = {"alignments": [
+                        alignment.unstructure() for (_qstart, _qend, alignment) in alignments_list
+                    ]}
+                    json.dump(aln_list, debug_f, indent=4)
+            # DEBUG END
+
+
             # Process each alignment with its index
             for aln_idx, (_qstart, _qend, alignment) in enumerate(alignments_list):
+                
                 # Convert to pysam for processing
                 pysam_aln = alignment.to_pysam()
 
@@ -863,8 +883,6 @@ def _process_alignment_file_for_core_intervals(
                         consensus=consensus_obj, alignment=pysam_aln
                     )
                 )
-                # TODO: not all consensus intervals are present for 7.0. Since its a joint region (7.0 and 8.0),
-                # meybe only overlaps with 7.0 are parsed?
 
                 # Skip alignments that don't overlap with the core
                 if core_start_on_ref == core_end_on_ref:

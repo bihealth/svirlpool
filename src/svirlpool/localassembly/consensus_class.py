@@ -296,6 +296,15 @@ def get_consensus_core_alignment_interval_on_reference(
         min(traced_back_ref_start, traced_back_ref_end),
         max(traced_back_ref_start, traced_back_ref_end),
     )
+    # DEBUG START
+    if alignment.query_name == "7.0":
+        print("*******************************************************************")
+        print(
+            f"Consensus 7.0 core interval on consensus sequence: {core_start}-{core_end}, "
+            f"mapped to reference {alignment.reference_name}:{traced_back_ref_start}-{traced_back_ref_end} from {alignment.reference_name}:{alignment.reference_start}-{alignment.reference_end}"
+        )
+        print("*******************************************************************")
+    # DEBUG END
     return (str(alignment.reference_name), traced_back_ref_start, traced_back_ref_end)
 
 
