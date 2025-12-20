@@ -17,7 +17,123 @@ Svirlpool obtains competitive results to the leading method Sniffles on the wide
 
 ## Installing & Running
 
-Currently, the only way to run Svirlpool is in developer mode - so see "Developer Notes" below.
+You can install Svirlpool from sources, see "Developer Notes" below.
+Alternatively, we provide a Docker image at `ghcr.io/bihealth/svirlpool` (e.g., `:main` for the latest version).
+You can also convert that image to Singularity if needed on a HPC system (e.g., `singularity build svirlpool.sif docker://ghcr.io/bihealth/svirlpool:main`).
+The example below explains how to run via Docker.
+
+### Prerequisites
+
+Install Git:
+
+```
+# Ubuntu 24.04+
+sudo apt install -y git git-lfs
+```
+
+Then, install Docker following [these official instructions](https://docs.docker.com/engine/install//).
+We assume that you can call `docker` without `sudo` in the following.
+Otherwise, you may have to prefix the `docker` commands below with `sudo`.
+
+### Getting Example Data
+
+As the example data is stored in the source repository, we obtain the sources via git:
+
+```
+git clone git@github.com:bihealth/svirlpool.git
+```
+
+### Get Docker Image
+
+You can explicitely download the docker image now (or it will be downloaded on the fly when used):
+
+```
+docker pull ghcr.io/bihealth/svirlpool:main
+```
+
+### Run Docker Image
+
+First, run Svirlpool to create the "svirltile" file.
+
+```
+# create working directory
+mkdir -p /tmp/workdir/result
+# now run
+docker run \
+    --rm \
+    -v $(realpath .):/data \
+    -v /tmp/workdir/result:/tmp/workdir/result \
+    -w /data \
+    ghcr.io/bihealth/svirlpool:sha-c8ef958 \
+        svirlpool run \
+            --threads 1 \
+            --samplename muc1test \
+            --workdir /tmp/workdir/result \
+            --output /tmp/workdir/result/svirltile.db \
+            --alignments examples/muc1/data/muc1.bam \
+            --reference examples/muc1/data/muc1.fa \
+            --trf examples/muc1/data/muc1.trf.bed \
+            --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
+            --lamassemble-mat data/lamassemble-mats/promethion.mat
+```
+
+The directory `/tmp/workdir/result` will contain a number of files. The most important one is the file `svirltile.db` that is necessary for the subsequent (potentially joint) SV calling and creation of a VCF file.
+
+Let us now run the SV calling:
+
+```
+docker run \
+    --rm \
+    -v $(realpath .):/data \
+    -v /tmp/workdir/result:/tmp/workdir/result \
+    -w /data \
+    ghcr.io/bihealth/svirlpool:sha-c8ef958 \
+        svirlpool sv-calling \
+            --threads 1 \
+            --reference examples/muc1/data/muc1.fa \
+            --input /tmp/workdir/result/svirltile.db \
+            --output /tmp/workdir/result/variants.vcf.gz
+```
+
+We will end up with the SV file `variants.vcf.gz` which contains the SV calls, see below for an excerpt.
+
+```
+# zcat /tmp/workdir/result/variants.vcf.gz | cut -b 1-140
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##fileDate=20251104
+##reference=file:///home/mholtgrewe/Development/svirlpool/examples/muc1/data/muc1.fa
+##sequences=file:///tmp/workdir/result/variants.variants.fasta
+##contig=<ID=1,length=300436>
+##FILTER=<ID=LowQual,Description="Poor quality and insufficient number of informative reads.">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the structural variant">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of SV:DEL=Deletion, INS=Insertion, DUP=Duplication, INV=Inversion">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=PASS_ALTREADS,Number=1,Type=String,Description="Passed alt reads threshold">
+##INFO=<ID=pass_GQ,Number=1,Type=String,Description="Passed Genotype precision threshold">
+##INFO=<ID=PRECISE,Number=0,Type=Flag,Description="Precise structural variant">
+##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise structural variant">
+##INFO=<ID=MATEID,Number=.,Type=String,Description="ID of mate breakends">
+##INFO=<ID=CONSENSUSIDs,Number=1,Type=String,Description="ID of the consensus that this SV originiates from. Other consensus sequences can a
+##INFO=<ID=SEQ_ID,Number=1,Type=String,Description="ID of sequence in companion FASTA file for symbolic alleles">
+##ALT=<ID=INS,Description="Insertion">
+##ALT=<ID=DEL,Description="Deletion">
+##ALT=<ID=DUP,Description="Duplication">
+##ALT=<ID=INV,Description="Inversion">
+##ALT=<ID=BND,Description="Breakend; Translocation">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">
+##FORMAT=<ID=DR,Number=1,Type=Integer,Description="Number of reference reads">
+##FORMAT=<ID=DV,Number=1,Type=Integer,Description="Number of variant reads">
+##FORMAT=<ID=GP,Number=1,Type=Float,Description="Genotype probability">
+#CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO    FORMAT  muc1test
+1       114551  DEL.4   GGGGATTACAGGCGTGAGCCACCGCTCCTAGCGAAAAACATTTTTT  G       60      LowQual PASS_ALTREADS=False;pass_GQ=True;SVTYPE=DEL;END=114596;SVLEN=45;C
+1       159296  INS.0   C       Cggctggagcccgagggccggcctggtgtccgggggccgaggtcggacaccgcctggctgggggcggtggagccgccgggccggcctggtgtccgggggccgaggtgacaccgtgggctgggg
+1       159351  INS.3   G       Gcggtggagcccgggccggctggtgtccgggggccgaggtgacaccgtgggctggggcggtggagccgggccggcctggtgtccggggccgaggtgacaccgtgggctggggcggtggagccc
+1       159704  INS.1   G       Gggctggggcggctgcagcccggggccggcctgctctccggggccgaggtgacaccgccgtgggctgcggcgggcggcgtggagcccggggcccggctgctcctatcttccgggccgaggtgt
+1       159707  INS.2   T       Tggggcggtggagccgcgggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggcgtggagcccggggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggc
+```
 
 ## Developer Notes
 
@@ -65,7 +181,7 @@ pixi run \
         --lamassemble-mat data/lamassemble-mats/promethion.mat
 ```
 
-The directory `/tmp/workdir/result` will contain a number of files. The most important one is the file `/tmp/svirltile.db` that is necessary for the subsequent (potentially joint) SV calling and creation of a VCF file.
+The directory `/tmp/workdir/result` will contain a number of files. The most important one is the file `svirltile.db` that is necessary for the subsequent (potentially joint) SV calling and creation of a VCF file.
 
 Let us now run the SV calling:
 
@@ -78,45 +194,7 @@ pixi run \
         --output /tmp/workdir/result/variants.vcf.gz
 ```
 
-We will end up with the SV file `variants.vcf.gz` which contains the SV calls, see below for an excerpt.
-
-```
-# zcat /tmp/workdir/result/variants.vcf.gz | cut -b 1-140
-##fileformat=VCFv4.2
-##FILTER=<ID=PASS,Description="All filters passed">
-##fileDate=20251104
-##reference=file:///home/mholtgrewe/Development/svirlpool/examples/muc1/data/muc1.fa
-##sequences=file:///tmp/workdir/result/variants.variants.fasta
-##contig=<ID=1,length=300436>
-##FILTER=<ID=LowQual,Description="Poor quality and insufficient number of informative reads.">
-##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the structural variant">
-##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of SV:DEL=Deletion, INS=Insertion, DUP=Duplication, INV=Inversion">
-##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
-##INFO=<ID=PASS_ALTREADS,Number=1,Type=String,Description="Passed alt reads threshold">
-##INFO=<ID=pass_GQ,Number=1,Type=String,Description="Passed Genotype precision threshold">
-##INFO=<ID=PRECISE,Number=0,Type=Flag,Description="Precise structural variant">
-##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise structural variant">
-##INFO=<ID=MATEID,Number=.,Type=String,Description="ID of mate breakends">
-##INFO=<ID=CONSENSUSIDs,Number=1,Type=String,Description="ID of the consensus that this SV originiates from. Other consensus sequences can a
-##INFO=<ID=SEQ_ID,Number=1,Type=String,Description="ID of sequence in companion FASTA file for symbolic alleles">
-##ALT=<ID=INS,Description="Insertion">
-##ALT=<ID=DEL,Description="Deletion">
-##ALT=<ID=DUP,Description="Duplication">
-##ALT=<ID=INV,Description="Inversion">
-##ALT=<ID=BND,Description="Breakend; Translocation">
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
-##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">
-##FORMAT=<ID=DR,Number=1,Type=Integer,Description="Number of reference reads">
-##FORMAT=<ID=DV,Number=1,Type=Integer,Description="Number of variant reads">
-##FORMAT=<ID=GP,Number=1,Type=Float,Description="Genotype probability">
-#CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO    FORMAT  muc1test
-1       114551  DEL.4   GGGGATTACAGGCGTGAGCCACCGCTCCTAGCGAAAAACATTTTTT  G       60      LowQual PASS_ALTREADS=False;pass_GQ=True;SVTYPE=DEL;END=114596;SVLEN=45;C
-1       159296  INS.0   C       Cggctggagcccgagggccggcctggtgtccgggggccgaggtcggacaccgcctggctgggggcggtggagccgccgggccggcctggtgtccgggggccgaggtgacaccgtgggctgggg
-1       159351  INS.3   G       Gcggtggagcccgggccggctggtgtccgggggccgaggtgacaccgtgggctggggcggtggagccgggccggcctggtgtccggggccgaggtgacaccgtgggctggggcggtggagccc
-1       159704  INS.1   G       Gggctggggcggctgcagcccggggccggcctgctctccggggccgaggtgacaccgccgtgggctgcggcgggcggcgtggagcccggggcccggctgctcctatcttccgggccgaggtgt
-1       159707  INS.2   T       Tggggcggtggagccgcgggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggcgtggagcccggggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggc
-```
+We will end up with the SV file `variants.vcf.gz` which contains the SV calls, same as shown in the Docker example above.
 
 ## How to call SVs with Svirlpool on my real data
 
