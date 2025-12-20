@@ -1,0 +1,97 @@
+# This workflow is run as part of CI to test that they run through.
+#
+# The images are pushed to `ghcr.io` for each PR and branch.  The ones for
+# the releases are pushed in `release-please.yml`.
+name: Docker Build
+
+on:
+  push:
+    tags:
+      - 'v**'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Fetch all history for git describe to work
+          fetch-tags: true  # Explicitly fetch tags
+          submodules: 'recursive'
+          lfs: true
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write VERSION file for Python package
+        run: |
+          # Try git describe first, fall back to VERSION file if no tags found
+          if git describe --tags --match 'v*' 2>/dev/null; then
+            git describe --tags --match 'v*' | tee VERSION
+          elif [ -f VERSION ]; then
+            echo "No git tags found, using existing VERSION file"
+            cat VERSION
+          else
+            echo "0.0.0" | tee VERSION
+          fi
+
+      - name: Install dependencies for security scan
+        run: |
+          cd frontend
+          npm ci --ignore-scripts
+
+      - name: Run npm security scan
+        run: |
+          chmod +x ./utils/scan-npm-compromise.sh
+          ./utils/scan-npm-compromise.sh || {
+            echo "::error::Security scan detected potential compromise indicators!"
+            echo "::warning::Review the scan report before proceeding."
+            exit 1
+          }
+
+      - name: Upload security scan report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-security-scan-report
+          path: npm-security-scan-*.txt
+          retention-days: 90
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=sha
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: utils/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
