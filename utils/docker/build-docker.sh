@@ -5,7 +5,7 @@
 set -x
 set -euo pipefail
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 GIT_DESCRIBE=$(git describe --tags | cut -d - -f 1)
 GIT_TAG=${GIT_TAG-$GIT_DESCRIBE}
