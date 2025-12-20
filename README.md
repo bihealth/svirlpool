@@ -24,12 +24,12 @@ Svirlpool obtains competitive results to leading methods like Sniffles on Genome
 ## Table of Contents
 
 1. [Installation](https://www.google.com/search?q=%23installation)
-* [Option A: Docker or Singularity](https://www.google.com/search?q=%23option-a-docker-or-singularity)
-* [Option B: From Source (Pixi)](https://www.google.com/search?q=%23option-b-from-source-pixi)
+    * [Option A: Docker or Singularity](https://www.google.com/search?q=%23option-a-docker-or-singularity)
+    * [Option B: From Source (Pixi)](https://www.google.com/search?q=%23option-b-from-source-pixi)
 2. [Quick Start (Example Data)](https://www.google.com/search?q=%23quick-start-example-data)
 3. [Workflow for Real Data](https://www.google.com/search?q=%23workflow-for-real-data)
-* [I. Required Input Files](https://www.google.com/search?q=%23i-required-input-files)
-* [II. Step-by-Step Execution](https://www.google.com/search?q=%23ii-step-by-step-execution)
+    * [I. Required Input Files](https://www.google.com/search?q=%23i-required-input-files)
+    * [II. Step-by-Step Execution](https://www.google.com/search?q=%23ii-step-by-step-execution)
 4. [Developer & Formatting Hints](https://www.google.com/search?q=%23developer--formatting-hints)
 
 ---
@@ -41,12 +41,15 @@ You can run Svirlpool either via pre-built containers or by installing from the 
 ### Option A: Docker or Singularity
 
 1. **Install Docker:** Follow the [official instructions](https://docs.docker.com/engine/install/).
-2. **Pull Image:** ```bash
+
+2. **Pull Image:**
+
+```bash
 docker pull ghcr.io/bihealth/svirlpool:main
 ```
 
+3. **Singularity (Alternative):** If on an HPC, convert the image:
 
-3. **Singularity (Optional):** If on an HPC, convert the image:
 ```bash
 singularity build svirlpool.sif docker://ghcr.io/bihealth/svirlpool:main
 ```
@@ -54,6 +57,7 @@ singularity build svirlpool.sif docker://ghcr.io/bihealth/svirlpool:main
 ### Option B: From Source (Pixi)
 
 1. **Install Prerequisites:**
+
 ```bash
 # Ubuntu 24.04+
 sudo apt install -y git git-lfs
@@ -61,6 +65,7 @@ curl -fsSL https://pixi.sh/install.sh | bash
 ```
 
 2. **Clone and Setup:**
+
 ```bash
 git clone git@github.com:bihealth/svirlpool.git
 cd svirlpool
@@ -72,6 +77,8 @@ cd svirlpool
 ## Quick Start (Example Data)
 
 This example uses a small MUC1 test dataset to demonstrate the two-step calling process.
+We demonstrate how to run with Docker.
+You can replace the `docker run ... svirlpool` part with `pixi run svirlpool` to run it using pixi rather than Docker.
 
 ### 1. Generate Svirltile
 
@@ -81,7 +88,7 @@ mkdir -p /tmp/workdir/result
 
 # Run using Docker (or replace with 'pixi run svirlpool ...')
 docker run --rm -v $(realpath .):/data -v /tmp/workdir/result:/tmp/workdir/result -w /data \
-    ghcr.io/bihealth/svirlpool:sha-c8ef958 \
+    ghcr.io/bihealth/svirlpool:main \
     svirlpool run \
         --threads 1 --samplename muc1test --workdir /tmp/workdir/result \
         --output /tmp/workdir/result/svirltile.db \
@@ -90,7 +97,6 @@ docker run --rm -v $(realpath .):/data -v /tmp/workdir/result:/tmp/workdir/resul
         --trf examples/muc1/data/muc1.trf.bed \
         --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
         --lamassemble-mat data/lamassemble-mats/promethion.mat
-
 ```
 
 ### 2. Generate VCF
@@ -98,7 +104,7 @@ docker run --rm -v $(realpath .):/data -v /tmp/workdir/result:/tmp/workdir/resul
 ```bash
 docker run \
     --rm -v $(realpath .):/data -v /tmp/workdir/result:/tmp/workdir/result -w /data \
-    ghcr.io/bihealth/svirlpool:sha-c8ef958 \
+    ghcr.io/bihealth/svirlpool:main \
     svirlpool sv-calling \
         --threads 1 --reference examples/muc1/data/muc1.fa \
         --input /tmp/workdir/result/svirltile.db \
@@ -121,6 +127,8 @@ To call SVs on your own data, follow these three stages: Preparing prefab data, 
 | **Annotations** | TRF and Mononucleotides | Download from [svirlpool-data](https://github.com/bihealth/svirlpool-data). |
 
 ### II. Step-by-Step Execution
+
+Below, you will need to add the `docker run ...` or `pixi run` before the commands as explained above.
 
 #### 1. Setup Environment
 
