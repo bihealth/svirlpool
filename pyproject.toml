@@ -165,6 +165,7 @@ pysam = ">=0.23.3,<0.24"
 bcftools = "~=1.20"
 samtools = "~=1.20"
 seqtk = "~=1.4"
+sortedcontainers = ">=2.4.0,<3"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
