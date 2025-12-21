@@ -423,7 +423,7 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
         if (
             complexities is None
             or len(complexities) == 0
-            or np.sum((np.sum(s) for s in complexities)) == 0
+            or sum((np.sum(s) for s in complexities)) == 0
         ):
             mean_complexity = 0.0
         else:

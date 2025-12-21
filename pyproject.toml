@@ -6,7 +6,7 @@ requires = ["hatchling"]
 name = "svirlpool"
 authors = [{ name = "Vinzenz May", email = "vinzenz.may@bih-charite.de" }]
 description = "Svirlpool: structural variant detection from long read sequencing by local assembly"
-version = "0.1.0"
+version = "0.0.0"
 readme = "README.md"
 keywords = ["bioinformatics"]
 license = "MIT"
@@ -165,6 +165,7 @@ pysam = ">=0.23.3,<0.24"
 bcftools = "~=1.20"
 samtools = "~=1.20"
 seqtk = "~=1.4"
+sortedcontainers = ">=2.4.0,<3"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
