@@ -730,10 +730,11 @@ def get_interval_on_read_in_region(
 def get_interval_on_ref_in_region(
     a: pysam.libcalignedsegment.AlignedSegment, start: int, end: int
 ) -> tuple[int, int]:
+    """given a start and end on the read, return the corresponding interval on the reference."""
     # find start and end position on ref
     start, end = (end, start) if a.is_reverse else (start, end)
-    istart = get_read_position_on_ref(alignment=a, position=start, direction=Direction.NONE)
-    iend = get_read_position_on_ref(alignment=a, position=end, direction=Direction.NONE)
+    istart = get_read_position_on_ref(alignment=a, position=start, direction=Direction.RIGHT)
+    iend = get_read_position_on_ref(alignment=a, position=end, direction=Direction.LEFT)
     return min(iend, istart), max(iend, istart)
 
 
@@ -1400,7 +1401,22 @@ Forward or backward orientation of the aligned query sequence is respected.
     )
     # find the block in which the position is located. It can be multiple blocks if the position is in an insertion
     # in that case, select fromt he blocks that are not insertions
-    block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
+    
+    # Determine traversal direction based on read orientation
+    # If is_reverse, Read RIGHT (increasing) corresponds to Ref LEFT (decreasing block index)
+    traversal_direction = direction
+    if is_reverse:
+        if direction == Direction.RIGHT:
+            traversal_direction = Direction.LEFT
+        elif direction == Direction.LEFT:
+            traversal_direction = Direction.RIGHT
+
+    if direction == Direction.RIGHT:
+        block = np.where((x_ref_starts <= position) & (position < x_ref_ends))[0][0]
+    elif direction == Direction.LEFT:
+        block = np.where((x_ref_starts < position) & (position <= x_ref_ends))[0][0]
+    else:
+        block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
     # block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
     # if the block is a match, return the position on the read
     final_pos = -1
@@ -1419,7 +1435,7 @@ Forward or backward orientation of the aligned query sequence is respected.
         # if the position is exactly on an insertion, then go 1 to the right, until 'block' is on a match block,
         # if direction is RIGHT
         # else go 1 to the left.
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
             final_pos = x_read_starts[block]
@@ -1428,7 +1444,7 @@ Forward or backward orientation of the aligned query sequence is respected.
                 block -= 1
             final_pos = x_read_ends[block]
     if t[block] in (2, 3):
-        if direction == Direction.LEFT:
+        if traversal_direction == Direction.LEFT:
             # iterate index to the left (-1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block > 0:
                 block -= 1
@@ -1436,7 +1452,7 @@ Forward or backward orientation of the aligned query sequence is respected.
                 final_pos = x_read_starts[block]
             else:
                 final_pos = x_read_ends[block]
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             # iterate index to the right (+1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
@@ -1480,6 +1496,14 @@ def get_ref_position_on_read(
         0
     ]
 
+def is_ref_position_on_aligned_read(
+    alignment: pysam.AlignedSegment,
+    position: int,
+) -> bool:
+    ref_start = alignment.reference_start
+    ref_end = alignment.reference_end
+    return ref_start <= position < ref_end
+        
 
 # -----------------------------------------------------------------------------
 
@@ -1531,7 +1555,51 @@ def get_read_pitx_on_ref(
     # find the block in which the position is located. It can be multiple blocks if the position is in an insertion
     # in that case, select fromt he blocks that are not insertions
     # TODO: can be sped up with binary search
-    block = np.where((x_read_starts <= position) & (position <= x_read_ends))[0][0]
+
+    if direction != Direction.RIGHT and direction != Direction.LEFT:
+        logging.warning(
+            "Other directions than LEFT or RIGHT are not supported. Using RIGHT as default."
+        )
+        direction = Direction.RIGHT
+        # # find the closest position that is aligned to the left or right of the position.
+        # block_l, block_r = block, block
+        # while t[block_l] not in (0, 7, 8) and block_l > 0:
+        #     block_l -= 1
+        # while t[block_r] not in (0, 7, 8) and block_r < len(t) - 1:
+        #     block_r += 1
+        # # the final position of block_l is the end of the chosen block
+        # # the final position of block_r is the start of the chosen block
+        # pos_l = x_ref_ends[block_l]
+        # pos_r = x_ref_starts[block_r]
+        # if position - pos_l < pos_r - position:
+        #     if is_reverse:
+        #         final_pos = x_read_starts[block_l]
+        #     else:
+        #         final_pos = x_read_ends[block_l]
+        #     block = block_l
+        # else:
+        #     if is_reverse:
+        #         final_pos = x_read_ends[block_r]
+        #     else:
+        #         final_pos = x_read_starts[block_r]
+        #     block = block_r
+
+
+    # Determine traversal direction based on read orientation
+    # If is_reverse, Read RIGHT (increasing) corresponds to Ref LEFT (decreasing block index)
+    traversal_direction = direction
+    if is_reverse:
+        if direction == Direction.RIGHT:
+            traversal_direction = Direction.LEFT
+        elif direction == Direction.LEFT:
+            traversal_direction = Direction.RIGHT
+
+    if direction == Direction.RIGHT:
+        block = np.where((x_read_starts <= position) & (position < x_read_ends))[0][0]
+    elif direction == Direction.LEFT:
+        block = np.where((x_read_starts < position) & (position <= x_read_ends))[0][0]
+    else:
+        block = np.where((x_read_starts <= position) & (position <= x_read_ends))[0][0]
     # block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
     # if the block is a match, return the position on the read
     final_pos = -1
@@ -1549,7 +1617,7 @@ def get_read_pitx_on_ref(
         # if the position is exactly on an insertion, then go 1 to the right, until 'block' is on a match block,
         # if direction is RIGHT
         # else go 1 to the left.
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
             final_pos = x_ref_starts[block]
@@ -1558,7 +1626,7 @@ def get_read_pitx_on_ref(
                 block -= 1
             final_pos = x_ref_ends[block]
     if t[block] == 1:
-        if direction == Direction.LEFT:
+        if traversal_direction == Direction.LEFT:
             # iterate index to the left (-1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block > 0:
                 block -= 1
@@ -1566,7 +1634,7 @@ def get_read_pitx_on_ref(
                     final_pos = x_ref_starts[block]
                 else:
                     final_pos = x_ref_ends[block]
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             # iterate index to the right (+1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
@@ -1574,29 +1642,7 @@ def get_read_pitx_on_ref(
                 final_pos = x_ref_ends[block]
             else:
                 final_pos = x_ref_starts[block]
-        if direction == Direction.NONE:
-            # find the closest position that is aligned to the left or right of the position.
-            block_l, block_r = block, block
-            while t[block_l] not in (0, 7, 8) and block_l > 0:
-                block_l -= 1
-            while t[block_r] not in (0, 7, 8) and block_r < len(t) - 1:
-                block_r += 1
-            # the final position of block_l is the end of the chosen block
-            # the final position of block_r is the start of the chosen block
-            pos_l = x_read_ends[block_l]
-            pos_r = x_read_starts[block_r]
-            if position - pos_l < pos_r - position:
-                if is_reverse:
-                    final_pos = x_ref_starts[block_l]
-                else:
-                    final_pos = x_ref_ends[block_l]
-                block = block_l
-            else:
-                if is_reverse:
-                    final_pos = x_ref_ends[block_r]
-                else:
-                    final_pos = x_ref_starts[block_r]
-                block = block_r
+
     return int(final_pos), int(block), t, x
 
 
@@ -1632,6 +1678,14 @@ def query_start_end_on_read(aln: pysam.AlignedSegment) -> tuple[int, int]:
         return e, e + body
     else:
         return s, s + body
+
+
+def is_read_position_on_ref(
+    alignment: pysam.AlignedSegment,
+    position: int,
+) -> bool:
+    s,e = query_start_end_on_read(alignment)
+    return s <= position < e
 
 
 def query_total_length(aln: pysam.AlignedSegment) -> int:

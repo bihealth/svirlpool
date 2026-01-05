@@ -287,24 +287,18 @@ def get_consensus_core_alignment_interval_on_reference(
     core_end: int = (
         consensus.consensus_padding.consensus_interval_on_sequence_with_padding[1]
     )
+    print(f"get_consensus_core_alignment_interval_on_reference: core_start = {core_start}, core_end = {core_end}")
     traced_back_ref_start, traced_back_ref_end = get_interval_on_ref_in_region(
         a=alignment,
         start=core_start,
         end=core_end,
     )
+    print(f"get_consensus_core_alignment_interval_on_reference: traced_back_ref_start = {traced_back_ref_start}, traced_back_ref_end = {traced_back_ref_end}")
     traced_back_ref_start, traced_back_ref_end = (
         min(traced_back_ref_start, traced_back_ref_end),
         max(traced_back_ref_start, traced_back_ref_end),
     )
-    # DEBUG START
-    if alignment.query_name == "7.0":
-        print("*******************************************************************")
-        print(
-            f"Consensus 7.0 core interval on consensus sequence: {core_start}-{core_end}, "
-            f"mapped to reference {alignment.reference_name}:{traced_back_ref_start}-{traced_back_ref_end} from {alignment.reference_name}:{alignment.reference_start}-{alignment.reference_end}"
-        )
-        print("*******************************************************************")
-    # DEBUG END
+    print(f"get_consensus_core_alignment_interval_on_reference: final traced_back_ref_start = {traced_back_ref_start}, traced_back_ref_end = {traced_back_ref_end}")
     return (str(alignment.reference_name), traced_back_ref_start, traced_back_ref_end)
 
 
