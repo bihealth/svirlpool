@@ -332,9 +332,9 @@ def test_get_consensus_core_alignment_interval_on_reference_inv():
     }
 
     expected = {
-        0: ("6", 169093103, 169093632),
+        0: ("6", 169094647, 169095161),
         1: ("6", 169093632, 169094647),
-        2: ("6", 169094647, 169095172),
+        2: ("6", 169093075, 169093632),
     }
 
     for i, res in results.items():

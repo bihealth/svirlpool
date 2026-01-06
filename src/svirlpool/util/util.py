@@ -715,7 +715,7 @@ def get_interval_on_read_in_region(
     istart = get_ref_position_on_read(
         alignment=a,
         position=start,
-        direction=Direction.LEFT,
+        direction=Direction.RIGHT,
         buffer_clipped_length=buffer_clipped_length,
     )
     iend = get_ref_position_on_read(
@@ -1380,7 +1380,7 @@ Forward or backward orientation of the aligned query sequence is respected.
     left_clipped = int(x[0]) if t[0] in (4, 5) else 0
     right_clipped = int(x[-1]) if t[-1] in (4, 5) else 0
     # if the position is left of the read, return alignment.query_alignment_start.
-    if position <= ref_start:
+    if position < ref_start:
         buffer = max(0, left_clipped - buffer_clipped_length)
         if is_reverse:
             return aln_length - buffer, -1, t, x
@@ -1391,7 +1391,8 @@ Forward or backward orientation of the aligned query sequence is respected.
         last_matching_block = np.where(
             (t == 0) | (t == 2) | (t == 3) | (t == 7) | (t == 8)
         )[0][-1]
-        buffer = max(0, right_clipped - buffer_clipped_length)
+        used_buffer = buffer_clipped_length if position > ref_end else 0
+        buffer = max(0, right_clipped - used_buffer)
         if is_reverse:
             return buffer, last_matching_block, t, x
         else:
