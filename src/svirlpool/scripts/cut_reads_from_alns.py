@@ -76,7 +76,7 @@ def get_read_alignments_from_region(
     """Returns a dict of the form readname:[pysam.alignedSegment]"""
     result = {}
     region_interval = Interval(region[1], region[2])
-    with pysam.AlignmentFile(alignments, "rb") as f:
+    with pysam.AlignmentFile(str(alignments), "rb") as f:
         for aln in f.fetch(*region):
             if no_secondary and aln.is_secondary:
                 log.info(f"skipping secondary alignment {aln.query_name}")
@@ -181,8 +181,8 @@ def get_full_read_sequences_of_alignments(
     """Retrieves all DNA sequences of all given read alignments. The read DNA is in original orientation, as it was given in the original fasta file."""
     # iterate all alignments of a sampleID across all crIDs
     dict_supplementary_positions: dict[str, list[tuple[str, int]]] = {}
-    for alignments in dict_alignments.values():
-        for aln in alignments:
+    for alns in dict_alignments.values():
+        for aln in alns:
             if (
                 aln.infer_read_length() != len(aln.query_sequence)
                 and aln.query_name not in dict_supplementary_positions
@@ -205,8 +205,8 @@ def get_full_read_sequences_of_alignments(
             chr for _l in dict_supplementary_positions.values() for chr, pos in _l
         }
     }
-    for _readname, alignments in dict_supplementary_positions.items():
-        for chr, pos in alignments:
+    for _readname, alns in dict_supplementary_positions.items():
+        for chr, pos in alns:
             dict_positions[chr].append(pos)
     # then sort the list of start positions in each chromosome
     for chrom in dict_positions.keys():

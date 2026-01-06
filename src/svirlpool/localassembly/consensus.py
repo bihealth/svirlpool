@@ -2385,9 +2385,13 @@ def process_consensus_container(
         dict_alignments=alns,
         buffer_clipped_length=buffer_clipped_length,
     )
+    if verbose:
+        print(f"dict_all_intervals: {dict_all_intervals}")
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
+    if verbose:
+        print(f"max_intervals: {max_intervals}")
     read_records: dict[str, SeqRecord] = get_full_read_sequences_of_alignments(
         dict_alignments=alns, path_alignments=path_alignments
     )
@@ -2643,6 +2647,17 @@ def crs_containers_to_consensus(
             log.info(
                 f"crID {crID} has {len(unused_reads)} unused reads: {[seqobj.id for seqobj in unused_reads]}"
             )
+
+    if verbose and tmp_dir_path is not None:
+        # write all consensus padded sequences to a fasta file in the tmp dir
+        fasta_path = Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
+        log.info(f"Writing padded consensus sequences to {fasta_path}.")
+        with open(fasta_path, "w") as f:
+            for consensusID, consensus in result.consensus_dicts.items():
+                if consensus.consensus_padding is not None:
+                    f.write(
+                        f">{consensusID}\n{consensus.consensus_padding.sequence}\n"
+                    )
 
     log.info(f"Writing result to {output}.")
     with open(output, "w") as f:

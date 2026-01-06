@@ -287,6 +287,11 @@ def get_consensus_core_alignment_interval_on_reference(
     core_end: int = (
         consensus.consensus_padding.consensus_interval_on_sequence_with_padding[1]
     )
+    # check if core_start and core_end are within the alignment. If they are on a clipped part of the alignment,
+    # moce them to the next aligned position
+    
+    
+    
     print(f"get_consensus_core_alignment_interval_on_reference: core_start = {core_start}, core_end = {core_end}")
     traced_back_ref_start, traced_back_ref_end = get_interval_on_ref_in_region(
         a=alignment,

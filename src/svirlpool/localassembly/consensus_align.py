@@ -856,18 +856,21 @@ def _process_alignment_file_for_core_intervals(
             # DEBUG START
             # files: INV.1.aln.json.gz  INV.1.consensus.json.gz  INV.2.aln.json.gz  INV.2.consensus.json.gz
             # to save _process_alignment_file_for_core_intervals debug data:
-            if consensus_obj.ID == "7.0":
+            if consensus_obj.ID == "15.0":
                 cons = consensus_obj.unstructure()
-                consensus_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.7.consensus.json"
+                consensus_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.consensus.json"
                 with open(consensus_path, "w") as debug_f:
                     json.dump(cons, debug_f, indent=4)
-                aln_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.7.alignments.json"
+                aln_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.alignments.json"
                 # and save the alignments
                 with open(aln_path, "w") as debug_f:
                     aln_list = {"alignments": [
                         alignment.unstructure() for (_qstart, _qend, alignment) in alignments_list
                     ]}
                     json.dump(aln_list, debug_f, indent=4)
+                # and gzip them
+                subprocess.check_call(shlex.split(f"gzip -f {consensus_path}"))
+                subprocess.check_call(shlex.split(f"gzip -f {aln_path}"))
             # DEBUG END
 
 

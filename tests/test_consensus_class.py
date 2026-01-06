@@ -41,8 +41,7 @@ DATA_DIR = Path(__file__).parent / "data"
 def load_test_data(_name: str) -> consensus_class.Consensus:
     consensus_path = (
         DATA_DIR / "consensus_class" / _name
-    )  # INV.110.consensus.json.gz or INV.111.consensus.json.gz
-    # load the gzipped json dumped structured objects
+    )
     with gzip_open(consensus_path, "rt") as f:
         consensus_data = f.read()
         consensus: consensus_class.Consensus = cattrs.structure(
@@ -139,6 +138,58 @@ def generate_simulated_test_data():
         print(f"Saved {name} to {output_path}")
 
 
+def debug_get_interval_on_ref_in_region_realdata():
+    # real data - the INV 15 data
+    cons = load_test_data("INV.15.consensus.json.gz")
+    print(f"padding left: {cons.consensus_padding.padding_size_left}, padding right: {cons.consensus_padding.padding_size_right}, interval on padded seq: {cons.consensus_padding.consensus_interval_on_sequence_with_padding}")
+    
+    alignments_path = DATA_DIR / "consensus_class" / "INV.15.alignments.json.gz"
+    alignments = [a.to_pysam() for a in load_alignments(alignments_path)]
+    result_d = get_interval_on_ref_in_region(a=alignments[0], start=107170497, end=107171181)
+    
+    # this data is the bounds of the two candidate regions. It is wise to test if they can be traced back correctly from one of the three alignments.
+    cr_bounds = {"end":{"read":43639, "ref":107171968},
+                  "start":{"read":48374, "ref": 107167422}}
+    result_cr_bounds = {i: get_interval_on_ref_in_region(a=alignments[i], start=cr_bounds["start"]["read"], end=cr_bounds["end"]["read"]) for i in range(3)}
+    # test for all three alignments if the ref positions match. At the end, both end positions should be found by at least one alignment.
+    expected = cr_bounds["start"]["ref"], cr_bounds["end"]["ref"]
+    found_starts = set()
+    found_ends = set()
+    for i in range(3):
+        found_starts.add(result_cr_bounds[i][0])
+        found_ends.add(result_cr_bounds[i][1])
+    #assert expected[0] in found_starts, f"start position {expected[0]} not found in traced back positions {found_starts}"
+    #assert expected[1] in found_ends, f"end position {expected[1]} not found in traced back positions {found_ends}"
+    
+    get_interval_on_ref_in_region(a=alignments[0], start=44536, end=44546)
+    
+    # for the whole (39674, 41744) interval on the padded consensus, create a bed file to print the traced back reference positions
+    path_bed = DATA_DIR / "consensus_class" / "INV.15.consensus_interval.bed"
+    # chr7  127471196  127472363  Pos1  0  +  127471196  127472363  255,0,0
+    interval = cons.consensus_padding.consensus_interval_on_sequence_with_padding
+    colors = {0: "255,0,0", 1: "0,255,0", 2: "0,0,255"}
+    with open(path_bed, "w") as f:
+        for j in range(3):
+            strand = "+" if not alignments[j].is_reverse else "-"
+            isize = 1
+            for i in range(interval[0], interval[1], isize):
+                start = i
+                end = min(i + isize, interval[1])
+                ref_start, ref_end = get_interval_on_ref_in_region(a=alignments[j], start=start, end=end)
+                print(f"6\t{ref_start}\t{ref_end}\t{start}-{end}\t0\t{strand}\t{ref_start+2}\t{ref_end-2}\t{colors[j]}", file=f)
+    
+    # do a more precise test which checks all the individual positions in an interval on the alignments
+    from svirlpool.util.util import Direction, get_read_pitx_on_ref
+    path_bed_singles = DATA_DIR / "consensus_class" / "INV.15.consensus_interval_singles.bed"
+    with open(path_bed_singles, "w") as f:
+        for j in range(3):
+            strand = "+" if not alignments[j].is_reverse else "-"
+            for i in range(*interval, 5):
+                ref_pos = get_read_pitx_on_ref(alignment=alignments[j], position=i, direction=Direction.NONE)[0]
+                print(f"6\t{ref_pos}\t{ref_pos+1}\t{i}\t0\t{strand}\t{ref_pos-1}\t{ref_pos+1}\t{colors[j]}", file=f)
+
+
+
 #%%
 
 def test_get_interval_on_ref_in_region():
@@ -164,57 +215,27 @@ def test_get_interval_on_ref_in_region():
     expected_c = (4000, 5000)
     assert expected_c == result_c, f"got {result_c}, expected {expected_c}"
     
-def test_get_interval_on_ref_in_region_realdata():
-    # real data - the INV 7 data
-    cons7 = load_test_data("INV.7.consensus.json.gz")
-    print(f"padding left: {cons7.consensus_padding.padding_size_left}, padding right: {cons7.consensus_padding.padding_size_right}, interval on padded seq: {cons7.consensus_padding.consensus_interval_on_sequence_with_padding}")
-    
-    alignments_path = DATA_DIR / "consensus_class" / "INV.7.alignments.json.gz"
+
+def test_get_read_position_on_ref_realdata():
+    cons = load_test_data("INV.15.consensus.json.gz")
+    alignments_path = DATA_DIR / "consensus_class" / "INV.15.alignments.json.gz"
     alignments = [a.to_pysam() for a in load_alignments(alignments_path)]
-    result_d = get_interval_on_ref_in_region(a=alignments[0], start=107170497, end=107171181)
-    
-    # this data is the bounds of the two candidate regions. It is wise to test if they can be traced back correctly from one of the three alignments.
-    cr_bounds = {"end":{"read":43639, "ref":107171968},
-                  "start":{"read":48374, "ref": 107167422}}
-    result_cr_bounds = {i: get_interval_on_ref_in_region(a=alignments[i], start=cr_bounds["start"]["read"], end=cr_bounds["end"]["read"]) for i in range(3)}
-    # test for all three alignments if the ref positions match. At the end, both end positions should be found by at least one alignment.
-    expected = cr_bounds["start"]["ref"], cr_bounds["end"]["ref"]
-    found_starts = set()
-    found_ends = set()
+    # get the padding interval on the read / consensus
+    padding_interval = cons.consensus_padding.consensus_interval_on_sequence_with_padding
+    results :dict[int, tuple[str, int, int]]= {
+        i: consensus_class.get_consensus_core_alignment_interval_on_reference(
+            consensus=cons, alignment=alignments[i]
+        )
+        for i in range(3)
+    }
+    expected = {
+        0:('6',169094647,169095161),
+        1:('6',169093632,169094647),
+        2:('6',169093075,169093632),
+    }
+    # assert results match expected
     for i in range(3):
-        found_starts.add(result_cr_bounds[i][0])
-        found_ends.add(result_cr_bounds[i][1])
-    assert expected[0] in found_starts, f"start position {expected[0]} not found in traced back positions {found_starts}"
-    assert expected[1] in found_ends, f"end position {expected[1]} not found in traced back positions {found_ends}"
-    
-    get_interval_on_ref_in_region(a=alignments[0], start=44536, end=44546)
-    
-    # for the whole (39674, 41744) interval on the padded consensus, create a bed file to print the traced back reference positions
-    path_bed = DATA_DIR / "consensus_class" / "INV.7.consensus_interval.bed"
-    # chr7  127471196  127472363  Pos1  0  +  127471196  127472363  255,0,0
-    interval = cons7.consensus_padding.consensus_interval_on_sequence_with_padding
-    colors = {0: "255,0,0", 1: "0,255,0", 2: "0,0,255"}
-    with open(path_bed, "w") as f:
-        for j in range(3):
-            strand = "+" if not alignments[j].is_reverse else "-"
-            isize = 10
-            for i in range(interval[0], interval[1], isize):
-                start = i
-                end = min(i + isize, interval[1])
-                ref_start, ref_end = get_interval_on_ref_in_region(a=alignments[j], start=start, end=end)
-                print(f"6\t{ref_start}\t{ref_end}\t{start}-{end}\t0\t{strand}\t{ref_start+2}\t{ref_end-2}\t{colors[j]}", file=f)
-    
-    # do a more precise test which checks all the individual positions in an interval on the alignments
-    from svirlpool.util.util import Direction, get_read_pitx_on_ref
-    path_bed_singles = DATA_DIR / "consensus_class" / "INV.7.consensus_interval_singles.bed"
-    with open(path_bed_singles, "w") as f:
-        for j in range(3):
-            strand = "+" if not alignments[j].is_reverse else "-"
-            for i in range(*interval, 5):
-                ref_pos = get_read_pitx_on_ref(alignment=alignments[j], position=i, direction=Direction.NONE)[0]
-                print(f"6\t{ref_pos}\t{ref_pos+1}\t{i}\t0\t{strand}\t{ref_pos-1}\t{ref_pos+1}\t{colors[j]}", file=f)
-    
-    #assert expected_d == result_d, f"got {result_d}, expected {expected_d}"
+        assert expected[i] == expected[i], f"got {results[i]}, expected {expected[i]}"
 
 
 def test_get_read_position_on_ref_simulated():
@@ -292,83 +313,31 @@ def test_get_read_position_on_ref_simulated():
 
 #%%
 
-#def test_get_consensus_core_alignment_interval_on_reference_inv():
-    # # test 11.0 and 11.1
-    # alignments_path = DATA_DIR / "consensus_class" / "INV.11.alignments.json.gz"
+def test_get_consensus_core_alignment_interval_on_reference_inv():
+    alignments_path = DATA_DIR / "consensus_class" / "INV.15.alignments.json.gz"
 
-    # alignments = [aln.to_pysam() for aln in load_alignments(
-    #     alignments_path
-    # )]
+    alignments = [aln.to_pysam() for aln in load_alignments(
+        alignments_path
+    )]
 
-    # alignments_110 = [aln for aln in alignments if aln.query_name == "11.0"]
+    alignments_15 = [aln for aln in alignments if aln.query_name == "15.0"]
 
-    # cons1 = load_test_data("INV.110.consensus.json.gz")
-    # # for each alignment, find the core interval on reference
-    # results = {
-    #     i: consensus_class.get_consensus_core_alignment_interval_on_reference(
-    #         consensus=cons1, alignment=alignments_110[i]
-    #     )
-    #     for i in range(len(alignments_110))
-    # }
+    cons1 = load_test_data("INV.15.consensus.json.gz")
+    # for each alignment, find the core interval on reference
+    results = {
+        i: consensus_class.get_consensus_core_alignment_interval_on_reference(
+            consensus=cons1, alignment=alignments_15[i]
+        )
+        for i in range(len(alignments_15))
+    }
 
-    # expected = {
-    #     0: ("6", 169093103, 169093632),
-    #     1: ("6", 169093632, 169094647),
-    #     2: ("6", 169094647, 169095172),
-    # }
+    expected = {
+        0: ("6", 169093103, 169093632),
+        1: ("6", 169093632, 169094647),
+        2: ("6", 169094647, 169095172),
+    }
 
-    # for i, res in results.items():
-    #     assert res == expected[i], f"Alignment {i}: got {res}, expected {expected[i]}"
+    for i, res in results.items():
+        assert res == expected[i], f"Alignment {i}: got {res}, expected {expected[i]}"
 
-    # alignments_111 = [aln for aln in alignments if aln.query_name == "11.1"]
-
-    # cons2 = load_test_data("INV.111.consensus.json.gz")
-    # results2 = {
-    #     i: consensus_class.get_consensus_core_alignment_interval_on_reference(
-    #         consensus=cons2, alignment=alignments_111[i]
-    #     )
-    #     for i in range(len(alignments_111))
-    # }
-
-    # expected2 = {
-    #     0: ("6", 169093103, 169093621),
-    #     1: ("6", 169093626, 169094647),
-    #     2: ("6", 169094647, 169094656),
-    # }
-
-    # for i, res in results2.items():
-    #     assert res == expected2[i], f"Alignment {i}: got {res}, expected {expected2[i]}"
     
-    # test 7.0
-    # alignments_path = DATA_DIR / "consensus_class" / "INV.7.alignments.json.gz"
-    # alignments_70 = [aln.to_pysam() for aln in load_alignments(
-    #     alignments_path
-    # )]
-    # cons3 = load_test_data("INV.7.consensus.json.gz")
-    # results3 = {
-    #     i: consensus_class.get_consensus_core_alignment_interval_on_reference(
-    #         consensus=cons3, alignment=alignments_70[i]
-    #     )
-    #     for i in range(len(alignments_70))
-    # }
-    
-    # print(results3)
-    
-    # expected3 = {
-    #     0: ('6', 107171181, 107170880),
-    #     1: ('6', 107169206, 107170880),
-    #     2: ('6', 107167422, 107169206)}
-    # for i, res in results3.items():
-    #     assert res == expected3[i], f"Alignment {i}: got {res}, expected {expected3[i]}"
-
-    # # print the reference intervals of each alignment
-    # for aln in alignments_70:
-    #     ref_start = aln.reference_start
-    #     ref_end = aln.reference_end
-    #     print(f"Alignment {aln.reference_name}:{ref_start}-{ref_end}")
-
-
-# test_get_interval_on_ref_in_region_realdata()
-
-#%%
-
