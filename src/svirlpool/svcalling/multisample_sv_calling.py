@@ -2192,6 +2192,12 @@ def multisample_sv_calling(
                 svtype_counts[svtype] = 0
             svtype_counts[svtype] += 1
         log.info(f"SVcomposite counts by type before merging: {svtype_counts}")
+        # check if there are SVs from the consensus with ID 15.0 or 15.1
+        for svComposite in data:
+            for svPattern in svComposite.svPatterns:
+                if svPattern.consensusID in ["15.0", "15.1"]:
+                    log.info(
+                        f"   ---> Found SVpattern with consensusID {svPattern.consensusID} and type {svPattern.get_sv_type()} and location {svPattern.get_reference_region()}")
 
     # if tmp dir is provided, dump all svComposites to a compressed json file
     if tmp_dir_path is not None:
@@ -2209,7 +2215,6 @@ def multisample_sv_calling(
         verbose=verbose,
     )
 
-    # debug print all sv types of all merged svComposites
     if verbose:
         svtype_counts_merged: dict[str, int] = {}
         for svComposite in merged:
@@ -2218,6 +2223,12 @@ def multisample_sv_calling(
                 svtype_counts_merged[svtype] = 0
             svtype_counts_merged[svtype] += 1
         log.info(f"SVcomposite counts by type after merging: {svtype_counts_merged}")
+        # check if there are SVs from the consensus with ID 15.0 or 15.1
+        for svComposite in merged:
+            for svPattern in svComposite.svPatterns:
+                if svPattern.consensusID in ["15.0", "15.1"]:
+                    log.info(
+                        f"   ---> Found Merged SVpattern with consensusID {svPattern.consensusID} and type {svPattern.get_sv_type()} and location {svPattern.get_reference_region()}")
 
     merged = [
         svComposite
@@ -2240,6 +2251,14 @@ def multisample_sv_calling(
             find_leftmost_reference_position=find_leftmost_reference_position,
         )
     ]
+    if verbose:
+        # check if there are SVcalls from the consensus with ID 15.0 or 15.1
+        for svCall in svCalls:
+            if "15.0" in svCall.consensusIDs or "15.1" in svCall.consensusIDs:
+                log.info(
+                    f"   ------> Found SVcall with consensusID {svCall.consensusIDs} and type {svCall.svtype} and location {svCall.chrname}:{svCall.start}-{svCall.end}"
+                )
+            
     ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
         svComposites=merged,
         reference=reference,
@@ -2451,7 +2470,7 @@ def save_svComposites_to_json(data: list[SVcomposite], output_path: Path | str) 
     compress = str(output_path).endswith(".gz")
 
     # Serialize all SVcomposites
-    serialized_data = [SVpatterns.converter.unstructure(sv) for sv in data]
+    serialized_data = [sv.unstructure() for sv in data]
 
     # Write to file
     if compress:

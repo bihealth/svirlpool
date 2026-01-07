@@ -23,8 +23,7 @@ from svirlpool.localassembly.SVprimitives import SVprimitive
 #         )
 # parse primitives to simple SV types (INS, DEL, BND)
 # DEBUG END
-# the fiel was then gzipped -> "svpattern_INV_parsing.json.gz"
-
+# the file was then gzipped -> "svpattern_INV_parsing.json.gz"
 
 def test_four_relations_of_group() -> None:
     # load the svPrimitives to a list from the gzipped json file
@@ -52,3 +51,4 @@ def test_four_relations_of_group() -> None:
     result2 = SVpatterns.four_relations_of_group(group=breakends2)
     expected2 = {(0, 1, 2, 3): {SVpatterns.FOURRELATIONS.INVERSION}}
     assert expected2 == result2, f"Expected {expected2}, but got {result2}"
+

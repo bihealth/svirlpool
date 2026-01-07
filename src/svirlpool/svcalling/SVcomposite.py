@@ -23,11 +23,16 @@ class SVcomposite:
 
     def unstructure(self):
         """Unstructure the SVcomposite for serialization."""
-        return SVpatterns.converter.unstructure(self)
+        d = SVpatterns.converter.unstructure(self)
+        if "sv_type" in d and isinstance(d["sv_type"], type):
+            d["sv_type"] = d["sv_type"].__name__
+        return d
 
     @classmethod
     def from_unstructured(cls, data: dict) -> SVcomposite:
         """Create SVcomposite from unstructured data."""
+        if "sv_type" in data and isinstance(data["sv_type"], str):
+            data["sv_type"] = getattr(SVpatterns, data["sv_type"])
         return SVpatterns.converter.structure(data, cls)
 
     def to_json(self) -> str:
@@ -38,7 +43,7 @@ class SVcomposite:
     def from_json(cls, json_str: str) -> SVcomposite:
         """Create SVcomposite from JSON string."""
         data = json.loads(json_str)
-        return SVpatterns.converter.structure(data, cls)
+        return cls.from_unstructured(data)
 
     @classmethod
     def from_SVpattern(cls, svPattern: SVpatterns.SVpatternType) -> SVcomposite:

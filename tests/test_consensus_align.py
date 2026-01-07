@@ -1,8 +1,17 @@
+#%%
 import tempfile
 from pathlib import Path
 
-from svirlpool.localassembly import consensus_align
+from svirlpool.localassembly import SVprimitives, consensus_align
+from svirlpool.localassembly.consensus_align_lib import \
+    parse_sv_signals_from_consensus
+from svirlpool.util import datatypes
 
+#%%
+
+DATADIR = Path(__file__).parent / "data" / "consensus_align"
+
+#%%
 
 def test_process_partition_for_trf_overlaps_basic():
     """Test basic TRF overlap detection with simple overlapping intervals."""
@@ -242,3 +251,77 @@ def test_process_partition_for_trf_overlaps_empty_input():
 
         # Verify results - should be empty
         assert result == {}
+
+#%%
+
+def load_parse_sv_signals_from_consensus_test_data(path: Path | str) -> dict[str,object]:
+    """Loads test data for parse_sv_signals_from_consensus from a json file."""
+    if isinstance(path, str):
+        path = Path(path)
+    import gzip
+    import json
+
+    import cattrs
+
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        input_data = json.load(f)
+    # reconstruct pysam alignment from unstructured datatypes.Alignment
+    pysam_alignment = cattrs.structure(input_data["pysam_alignment"], datatypes.Alignment).to_pysam()
+    return {
+        "samplename": input_data["samplename"],
+        "reference_name": input_data["reference_name"],
+        "consensus_sequence": input_data["consensus_sequence"],
+        "pysam_alignment": pysam_alignment,
+        "interval_core": tuple(input_data["interval_core"]),
+        "trf_intervals": [tuple(trf) for trf in input_data["trf_intervals"]],
+        "min_signal_size": input_data["min_signal_size"],
+        "min_bnd_size": input_data["min_bnd_size"]}
+
+def test_generate_SVprimitives_inv15():
+    """Test parse_sv_signals_from_consensus with inversion and reverse complement cases."""
+    # three alignments are part of the INV 15 locus:
+    # parse_sv_signals_from_consensus_INV15.168996671.json.gz
+    # parse_sv_signals_from_consensus_INV15.169093632.json.gz
+    # parse_sv_signals_from_consensus_INV15.169094647.json.gz
+    input_files = [
+        DATADIR / "parse_sv_signals_from_consensus_INV15.168996671.json.gz",
+        DATADIR / "parse_sv_signals_from_consensus_INV15.169093632.json.gz",
+        DATADIR / "parse_sv_signals_from_consensus_INV15.169094647.json.gz",
+    ]
+    # parse all of them to 
+    inputs = [load_parse_sv_signals_from_consensus_test_data(f) for f in input_files]
+
+    results = []
+    for test_data in inputs:
+        merged_svs = parse_sv_signals_from_consensus(
+            samplename=test_data["samplename"],
+            reference_name=test_data["reference_name"],
+            consensus_sequence=test_data["consensus_sequence"],
+            pysam_alignment=test_data["pysam_alignment"],
+            interval_core=test_data["interval_core"],
+            trf_intervals=test_data["trf_intervals"],
+            min_signal_size=test_data["min_signal_size"],
+            min_bnd_size=test_data["min_bnd_size"],
+        )
+        for sv in merged_svs:
+            results.append(sv)
+            
+    # test consensus_align.generate_SVprimitives
+    svPrimitives = SVprimitives.generate_SVprimitives(results)
+    
+    
+    svPrimitives.extend(
+        SVprimitives.generate_SVprimitives(
+            samplename=params.samplename,
+            mergedSVs=mergedSVs,
+            consensus=consensus_obj,
+            consensus_alignment=alignment,
+            alignmentID=alignment_idx,
+            core_interval=core_interval_by_idx[alignment_idx],
+        )
+
+    svPatterns = consensus_align.svPrimitives_to_svPatterns(
+        SVprimitives=svPrimitives, max_del_size=params.max_del_size
+    )
+
+# %%
