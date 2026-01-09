@@ -81,6 +81,21 @@ def svPrimitives_to_svPatterns(
     This is done by parsing the SVprimitives and creating SVpatterns from them.
     IMPORTANT: SVprimitives are in the order of their alignment position on the consensus sequence.
     """
+    
+    # # DEBUG START
+    # # if the consensusID of one of the SVprimitives is 15.0 then save the parameters to json to debug and test
+    # if any(svp.consensusID == "15.0" for svp in SVprimitives):
+    #     import json
+    #     from gzip import open as gzip_open
+    #     data = {
+    #         "SVprimitives": [svp.unstructure() for svp in SVprimitives],
+    #         "max_del_size": max_del_size,
+    #     }
+    #     with gzip_open("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/svPrimitives_to_svPatterns.INV15.json.gz", "wt") as debug_f:
+    #         json.dump(data, debug_f, indent=4)
+    # # DEBUG END
+    
+    
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
         return []
@@ -97,7 +112,7 @@ def svPrimitives_to_svPatterns(
     for _consensusID, group in grouped_svprimitives.items():
         svpatterns.extend(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
-                SVprimitives=group, max_del_size=max_del_size
+                SVprimitives=group, max_del_size=max_del_size, log_level_override=logging.DEBUG if _consensusID.startswith("7.") else None
             )
         )
 
@@ -1588,7 +1603,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     index_partition=params.alignments_index_partition,
                     alignments_path=params.padded_alignments_path,
                 )
-                         
+                
                 # sort alignments by alignment.annotations.qstart
                 for aln in alignments:
                     if aln.annotations is None or "qstart" not in aln.annotations:
@@ -1609,10 +1624,28 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     for aln_idx, ref_name, core_start, core_end in core_intervals_with_idx
                 }
 
+                # # DEBUG START
+                # if consensus_obj.ID == "15.0":
+                #     cons = consensus_obj.unstructure()
+                #     consensus_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.consensus.json.gz"
+                #     from gzip import open as gzip_open
+                #     with gzip_open(consensus_path, "wt") as debug_f:
+                #         json.dump(cons, debug_f, indent=4)
+                #     # write structured alignments to a json file
+                #     aln_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.alignments.json.gz"
+                #     # and save the alignments
+                #     with gzip_open(aln_path, "wt") as debug_f:
+                #         aln_list = {"alignments": [
+                #             alignment.unstructure() for alignment in alignments
+                #         ]}
+                #         json.dump(aln_list, debug_f, indent=4)
+                # # DEBUG END
+
                 for alignment_idx, alignment in enumerate(
                     alignments
                 ):  # alignment_idx order on consensus sequence!
                     # Match by alignment index
+                    
                     if alignment_idx not in core_interval_by_idx:
                         log.debug(
                             f"No core interval found for alignment {alignment_idx} of {consensusID}. Intervals available: {core_intervals_with_idx}")
@@ -1645,6 +1678,15 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     log.debug(
                         f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals"
                     )
+                    # # DEBUG START
+                    # if consensusID == "15.0":
+                    #     # save the merged SVs to a json file for debugging
+                    #     svs_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.mergedSVs.json.gz"
+                    #     from gzip import open as gzip_open
+                    #     with gzip_open(svs_path, "wt") as debug_f:
+                    #         svs_list = [sv.unstructure() for sv in mergedSVs]
+                    #         json.dump(svs_list, debug_f, indent=4)
+                    # # DEBUG END
                     
                     # now SV signals are parsed for this alignment
                     svPrimitives.extend(

@@ -1,15 +1,13 @@
 #%%
+import logging
 import tempfile
 from pathlib import Path
 
-from svirlpool.localassembly import SVprimitives, consensus_align
-from svirlpool.localassembly.consensus_align_lib import \
-    parse_sv_signals_from_consensus
-from svirlpool.util import datatypes
+from svirlpool.localassembly import SVpatterns, SVprimitives, consensus_align
 
 #%%
 
-DATADIR = Path(__file__).parent / "data" / "consensus_align"
+DATADIR = Path(__file__).parent / "data"
 
 #%%
 
@@ -254,74 +252,59 @@ def test_process_partition_for_trf_overlaps_empty_input():
 
 #%%
 
-def load_parse_sv_signals_from_consensus_test_data(path: Path | str) -> dict[str,object]:
-    """Loads test data for parse_sv_signals_from_consensus from a json file."""
-    if isinstance(path, str):
-        path = Path(path)
-    import gzip
+# data was saved like this:
+    # # DEBUG START
+    # # if the consensusID of one of the SVprimitives is 15.0 then save the parameters to json to debug and test
+    # if any(svp.consensusID == "15.0" for svp in SVprimitives):
+    #     import json
+    #     from gzip import open as gzip_open
+    #     data = {
+    #         "SVprimitives": [svp.unstructure() for svp in SVprimitives],
+    #         "max_del_size": max_del_size,
+    #     }
+    #     with gzip_open("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/svPrimitives_to_svPatterns.INV15.json.gz", "wt") as debug_f:
+    #         json.dump(data, debug_f, indent=4)
+    # # DEBUG END
+
+def load_svprimitives(path: Path) -> list[SVprimitives.SVprimitive]:
+    """Load SVprimitives from a gzipped json file for testing."""
     import json
+    from gzip import open as gzip_open
 
     import cattrs
-
-    with gzip.open(path, "rt", encoding="utf-8") as f:
-        input_data = json.load(f)
-    # reconstruct pysam alignment from unstructured datatypes.Alignment
-    pysam_alignment = cattrs.structure(input_data["pysam_alignment"], datatypes.Alignment).to_pysam()
-    return {
-        "samplename": input_data["samplename"],
-        "reference_name": input_data["reference_name"],
-        "consensus_sequence": input_data["consensus_sequence"],
-        "pysam_alignment": pysam_alignment,
-        "interval_core": tuple(input_data["interval_core"]),
-        "trf_intervals": [tuple(trf) for trf in input_data["trf_intervals"]],
-        "min_signal_size": input_data["min_signal_size"],
-        "min_bnd_size": input_data["min_bnd_size"]}
-
-def test_generate_SVprimitives_inv15():
-    """Test parse_sv_signals_from_consensus with inversion and reverse complement cases."""
-    # three alignments are part of the INV 15 locus:
-    # parse_sv_signals_from_consensus_INV15.168996671.json.gz
-    # parse_sv_signals_from_consensus_INV15.169093632.json.gz
-    # parse_sv_signals_from_consensus_INV15.169094647.json.gz
-    input_files = [
-        DATADIR / "parse_sv_signals_from_consensus_INV15.168996671.json.gz",
-        DATADIR / "parse_sv_signals_from_consensus_INV15.169093632.json.gz",
-        DATADIR / "parse_sv_signals_from_consensus_INV15.169094647.json.gz",
+    with gzip_open(path, "rt") as f:
+        data = json.load(f)
+    sv_primitives = [
+        cattrs.structure(svp_dict, SVprimitives.SVprimitive)
+        for svp_dict in data["SVprimitives"]
     ]
-    # parse all of them to 
-    inputs = [load_parse_sv_signals_from_consensus_test_data(f) for f in input_files]
+    return sv_primitives
 
-    results = []
-    for test_data in inputs:
-        merged_svs = parse_sv_signals_from_consensus(
-            samplename=test_data["samplename"],
-            reference_name=test_data["reference_name"],
-            consensus_sequence=test_data["consensus_sequence"],
-            pysam_alignment=test_data["pysam_alignment"],
-            interval_core=test_data["interval_core"],
-            trf_intervals=test_data["trf_intervals"],
-            min_signal_size=test_data["min_signal_size"],
-            min_bnd_size=test_data["min_bnd_size"],
-        )
-        for sv in merged_svs:
-            results.append(sv)
-            
-    # test consensus_align.generate_SVprimitives
-    svPrimitives = SVprimitives.generate_SVprimitives(results)
-    
-    
-    svPrimitives.extend(
-        SVprimitives.generate_SVprimitives(
-            samplename=params.samplename,
-            mergedSVs=mergedSVs,
-            consensus=consensus_obj,
-            consensus_alignment=alignment,
-            alignmentID=alignment_idx,
-            core_interval=core_interval_by_idx[alignment_idx],
-        )
+def load_max_del_size(path: Path) -> int:
+    """Load max_del_size from a gzipped json file for testing."""
+    import json
+    from gzip import open as gzip_open
+    with gzip_open(path, "rt") as f:
+        data = json.load(f)
+    return data["max_del_size"]
 
-    svPatterns = consensus_align.svPrimitives_to_svPatterns(
-        SVprimitives=svPrimitives, max_del_size=params.max_del_size
+def test_svPrimitives_to_svPatterns_inv15():
+    """Test svPrimitives_to_svPatterns function with SVprimitives for INV15."""
+    # Load SVprimitives and max_del_size for INV15
+    svp_path = DATADIR / "consensus_align" / "svPrimitives_to_svPatterns.INV15.json.gz"
+    sv_primitives = load_svprimitives(svp_path)
+    max_del_size = load_max_del_size(svp_path)
+
+    # filter sv_primitives to only those with consensusID "15.0"
+    group = [
+        svp for svp in sv_primitives if svp.consensusID == "15.0"
+    ]
+
+    result = SVpatterns.parse_SVprimitives_to_SVpatterns(
+        SVprimitives=group, max_del_size=max_del_size, log_level_override=logging.DEBUG
     )
 
+    # Further checks can be added based on expected patterns for INV15
+
 # %%
+test_svPrimitives_to_svPatterns_inv15()

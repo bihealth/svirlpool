@@ -595,13 +595,14 @@ def parse_sv_signals_from_consensus(
     """
     Parse SV signals from consensus alignment. Returned items are sorted by their position on the consensus.
     """
+    # DEBUG START
     # save all input parameters to a json file for testing and debugging.
     # serialize the alignment to a datatypes.Alignment object with unstructure()
     # if pysam_alignment.query_name == "15.0":
     #     log.info(
     #         f"parsing sv signals for samplename: {samplename}, reference_name: {reference_name}, consensus_sequence length: {len(consensus_sequence)}, pysam_alignment: {pysam_alignment.to_string()}, interval_core: {interval_core}, trf_intervals: {trf_intervals}, min_signal_size: {min_signal_size}, min_bnd_size: {min_bnd_size}"
     #     )
-    #     pysam_alignment_string = datatypes.Alignment.from_pysam(
+    #     alignment_string = datatypes.Alignment.from_pysam(
     #         pysam_alignment
     #     ).unstructure()
     #     # save to json
@@ -609,7 +610,7 @@ def parse_sv_signals_from_consensus(
     #         "samplename": samplename,
     #         "reference_name": reference_name,
     #         "consensus_sequence": consensus_sequence,
-    #         "pysam_alignment": pysam_alignment_string,
+    #         "alignment": alignment_string,
     #         "interval_core": interval_core,
     #         "trf_intervals": trf_intervals,
     #         "min_signal_size": min_signal_size,
@@ -622,6 +623,7 @@ def parse_sv_signals_from_consensus(
     #     with gzip.open(save_path, "wt", encoding="utf-8") as f:
     #         json.dump(input_data, f)
     #     log.info(f"Saved input data to {save_path}")
+    # DEBUG END
         
     # parse sv signals from alignments
     sv_signals: list[datatypes.SVsignal] = (
@@ -632,12 +634,13 @@ def parse_sv_signals_from_consensus(
             min_bnd_size=min_bnd_size,
         ).SV_signals
     )
-    # DEBUG print parsed sv signals if consensusID is 15.0
-    if pysam_alignment.query_name == "15.0":
-        for sv_signal in sv_signals:
-            print("======================================================================================================================")
-            print(f"parsed sv signal:: type:{sv_signal.sv_type} ref_start:{sv_signal.ref_start} ref_end:{sv_signal.ref_end} read_start:{sv_signal.read_start} read_end:{sv_signal.read_end} size:{sv_signal.size}")
-            print("======================================================================================================================")
+    # DEBUG START print parsed sv signals if consensusID is 15.0
+    # if pysam_alignment.query_name == "15.0":
+    #     for sv_signal in sv_signals:
+    #         print("======================================================================================================================")
+    #         print(f"parsed sv signal:: type:{sv_signal.sv_type} ref_start:{sv_signal.ref_start} ref_end:{sv_signal.ref_end} read_start:{sv_signal.read_start} read_end:{sv_signal.read_end} size:{sv_signal.size}")
+    #         print("======================================================================================================================")
+    # DEBUG END
     # if interval_core is given: this describes the actual start and end of the consensus sequence
     # filter any signals whose read_start and read_end are not fully inside interval_core
     if interval_core is not None:

@@ -1,7 +1,6 @@
 #%%
 import json
 from gzip import open as gzip_open
-from gzip import open as gzopen
 from pathlib import Path
 
 import cattrs
@@ -52,7 +51,7 @@ def load_test_data(_name: str) -> consensus_class.Consensus:
 
 # This is used in the tests
 def load_alignments(path: Path) -> list[Alignment]:
-    with gzopen(path, "rt") as f:
+    with gzip_open(path, "rt") as f:
         data = json.load(f)
     alignments = cattrs.structure(data["alignments"], list[Alignment])
     return alignments
@@ -133,7 +132,7 @@ def generate_simulated_test_data():
             "alignments": [aln.unstructure() for aln in data["alignments"]],
             "reference": data["reference"]
         }
-        with gzopen(output_path, "wt") as f:
+        with gzip_open(output_path, "wt") as f:
             json.dump(unstructured_data, f, indent=2)
         print(f"Saved {name} to {output_path}")
 

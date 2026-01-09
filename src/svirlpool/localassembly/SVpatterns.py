@@ -753,14 +753,16 @@ def four_relations_of_group(
             a.alignmentID != b.alignmentID
             and b.alignmentID == c.alignmentID
             and c.alignmentID != d.alignmentID
-        ):
-            interval_ad = Interval(a.ref_start, d.ref_start)
+            ):
+            interval_ad = Interval(min(a.ref_start, d.ref_start), max(a.ref_end, d.ref_end))
             if a.chr != b.chr:
                 tags.add(FOURRELATIONS.HOP)
+                log.debug(f"HOP detected on different chromosomes: a.chr={a.chr}, b.chr={b.chr}")
             elif not interval_ad.overlaps(
                 min(b.ref_start, c.ref_end), max(b.ref_end, c.ref_start)
             ):
                 tags.add(FOURRELATIONS.HOP)
+                log.debug(f"HOP detected on intervals: interval_ad={interval_ad}, min(b.ref_start, c.ref_end)={min(b.ref_start, c.ref_end)}, max(b.ref_end, c.ref_start)={max(b.ref_end, c.ref_start)}")
         # INVERSION - reverse aln is equal between breakends a,d and b,c but not between a,b and c,d
         if (
             a.aln_is_reverse == d.aln_is_reverse
@@ -993,7 +995,8 @@ def possible_single_ended_breakends_from_BNDs(
 
 
 def parse_SVprimitives_to_SVpatterns(
-    SVprimitives: list[SVprimitive], max_del_size: int = 100_000
+    SVprimitives: list[SVprimitive], max_del_size: int = 100_000,
+    log_level_override: int | None = None,
 ) -> list[SVpatternType]:
     """
     Parses Sv patterns from the SVprimitives of one consensus. All SVprimitives must have the same consensusID.
@@ -1003,6 +1006,9 @@ def parse_SVprimitives_to_SVpatterns(
         raise ValueError(
             "All SVprimitives must have the same consensusID to parse SVpatterns"
         )
+    if log_level_override is not None:
+        log.setLevel(log_level_override)
+    log.debug(f"consensusIDs = {set(svp.consensusID for svp in SVprimitives)}")
     # DEBUG START
     # if SVprimitives[0].consensusID == "4.0":
     #     # write function input to debugging json file with structured SVpatterns
@@ -1037,6 +1043,7 @@ def parse_SVprimitives_to_SVpatterns(
     # 4-relations based parsing for inversions and complex SVs
     if len(breakends) == 4:
         fourrelations = four_relations_of_group(group=breakends)
+        log.debug(f"Four-relations: {fourrelations}")
 
         checks = [
             (possible_inversions_deletions_from_BNDs, SVpatternInversionDeletion),
@@ -1069,6 +1076,7 @@ def parse_SVprimitives_to_SVpatterns(
         tworelations = two_relations_of_group(
             group=breakends, max_del_size=max_del_size
         )
+        log.debug(f"Two-relations: {tworelations}")
 
         idx_tuples_insertions: list[tuple[int, int]] = possible_insertions_from_BNDs(
             svps=breakends, tworelations=tworelations
@@ -1078,6 +1086,7 @@ def parse_SVprimitives_to_SVpatterns(
                 continue
             used_indices.update([a, b])
             result.append(SVpatternInsertion(SVprimitives=[breakends[a], breakends[b]]))
+            log.debug(f"Parsed insertion from BNDs: {result[-1]}")
 
         idx_tuples_deletions: list[tuple[int, int]] = possible_deletions_from_BNDs(
             svps=breakends, tworelations=tworelations
@@ -1087,6 +1096,7 @@ def parse_SVprimitives_to_SVpatterns(
                 continue
             used_indices.update([a, b])
             result.append(SVpatternDeletion(SVprimitives=[breakends[a], breakends[b]]))
+            log.debug(f"Parsed deletion from BNDs: {result[-1]}")
 
         idx_tuples_inverted_translocations: list[tuple[int, int]] = (
             possible_inverted_translocations_from_BNDs(
@@ -1100,8 +1110,8 @@ def parse_SVprimitives_to_SVpatterns(
             result.append(
                 SVpatternInvertedTranslocation(
                     SVprimitives=[breakends[a], breakends[b]]
-                )
-            )
+                ))
+            log.debug(f"Parsed inverted translocation from BNDs: {result[-1]}")
 
         idx_tuples_translocations: list[tuple[int, int]] = (
             possible_translocations_from_BNDs(svps=breakends, tworelations=tworelations)
@@ -1113,18 +1123,21 @@ def parse_SVprimitives_to_SVpatterns(
             result.append(
                 SVpatternTranslocation(SVprimitives=[breakends[a], breakends[b]])
             )
+            log.debug(f"Parsed translocation from BNDs: {result[-1]}")
 
     # if there is only one breakend left, it is a single-ended breakend
     if len(used_indices) - len(breakends) == 1:
         unused_index = (set(range(len(breakends))) - used_indices).pop()
         result.append(SVpatternSingleBreakend(SVprimitives=[breakends[unused_index]]))
         used_indices.add(unused_index)
+        log.debug(f"Parsed single-ended breakend from BND: {result[-1]}")
 
     # if there are still unused breakends, create a complex SVpattern
     unused_indices = set(range(len(breakends))) - used_indices
     if unused_indices:
         remaining_breakends = [breakends[i] for i in unused_indices]
         result.append(SVpatternComplex(SVprimitives=remaining_breakends))
+        log.debug(f"Parsed complex SVpattern from BNDs: {result[-1]}")
 
     return result
 

@@ -292,18 +292,15 @@ def get_consensus_core_alignment_interval_on_reference(
     
     
     
-    print(f"get_consensus_core_alignment_interval_on_reference: core_start = {core_start}, core_end = {core_end}")
     traced_back_ref_start, traced_back_ref_end = get_interval_on_ref_in_region(
         a=alignment,
         start=core_start,
         end=core_end,
     )
-    print(f"get_consensus_core_alignment_interval_on_reference: traced_back_ref_start = {traced_back_ref_start}, traced_back_ref_end = {traced_back_ref_end}")
     traced_back_ref_start, traced_back_ref_end = (
         min(traced_back_ref_start, traced_back_ref_end),
         max(traced_back_ref_start, traced_back_ref_end),
     )
-    print(f"get_consensus_core_alignment_interval_on_reference: final traced_back_ref_start = {traced_back_ref_start}, traced_back_ref_end = {traced_back_ref_end}")
     return (str(alignment.reference_name), traced_back_ref_start, traced_back_ref_end)
 
 
