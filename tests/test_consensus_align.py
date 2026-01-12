@@ -303,8 +303,8 @@ def test_svPrimitives_to_svPatterns_inv15():
     result = SVpatterns.parse_SVprimitives_to_SVpatterns(
         SVprimitives=group, max_del_size=max_del_size, log_level_override=logging.DEBUG
     )
-
-    # Further checks can be added based on expected patterns for INV15
-
-# %%
-test_svPrimitives_to_svPatterns_inv15()
+    
+    assert 1 == len(result)
+    assert type(result[0]) == SVpatterns.SVpatternInversion
+    assert 4 == len(result[0].SVprimitives)
+    assert 13 == result[0].SVprimitives[0].get_total_support()
