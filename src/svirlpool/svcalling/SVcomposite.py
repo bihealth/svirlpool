@@ -66,10 +66,14 @@ class SVcomposite:
             SVpatterns.SVpatternDeletion,
         }:  # compositions of INS and DEL can occur, e.g. in tandem repeats
             ins_count = sum(
-                sv.get_size() for sv in svPatterns if isinstance(sv, SVpatterns.SVpatternInsertion)
+                sv.get_size()
+                for sv in svPatterns
+                if isinstance(sv, SVpatterns.SVpatternInsertion)
             )
             del_count = sum(
-                sv.get_size() for sv in svPatterns if isinstance(sv, SVpatterns.SVpatternDeletion)
+                sv.get_size()
+                for sv in svPatterns
+                if isinstance(sv, SVpatterns.SVpatternDeletion)
             )
             inserted_bases = ins_count - del_count
             if inserted_bases > 0:
@@ -147,7 +151,7 @@ class SVcomposite:
             )
         return alt_readnames
 
-    def get_size(self, inner :bool | None = None) -> int:
+    def get_size(self, inner: bool | None = None) -> int:
         """returns the size of the SVcomposite, calculated from the SVpatterns with the highest support (same logic as get_alt_sequence).
         The inner parameter can override the SVpattern.get_size() 'inner' parameter, which is useful for inversions or other 4+ relations-driven SV patterns."""
         # Group SVpatterns by (samplename, consensusID) - same logic as get_alt_sequence
@@ -181,7 +185,9 @@ class SVcomposite:
         # Calculate summed size from the best group only
         summed_bp = 0
         for svPattern in best_group:
-            if inner is not None and isinstance(svPattern, SVpatterns.SVpatternInversion):
+            if inner is not None and isinstance(
+                svPattern, SVpatterns.SVpatternInversion
+            ):
                 value = svPattern.get_size(inner=inner)
             else:
                 value = svPattern.get_size()
@@ -191,7 +197,7 @@ class SVcomposite:
                 summed_bp += value
 
         return abs(summed_bp)  # Return absolute value for size
-    
+
     def _get_best_group(self) -> list[SVpatterns.SVpatternType]:
         """Helper function to get the group of SVpatterns with the highest support."""
         # Group SVpatterns by (samplename, consensusID)
@@ -223,17 +229,16 @@ class SVcomposite:
             raise ValueError("No SVpatterns in SVcomposite")
 
         return best_group
-    
+
     def get_representative_SVpattern(self) -> SVpatterns.SVpatternType:
         """returns the SVpattern with the highest support (same logic as get_alt_sequence)."""
         best_group = self._get_best_group()
         # Return the SVpattern with the highest support from the best group
         return max(best_group, key=lambda svp: len(svp.get_supporting_reads()))
 
-
     def get_alt_sequence(self) -> str:
         best_group = self._get_best_group()
-        
+
         # Concatenate alt sequences from the best group
         concatenated_sequence = ""
         for svPattern in best_group:
@@ -252,7 +257,7 @@ class SVcomposite:
 
     def get_ref_sequence(self) -> str:
         best_group = self._get_best_group()
-        
+
         # Concatenate reference sequences from the best group
         concatenated_sequence = ""
         for svPattern in best_group:
@@ -266,7 +271,7 @@ class SVcomposite:
             # Add other pattern types as needed
 
         size = self.get_size()
-        return concatenated_sequence[:size] if size > 0 else "" 
+        return concatenated_sequence[:size] if size > 0 else ""
 
     def overlaps_any(self, other: SVcomposite, tolerance_radius: int = 50) -> bool:
         if self.repeatIDs.intersection(other.repeatIDs):

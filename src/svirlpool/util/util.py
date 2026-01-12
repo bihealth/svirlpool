@@ -733,7 +733,9 @@ def get_interval_on_ref_in_region(
     """given a start and end on the read, return the corresponding interval on the reference."""
     # find start and end position on ref
     start, end = (end, start) if a.is_reverse else (start, end)
-    istart = get_read_position_on_ref(alignment=a, position=start, direction=Direction.RIGHT)
+    istart = get_read_position_on_ref(
+        alignment=a, position=start, direction=Direction.RIGHT
+    )
     iend = get_read_position_on_ref(alignment=a, position=end, direction=Direction.LEFT)
     return min(iend, istart), max(iend, istart)
 
@@ -1402,7 +1404,7 @@ Forward or backward orientation of the aligned query sequence is respected.
     )
     # find the block in which the position is located. It can be multiple blocks if the position is in an insertion
     # in that case, select fromt he blocks that are not insertions
-    
+
     # Determine traversal direction based on read orientation
     # If is_reverse, Read RIGHT (increasing) corresponds to Ref LEFT (decreasing block index)
     traversal_direction = direction
@@ -1497,6 +1499,7 @@ def get_ref_position_on_read(
         0
     ]
 
+
 def is_ref_position_on_aligned_read(
     alignment: pysam.AlignedSegment,
     position: int,
@@ -1504,7 +1507,7 @@ def is_ref_position_on_aligned_read(
     ref_start = alignment.reference_start
     ref_end = alignment.reference_end
     return ref_start <= position < ref_end
-        
+
 
 # -----------------------------------------------------------------------------
 
@@ -1584,7 +1587,6 @@ def get_read_pitx_on_ref(
         #     else:
         #         final_pos = x_read_starts[block_r]
         #     block = block_r
-
 
     # Determine traversal direction based on read orientation
     # If is_reverse, Read RIGHT (increasing) corresponds to Ref LEFT (decreasing block index)
@@ -1685,7 +1687,7 @@ def is_read_position_on_ref(
     alignment: pysam.AlignedSegment,
     position: int,
 ) -> bool:
-    s,e = query_start_end_on_read(alignment)
+    s, e = query_start_end_on_read(alignment)
     return s <= position < e
 
 

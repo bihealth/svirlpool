@@ -172,13 +172,14 @@ class SVpattern(ABC):
         return regions
 
 
-def _get_first_svp_on_reference_start_pos(svp:SVpattern) -> tuple[str,int,int]:
+def _get_first_svp_on_reference_start_pos(svp: SVpattern) -> tuple[str, int, int]:
     # pick first of SVpatterns after sorting them by chr, start
     _svps = sorted(svp.SVprimitives, key=lambda svp: (svp.chr, svp.ref_start))
     chr = _svps[0].chr
     start = _svps[0].ref_start
     end = _svps[-1].ref_end
     return (chr, min(start, end), max(start, end))
+
 
 @attrs.define
 class SVpatternSingleBreakend(SVpattern):
@@ -436,7 +437,6 @@ class SVpatternComplex(SVpattern):
         return _get_first_svp_on_reference_start_pos(self)
 
 
-
 @attrs.define
 class SVpatternInversion(SVpattern):
     inserted_sequence: bytes | None = None
@@ -448,7 +448,10 @@ class SVpatternInversion(SVpattern):
         return "INV"
 
     def set_sequence(
-        self, sequence: str, sequence_complexity_max_length: int = 300, write_complexity: bool = True
+        self,
+        sequence: str,
+        sequence_complexity_max_length: int = 300,
+        write_complexity: bool = True,
     ) -> None:
         """Set the inserted sequence and compute its complexity."""
         self.inserted_sequence = pickle.dumps(sequence)
@@ -464,9 +467,11 @@ class SVpatternInversion(SVpattern):
             dummy_complexity = np.ones(len(sequence), dtype=np.float16)
             self.sequence_complexity = pickle.dumps(dummy_complexity)
 
-
     def set_deleted_sequence(
-        self, sequence: str, sequence_complexity_max_length: int = 300, write_complexity: bool = True
+        self,
+        sequence: str,
+        sequence_complexity_max_length: int = 300,
+        write_complexity: bool = True,
     ) -> None:
         """Set the deleted sequence and compute its complexity."""
         self.deleted_sequence = pickle.dumps(sequence)
@@ -481,7 +486,6 @@ class SVpatternInversion(SVpattern):
             # Create dummy placeholder with 1.0 values for long sequences
             dummy_complexity = np.ones(len(sequence), dtype=np.float16)
             self.sequence_complexity = pickle.dumps(dummy_complexity)
-
 
     def get_sequence(self) -> str | None:
         """Retrieve the inserted sequence by unpickling."""
@@ -500,7 +504,6 @@ class SVpatternInversion(SVpattern):
             return pickle.loads(self.deleted_sequence)
         except Exception:
             return None
-
 
     def get_sequence_complexity(self) -> np.ndarray | None:
         """Retrieve the sequence complexity scores."""
@@ -536,8 +539,8 @@ class SVpatternInversion(SVpattern):
         return consensus.consensus_sequence[s:e]
 
     # alway return the inner region of the inversion
-    def get_reference_region(self, inner:bool=False) -> tuple[str, int, int]:
-        idx = (1,2) if inner else (0,3)
+    def get_reference_region(self, inner: bool = False) -> tuple[str, int, int]:
+        idx = (1, 2) if inner else (0, 3)
         chr = self.SVprimitives[idx[0]].chr
         start = self.SVprimitives[idx[0]].ref_start
         end = self.SVprimitives[idx[1]].ref_start
@@ -559,26 +562,28 @@ class SVpatternInversionDeletion(SVpatternInversion):
     @classmethod
     def get_sv_type(cls) -> str:
         return "INV-DEL"
-    
+
     def get_size(self, inner: bool = False) -> int:
         """Returns the size of the inverted deletion."""
         return super().get_size(inner=inner)
-    
-    def get_reference_region(self, inner:bool=False) -> tuple[str, int, int]:
+
+    def get_reference_region(self, inner: bool = False) -> tuple[str, int, int]:
         return super().get_reference_region(inner=inner)
+
 
 @attrs.define
 class SVpatternInversionDuplication(SVpatternInversion):
     @classmethod
     def get_sv_type(cls) -> str:
         return "INV-DUP"
-   
+
     def get_size(self, inner: bool = True) -> int:
         """Returns the size of the inverted deletion."""
         return super().get_size(inner=inner)
-   
-    def get_reference_region(self, inner:bool=True) -> tuple[str, int, int]:
+
+    def get_reference_region(self, inner: bool = True) -> tuple[str, int, int]:
         return super().get_reference_region(inner=inner)
+
 
 @attrs.define
 class SVpatternInversionTranslocation(SVpatternInversion):
@@ -594,8 +599,8 @@ class SVpatternInversionTranslocation(SVpatternInversion):
                 "Inverted Translocation size can only be calculated for inner region."
             )
         return super().get_size(inner=True)
-    
-    def get_reference_region(self, inner:bool=True) -> tuple[str, int, int]:
+
+    def get_reference_region(self, inner: bool = True) -> tuple[str, int, int]:
         # outer region can be calculated if the two outer breakends are on the same chr
         if inner:
             return super().get_reference_region(inner=True)
@@ -633,7 +638,9 @@ class TWORELATIONS(Enum):
     INVERSION = 2  # inversions are two BNDs that have different read orientations
     TRANSLOCATION = 3  # two BNDs don't share the same chr
     OVERLAP = 4  # the alignments of the two BNDs overlap on the reference
-    REFGAP = 5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
+    REFGAP = (
+        5  # two BNDs are separated by a gap in the reference sequence, e.g. deletions
+    )
     READGAP = 6  # two BNDs are separated by a gap in the read sequence, e.g. insertions
 
     def __lt__(self, other):
@@ -753,16 +760,22 @@ def four_relations_of_group(
             a.alignmentID != b.alignmentID
             and b.alignmentID == c.alignmentID
             and c.alignmentID != d.alignmentID
-            ):
-            interval_ad = Interval(min(a.ref_start, d.ref_start), max(a.ref_end, d.ref_end))
+        ):
+            interval_ad = Interval(
+                min(a.ref_start, d.ref_start), max(a.ref_end, d.ref_end)
+            )
             if a.chr != b.chr:
                 tags.add(FOURRELATIONS.HOP)
-                log.debug(f"HOP detected on different chromosomes: a.chr={a.chr}, b.chr={b.chr}")
+                log.debug(
+                    f"HOP detected on different chromosomes: a.chr={a.chr}, b.chr={b.chr}"
+                )
             elif not interval_ad.overlaps(
                 min(b.ref_start, c.ref_end), max(b.ref_end, c.ref_start)
             ):
                 tags.add(FOURRELATIONS.HOP)
-                log.debug(f"HOP detected on intervals: interval_ad={interval_ad}, min(b.ref_start, c.ref_end)={min(b.ref_start, c.ref_end)}, max(b.ref_end, c.ref_start)={max(b.ref_end, c.ref_start)}")
+                log.debug(
+                    f"HOP detected on intervals: interval_ad={interval_ad}, min(b.ref_start, c.ref_end)={min(b.ref_start, c.ref_end)}, max(b.ref_end, c.ref_start)={max(b.ref_end, c.ref_start)}"
+                )
         # INVERSION - reverse aln is equal between breakends a,d and b,c but not between a,b and c,d
         if (
             a.aln_is_reverse == d.aln_is_reverse
@@ -995,7 +1008,8 @@ def possible_single_ended_breakends_from_BNDs(
 
 
 def parse_SVprimitives_to_SVpatterns(
-    SVprimitives: list[SVprimitive], max_del_size: int = 100_000,
+    SVprimitives: list[SVprimitive],
+    max_del_size: int = 100_000,
     log_level_override: int | None = None,
 ) -> list[SVpatternType]:
     """
@@ -1008,7 +1022,7 @@ def parse_SVprimitives_to_SVpatterns(
         )
     if log_level_override is not None:
         log.setLevel(log_level_override)
-    log.debug(f"consensusIDs = {set(svp.consensusID for svp in SVprimitives)}")
+    log.debug("consensusIDs = %s", {svp.consensusID for svp in SVprimitives})
     # DEBUG START
     # if SVprimitives[0].consensusID == "4.0":
     #     # write function input to debugging json file with structured SVpatterns
@@ -1110,7 +1124,8 @@ def parse_SVprimitives_to_SVpatterns(
             result.append(
                 SVpatternInvertedTranslocation(
                     SVprimitives=[breakends[a], breakends[b]]
-                ))
+                )
+            )
             log.debug(f"Parsed inverted translocation from BNDs: {result[-1]}")
 
         idx_tuples_translocations: list[tuple[int, int]] = (

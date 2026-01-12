@@ -289,9 +289,7 @@ def get_consensus_core_alignment_interval_on_reference(
     )
     # check if core_start and core_end are within the alignment. If they are on a clipped part of the alignment,
     # moce them to the next aligned position
-    
-    
-    
+
     traced_back_ref_start, traced_back_ref_end = get_interval_on_ref_in_region(
         a=alignment,
         start=core_start,

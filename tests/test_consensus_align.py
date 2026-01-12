@@ -1,15 +1,16 @@
-#%%
+# %%
 import logging
 import tempfile
 from pathlib import Path
 
 from svirlpool.localassembly import SVpatterns, SVprimitives, consensus_align
 
-#%%
+# %%
 
 DATADIR = Path(__file__).parent / "data"
 
-#%%
+# %%
+
 
 def test_process_partition_for_trf_overlaps_basic():
     """Test basic TRF overlap detection with simple overlapping intervals."""
@@ -250,21 +251,23 @@ def test_process_partition_for_trf_overlaps_empty_input():
         # Verify results - should be empty
         assert result == {}
 
-#%%
+
+# %%
 
 # data was saved like this:
-    # # DEBUG START
-    # # if the consensusID of one of the SVprimitives is 15.0 then save the parameters to json to debug and test
-    # if any(svp.consensusID == "15.0" for svp in SVprimitives):
-    #     import json
-    #     from gzip import open as gzip_open
-    #     data = {
-    #         "SVprimitives": [svp.unstructure() for svp in SVprimitives],
-    #         "max_del_size": max_del_size,
-    #     }
-    #     with gzip_open("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/svPrimitives_to_svPatterns.INV15.json.gz", "wt") as debug_f:
-    #         json.dump(data, debug_f, indent=4)
-    # # DEBUG END
+# # DEBUG START
+# # if the consensusID of one of the SVprimitives is 15.0 then save the parameters to json to debug and test
+# if any(svp.consensusID == "15.0" for svp in SVprimitives):
+#     import json
+#     from gzip import open as gzip_open
+#     data = {
+#         "SVprimitives": [svp.unstructure() for svp in SVprimitives],
+#         "max_del_size": max_del_size,
+#     }
+#     with gzip_open("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/svPrimitives_to_svPatterns.INV15.json.gz", "wt") as debug_f:
+#         json.dump(data, debug_f, indent=4)
+# # DEBUG END
+
 
 def load_svprimitives(path: Path) -> list[SVprimitives.SVprimitive]:
     """Load SVprimitives from a gzipped json file for testing."""
@@ -272,6 +275,7 @@ def load_svprimitives(path: Path) -> list[SVprimitives.SVprimitive]:
     from gzip import open as gzip_open
 
     import cattrs
+
     with gzip_open(path, "rt") as f:
         data = json.load(f)
     sv_primitives = [
@@ -280,13 +284,16 @@ def load_svprimitives(path: Path) -> list[SVprimitives.SVprimitive]:
     ]
     return sv_primitives
 
+
 def load_max_del_size(path: Path) -> int:
     """Load max_del_size from a gzipped json file for testing."""
     import json
     from gzip import open as gzip_open
+
     with gzip_open(path, "rt") as f:
         data = json.load(f)
     return data["max_del_size"]
+
 
 def test_svPrimitives_to_svPatterns_inv15():
     """Test svPrimitives_to_svPatterns function with SVprimitives for INV15."""
@@ -295,14 +302,12 @@ def test_svPrimitives_to_svPatterns_inv15():
     sv_primitives = load_svprimitives(svp_path)
     max_del_size = load_max_del_size(svp_path)
 
-    group = [
-        svp for svp in sv_primitives if svp.consensusID == "15.0"
-    ]
+    group = [svp for svp in sv_primitives if svp.consensusID == "15.0"]
 
     result = SVpatterns.parse_SVprimitives_to_SVpatterns(
         SVprimitives=group, max_del_size=max_del_size, log_level_override=logging.DEBUG
     )
-    
+
     assert 1 == len(result)
     assert type(result[0]) == SVpatterns.SVpatternInversion
     assert 4 == len(result[0].SVprimitives)

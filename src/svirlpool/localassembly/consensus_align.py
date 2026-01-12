@@ -81,7 +81,7 @@ def svPrimitives_to_svPatterns(
     This is done by parsing the SVprimitives and creating SVpatterns from them.
     IMPORTANT: SVprimitives are in the order of their alignment position on the consensus sequence.
     """
-    
+
     # # DEBUG START
     # # if the consensusID of one of the SVprimitives is 15.0 then save the parameters to json to debug and test
     # if any(svp.consensusID == "15.0" for svp in SVprimitives):
@@ -94,8 +94,7 @@ def svPrimitives_to_svPatterns(
     #     with gzip_open("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/svPrimitives_to_svPatterns.INV15.json.gz", "wt") as debug_f:
     #         json.dump(data, debug_f, indent=4)
     # # DEBUG END
-    
-    
+
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
         return []
@@ -112,7 +111,11 @@ def svPrimitives_to_svPatterns(
     for _consensusID, group in grouped_svprimitives.items():
         svpatterns.extend(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
-                SVprimitives=group, max_del_size=max_del_size, log_level_override=logging.DEBUG if _consensusID.startswith("7.") else None
+                SVprimitives=group,
+                max_del_size=max_del_size,
+                log_level_override=logging.DEBUG
+                if _consensusID.startswith("7.")
+                else None,
             )
         )
 
@@ -256,14 +259,19 @@ def add_reference_sequence_to_svPatterns(
                         x = deepcopy(svp)
                         if type(x) is SVpatterns.SVpatternDeletion:
                             x.set_sequence(str(record.seq))
-                        elif type(x) in (SVpatterns.SVpatternInversion,
-                                        SVpatterns.SVpatternInversionDuplication,
-                                        SVpatterns.SVpatternInversionDeletion,
-                                        SVpatterns.SVpatternInversionTranslocation):
-                            x.set_deleted_sequence(sequence=str(record.seq),write_complexity=False)
+                        elif type(x) in (
+                            SVpatterns.SVpatternInversion,
+                            SVpatterns.SVpatternInversionDuplication,
+                            SVpatterns.SVpatternInversionDeletion,
+                            SVpatterns.SVpatternInversionTranslocation,
+                        ):
+                            x.set_deleted_sequence(
+                                sequence=str(record.seq), write_complexity=False
+                            )
                         else:
                             raise ValueError(
-                                f"SVpattern type {type(x)} not supported for reference sequence assignment. This should not happen. Please check the input data.")
+                                f"SVpattern type {type(x)} not supported for reference sequence assignment. This should not happen. Please check the input data."
+                            )
                         output.append(x)  # append the modified copy
                         svp = None  # remove reference to original to free memory
                     regions[region_key].clear()
@@ -867,7 +875,6 @@ def _process_alignment_file_for_core_intervals(
             # Sort alignments by (qstart, qend) to ensure consistent ordering
             alignments_list.sort(key=lambda x: (x[0], x[1]))
 
-
             # DEBUG START
             # files: INV.1.aln.json.gz  INV.1.consensus.json.gz  INV.2.aln.json.gz  INV.2.consensus.json.gz
             # to save _process_alignment_file_for_core_intervals debug data:
@@ -888,10 +895,8 @@ def _process_alignment_file_for_core_intervals(
             #     subprocess.check_call(shlex.split(f"gzip -f {aln_path}"))
             # DEBUG END
 
-
             # Process each alignment with its index
             for aln_idx, (_qstart, _qend, alignment) in enumerate(alignments_list):
-                
                 # Convert to pysam for processing
                 pysam_aln = alignment.to_pysam()
 
@@ -1603,7 +1608,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     index_partition=params.alignments_index_partition,
                     alignments_path=params.padded_alignments_path,
                 )
-                
+
                 # sort alignments by alignment.annotations.qstart
                 for aln in alignments:
                     if aln.annotations is None or "qstart" not in aln.annotations:
@@ -1645,10 +1650,11 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     alignments
                 ):  # alignment_idx order on consensus sequence!
                     # Match by alignment index
-                    
+
                     if alignment_idx not in core_interval_by_idx:
                         log.debug(
-                            f"No core interval found for alignment {alignment_idx} of {consensusID}. Intervals available: {core_intervals_with_idx}")
+                            f"No core interval found for alignment {alignment_idx} of {consensusID}. Intervals available: {core_intervals_with_idx}"
+                        )
                         continue
 
                     # Filter trf intervals to those overlapping with this alignment's reference
@@ -1687,7 +1693,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     #         svs_list = [sv.unstructure() for sv in mergedSVs]
                     #         json.dump(svs_list, debug_f, indent=4)
                     # # DEBUG END
-                    
+
                     # now SV signals are parsed for this alignment
                     svPrimitives.extend(
                         SVprimitives.generate_SVprimitives(

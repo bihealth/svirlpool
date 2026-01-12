@@ -2650,14 +2650,14 @@ def crs_containers_to_consensus(
 
     if verbose and tmp_dir_path is not None:
         # write all consensus padded sequences to a fasta file in the tmp dir
-        fasta_path = Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
+        fasta_path = (
+            Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
+        )
         log.info(f"Writing padded consensus sequences to {fasta_path}.")
         with open(fasta_path, "w") as f:
             for consensusID, consensus in result.consensus_dicts.items():
                 if consensus.consensus_padding is not None:
-                    f.write(
-                        f">{consensusID}\n{consensus.consensus_padding.sequence}\n"
-                    )
+                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
 
     log.info(f"Writing result to {output}.")
     with open(output, "w") as f:

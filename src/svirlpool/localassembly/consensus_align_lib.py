@@ -624,7 +624,7 @@ def parse_sv_signals_from_consensus(
     #         json.dump(input_data, f)
     #     log.info(f"Saved input data to {save_path}")
     # DEBUG END
-        
+
     # parse sv signals from alignments
     sv_signals: list[datatypes.SVsignal] = (
         consensus.parse_ReadAlignmentSignals_from_alignment(

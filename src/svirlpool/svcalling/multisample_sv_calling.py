@@ -31,7 +31,7 @@ from .SVcomposite import SVcomposite
 
 log = logging.getLogger(__name__)
 
-SUPPORTED_SV_TYPES:frozenset[type[SVpatterns.SVpatternType]] = frozenset({
+SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInversionDeletion,
     SVpatterns.SVpatternInversionDuplication,
     SVpatterns.SVpatternInversionTranslocation,
@@ -44,7 +44,7 @@ SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
     pattern_type.get_sv_type() for pattern_type in SUPPORTED_SV_TYPES
 })
 # Add a sorted list constant for consistent ordering and help text
-SUPPORTED_SV_TYPE_STRINGS_LIST: list[str] = sorted(list(SUPPORTED_SV_TYPE_STRINGS))
+SUPPORTED_SV_TYPE_STRINGS_LIST: list[str] = sorted(SUPPORTED_SV_TYPE_STRINGS)
 
 SUPPORTED_SV_TYPE_STRINGS_INVERSE: dict[str, type[SVpatterns.SVpatternType]] = {
     pattern_type.get_sv_type(): pattern_type for pattern_type in SUPPORTED_SV_TYPES
@@ -208,7 +208,8 @@ def binary_svpattern_index_mask(
 
 # the horizontal merge allows to merge inter with intra alignment SVpatterns
 def svPatterns_to_horizontally_merged_svComposites(
-    svPatterns: list[SVpatterns.SVpatternType], sv_types: set[type[SVpatterns.SVpatternType]]
+    svPatterns: list[SVpatterns.SVpatternType],
+    sv_types: set[type[SVpatterns.SVpatternType]],
 ) -> list[SVcomposite]:
     def get_sv_group_key(sv_type_cls: type[SVpatterns.SVpatternType]) -> str:
         """Map SV types to group keys. INS and DEL are grouped together as INDEL."""
@@ -221,24 +222,26 @@ def svPatterns_to_horizontally_merged_svComposites(
         log.warning(f"No SVpatterns found in {svPatterns}. Returning empty list.")
         return result
     # filter by size and type
-    _svPatterns:list[SVpatterns.SVpatternType] = []
+    _svPatterns: list[SVpatterns.SVpatternType] = []
     for svp in svPatterns:
         if type(svp) not in sv_types:
-            log.info(f"Skipping SVpattern of unsupported type: {svp.get_sv_type()}")  # debug
+            log.info(
+                f"Skipping SVpattern of unsupported type: {svp.get_sv_type()}"
+            )  # debug
             continue
         elif svp.get_size() is None:
             log.info(f"Skipping SVpattern with undefined size: {svp}")  # debug
             continue
         else:
             _svPatterns.append(svp)
-    
+
     # sort svPatterns by consensusID and read_start
     _svPatterns = sorted(_svPatterns, key=lambda x: (x.consensusID, type(x).__name__))
 
     groups = groupby(
         _svPatterns, key=lambda x: (x.consensusID, get_sv_group_key(type(x)))
     )
-    
+
     # loop svPatterns of each group and connect them if they share at least one repeatID
     for (_consensusID, _sv_type), group in groups:
         group = list(group)
@@ -269,7 +272,8 @@ def svPatterns_to_horizontally_merged_svComposites(
         chr_set: set[str] = {
             svp.get_reference_region()[0]
             for svp in svComposite.svPatterns
-            if type(svp) in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInsertion)
+            if type(svp)
+            in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInsertion)
         }
         if len(chr_set) > 1:
             raise ValueError(
@@ -435,7 +439,9 @@ def can_merge_svComposites_insertions(
 def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
     # if a is sv type insertion or inversion, get inserted complexity tracks
     mean_complexity: float = 1.0
-    if issubclass(a.sv_type, SVpatterns.SVpatternInsertion) or issubclass(a.sv_type, SVpatterns.SVpatternInversion):
+    if issubclass(a.sv_type, SVpatterns.SVpatternInsertion) or issubclass(
+        a.sv_type, SVpatterns.SVpatternInversion
+    ):
         complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
         if (
             complexities is None
@@ -622,19 +628,33 @@ def can_merge_svComposites_deletions(
 
 
 def vertically_merged_svComposites_from_group(
-        group: list[SVcomposite],
-        d: float,
-        near: int,
-        min_kmer_overlap: float,
-        apriori_size_difference_fraction_tolerance: float,
-        verbose: bool = False,
+    group: list[SVcomposite],
+    d: float,
+    near: int,
+    min_kmer_overlap: float,
+    apriori_size_difference_fraction_tolerance: float,
+    verbose: bool = False,
 ) -> list[SVcomposite]:
     # The group is divided into subgroups with shared SV types
-    insertions = {i:svc for i, svc in enumerate(group) if issubclass(svc.sv_type, SVpatterns.SVpatternInsertion)}
-    deletions = {i:svc for i, svc in enumerate(group) if issubclass(svc.sv_type, SVpatterns.SVpatternDeletion)}
-    inversions = {i:svc for i, svc in enumerate(group) if issubclass(svc.sv_type, SVpatterns.SVpatternInversion)}
+    insertions = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternInsertion)
+    }
+    deletions = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternDeletion)
+    }
+    inversions = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternInversion)
+    }
 
-    used_indices = set(insertions.keys()).union(deletions.keys()).union(inversions.keys())
+    used_indices = (
+        set(insertions.keys()).union(deletions.keys()).union(inversions.keys())
+    )
     others = [
         svc for i, svc in enumerate(group) if i not in used_indices
     ]  # BND, DUP, etc.
@@ -643,8 +663,8 @@ def vertically_merged_svComposites_from_group(
         other_types = defaultdict(int)
         for svc in others:
             other_types[svc.sv_type.get_sv_type()] += 1
-        print(f"Others svComposites counts by type:")
-        for k,v in other_types.items():
+        print("Others svComposites counts by type:")
+        for k, v in other_types.items():
             print(f"  {k}:\t{v}")
 
     merged_insertions = merge_insertions(
@@ -838,7 +858,9 @@ def can_merge_svComposites_inversions(
                 raise ValueError(
                     "can_merge_svComposites_inversions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                 )
-    if issubclass(a.sv_type, SVpatterns.SVpatternInversionTranslocation) != issubclass(b.sv_type, SVpatterns.SVpatternInversionTranslocation):
+    if issubclass(a.sv_type, SVpatterns.SVpatternInversionTranslocation) != issubclass(
+        b.sv_type, SVpatterns.SVpatternInversionTranslocation
+    ):
         log.debug(
             f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are of different subclasses (InversionTranslocation vs Inversion)."
         )
@@ -849,15 +871,19 @@ def can_merge_svComposites_inversions(
     )  # eiter spatially close or share at least one repeatID
     if not are_near:
         log.debug(
-                f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
-            )
+            f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
+        )
         return False
 
-    if a.get_representative_SVpattern().SVprimitives[0].chr != b.get_representative_SVpattern().SVprimitives[0].chr or \
-         a.get_representative_SVpattern().SVprimitives[-1].chr != b.get_representative_SVpattern().SVprimitives[-1].chr:
+    if (
+        a.get_representative_SVpattern().SVprimitives[0].chr
+        != b.get_representative_SVpattern().SVprimitives[0].chr
+        or a.get_representative_SVpattern().SVprimitives[-1].chr
+        != b.get_representative_SVpattern().SVprimitives[-1].chr
+    ):
         log.debug(
-                f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are on different chromosomes ({a.get_representative_SVpattern().SVprimitives[0].chr},{a.get_representative_SVpattern().SVprimitives[-1].chr} vs {b.get_representative_SVpattern().SVprimitives[0].chr},{b.get_representative_SVpattern().SVprimitives[-1].chr})"
-            )
+            f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are on different chromosomes ({a.get_representative_SVpattern().SVprimitives[0].chr},{a.get_representative_SVpattern().SVprimitives[-1].chr} vs {b.get_representative_SVpattern().SVprimitives[0].chr},{b.get_representative_SVpattern().SVprimitives[-1].chr})"
+        )
         return False
 
     # in the case that inversions of different subclasses are merged, it is necessary to measure their inner sizes to find a good size comparison,
@@ -989,7 +1015,7 @@ def merge_inversions(
     """Merge inversions that overlap on the reference and have similar sizes."""
     # 1) test if they have svPatterns
     if len(inversions) == 0:
-        log.debug(f"merge_inversions: No inversions to merge.")
+        log.debug("merge_inversions: No inversions to merge.")
         return []
     for svComposite in inversions:
         if not svComposite.svPatterns or len(svComposite.svPatterns) == 0:
@@ -1016,8 +1042,13 @@ def merge_inversions(
     # check if all svPatterns are inversions
     # create a set of sv_types and check if all are subclasses of SVpatternInversion
     present_sv_types = {sv.sv_type for sv in inversions}
-    if not all(issubclass(sv_type, SVpatterns.SVpatternInversion) for sv_type in present_sv_types):
-        raise ValueError("All SVcomposites must be a subclass of SVpatternInversion to merge them.")
+    if not all(
+        issubclass(sv_type, SVpatterns.SVpatternInversion)
+        for sv_type in present_sv_types
+    ):
+        raise ValueError(
+            "All SVcomposites must be a subclass of SVpatternInversion to merge them."
+        )
     uf = UnionFind(range(len(inversions)))
     log.debug(f"Starting merge of {len(inversions)} inversions.")
     for i in range(len(inversions)):
@@ -1032,10 +1063,14 @@ def merge_inversions(
                 verbose=verbose,
             ):
                 uf.union(i, j)
-                log.debug(f"Connected inversions: {inversions[i].svPatterns[0].consensusID} and {inversions[j].svPatterns[0].consensusID}")
+                log.debug(
+                    f"Connected inversions: {inversions[i].svPatterns[0].consensusID} and {inversions[j].svPatterns[0].consensusID}"
+                )
     result: list[SVcomposite] = []
     for cc in uf.get_connected_components(allow_singletons=True):
-        log.debug(f"Merging group of size {len(cc)} with consensusIDs: {[inversions[idx].svPatterns[0].consensusID for idx in cc]}")
+        log.debug(
+            f"Merging group of size {len(cc)} with consensusIDs: {[inversions[idx].svPatterns[0].consensusID for idx in cc]}"
+        )
         result.append(
             SVcomposite.from_SVpatterns(
                 svPatterns=[
@@ -1093,7 +1128,9 @@ def generate_svComposites_from_dbs(
             sv_type_counts[svp.get_sv_type()] = (
                 sv_type_counts.get(svp.get_sv_type(), 0) + 1
             )
-        log.info(f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}: {sv_type_counts}")
+        log.info(
+            f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}: {sv_type_counts}"
+        )
 
         svComposites.extend(
             svPatterns_to_horizontally_merged_svComposites(
@@ -1101,16 +1138,16 @@ def generate_svComposites_from_dbs(
             )
         )
 
-        
         # after horizontal merging, count again teh types of sv composites
         sv_composite_type_counts: dict[str, int] = {}
         for svc in svComposites:
             sv_composite_type_counts[svc.sv_type.get_sv_type()] = (
                 sv_composite_type_counts.get(svc.sv_type.get_sv_type(), 0) + 1
             )
-        log.debug(f"After horizontal merging, total SVcomposites for sample {samplename}: {sv_composite_type_counts}")
-        
-        
+        log.debug(
+            f"After horizontal merging, total SVcomposites for sample {samplename}: {sv_composite_type_counts}"
+        )
+
     return svComposites
 
 
@@ -1182,7 +1219,9 @@ def merge_svComposites_for_chromosome(
         svComposite_group = [svComposites[idx] for idx in cc]
 
         if len(svComposite_group) > 1:
-            log.debug(f"Vertically merging group of size {len(svComposite_group)} with consensusIDs: {[svc.svPatterns[0].consensusID for svc in svComposite_group]}")
+            log.debug(
+                f"Vertically merging group of size {len(svComposite_group)} with consensusIDs: {[svc.svPatterns[0].consensusID for svc in svComposite_group]}"
+            )
             merged = vertically_merged_svComposites_from_group(
                 group=svComposite_group,
                 d=max_cohens_d,
@@ -1193,7 +1232,9 @@ def merge_svComposites_for_chromosome(
             )
             merged_svComposites.extend(merged)
         else:
-            log.info(f"Singleton group for consensusID: {svComposite_group[0].svPatterns[0].consensusID}, adding without merging.")
+            log.info(
+                f"Singleton group for consensusID: {svComposite_group[0].svPatterns[0].consensusID}, adding without merging."
+            )
             merged_svComposites.append(svComposite_group[0])
 
     log.debug(
@@ -1229,14 +1270,14 @@ def merge_svComposites(
     # The alignment needs to be very strict and allow only small indels and mismatches.
     # the condition of a merge attempt would be that the reciprocal overlap is greater than 50%
     # however, it must be prevented that contradictory merges are made, e.g. A-B and B-C but A-C is not valid.
-    
+
     for svComposite in svComposites:
-        
         if svComposite.sv_type in (
-                SVpatterns.SVpatternComplex,
-                SVpatterns.SVpatternTranslocation,
-                SVpatterns.SVpatternInvertedTranslocation,
-                SVpatterns.SVpatternInversionTranslocation):
+            SVpatterns.SVpatternComplex,
+            SVpatterns.SVpatternTranslocation,
+            SVpatterns.SVpatternInvertedTranslocation,
+            SVpatterns.SVpatternInversionTranslocation,
+        ):
             cpx_groups[svComposite.sv_type.get_sv_type()].append(svComposite)
         else:
             chr_name = svComposite.ref_start[0]  # Get chromosome from ref_start tuple
@@ -1362,7 +1403,9 @@ class SVcall:
     ref_sequence: bytes | None = None
     alt_sequence: bytes | None = None
     sequence_id: str | None = None  # ID for sequence in FASTA file if symbolic
-    description:dict[str,str]|None = None  # optional description field for additional annotations; e.g. outer and inner intervals of inversions or duplications
+    description: dict[str, str] | None = (
+        None  # optional description field for additional annotations; e.g. outer and inner intervals of inversions or duplications
+    )
 
     def to_vcf_line(
         self,
@@ -1458,7 +1501,9 @@ def SVcalls_from_SVcomposite(
     # separate cases:
     # 1) insertion & deletion
     result: list[SVcall] = []
-    all_alt_reads: dict[str, set[np.uint64]] = svComposite.get_alt_readnamehashes_per_sample()  # {samplename: {readname, ...}}
+    all_alt_reads: dict[str, set[np.uint64]] = (
+        svComposite.get_alt_readnamehashes_per_sample()
+    )  # {samplename: {readname, ...}}
 
     if svComposite.sv_type in SUPPORTED_SV_TYPES:
         chrname, start, end = get_svComposite_interval_on_reference(
@@ -1493,7 +1538,7 @@ def SVcalls_from_SVcomposite(
                 all_alt_reads.get(samplename, set())
             )
             ref_reads: set[int] = all_reads.difference(alt_reads)
-            
+
             # # DEBUG START
             # # check if one consensusIS starts with "7.". If so, then print all_reads, alt_reads, ref_reads (separated by a newline) for debugging
             # if any(cid.startswith("HG002:7") for cid in consensusIDs):
@@ -1501,7 +1546,7 @@ def SVcalls_from_SVcomposite(
             #         f"SVcalls_from_SVcomposite: Debugging sample {samplename} at {chrname}:{start}-{end} for consensusID starting with 'HG002:7':\nAll reads: {all_reads}\nAlt reads: {alt_reads}\nRef reads: {ref_reads}"
             #     )
             # # DEBUG END
-            
+
             if len(alt_reads) == 0:
                 log.warning(
                     f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
@@ -1576,26 +1621,34 @@ def SVcalls_from_SVcomposite(
                 end = start + svlen
             case "INS":
                 end = start + 1
-            case _: 
+            case _:
                 pass
-        
+
         # acquire the correct DNA sequences by querying all inserted sequences from the
         # given SVpatterns
         alt_seq: str | None = (
-            svComposite.get_alt_sequence() if svComposite.sv_type in (
+            svComposite.get_alt_sequence()
+            if svComposite.sv_type
+            in (
                 SVpatterns.SVpatternInsertion,
                 SVpatterns.SVpatternInversion,
                 SVpatterns.SVpatternInversionDuplication,
                 SVpatterns.SVpatternInversionDeletion,
-                SVpatterns.SVpatternInversionTranslocation) else None
+                SVpatterns.SVpatternInversionTranslocation,
+            )
+            else None
         )  # TODO: revcomp if representing consensus sequence is reverse complement (carrying consensus aln is reverse)
         ref_seq: str | None = (
-            svComposite.get_ref_sequence() if svComposite.sv_type in (
+            svComposite.get_ref_sequence()
+            if svComposite.sv_type
+            in (
                 SVpatterns.SVpatternDeletion,
                 SVpatterns.SVpatternInversion,
                 SVpatterns.SVpatternInversionDuplication,
                 SVpatterns.SVpatternInversionDeletion,
-                SVpatterns.SVpatternInversionTranslocation) else None
+                SVpatterns.SVpatternInversionTranslocation,
+            )
+            else None
         )
 
         pass_altreads: bool = (
@@ -1667,7 +1720,11 @@ def get_svComposite_interval_on_reference(
         weighted_regions.append((region, weight))
     # pick the winning region
     if find_leftmost_reference_position:
-        return min(weighted_regions, key=lambda x: x[1])[0]  # reports the leftmost SVpattern, instead of the one with most supporting reads * size. This might be better aligned with the giab SV benchmark, but should be discussed in the paper.
+        return min(
+            weighted_regions, key=lambda x: x[1]
+        )[
+            0
+        ]  # reports the leftmost SVpattern, instead of the one with most supporting reads * size. This might be better aligned with the giab SV benchmark, but should be discussed in the paper.
     else:
         return max(weighted_regions, key=lambda x: x[1])[0]
 
@@ -2047,8 +2104,7 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import \
-        load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(
@@ -2193,14 +2249,16 @@ def multisample_sv_calling(
 
     # Convert string sv_types to SVpattern types
     sv_types_set: set[type[SVpatterns.SVpatternType]] = {
-        SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv] for sv in sv_types if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE
+        SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv]
+        for sv in sv_types
+        if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE
     }
     # debug - check what types are in sv_types_set
     if verbose:
         log.info(
             f"SV types to be processed: {', '.join([t.__name__ for t in sv_types_set])}"
         )
-    
+
     data: list[SVcomposite] = generate_svComposites_from_dbs(
         input=input,
         sv_types=sv_types_set,
@@ -2293,7 +2351,7 @@ def multisample_sv_calling(
                 log.info(
                     f"   ------> Found SVcall with consensusID {svCall.consensusIDs} and type {svCall.svtype} and location {svCall.chrname}:{svCall.start}-{svCall.end}"
                 )
-            
+
     ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
         svComposites=merged,
         reference=reference,
@@ -2597,7 +2655,11 @@ def extract_test_svComposites(
     # Optional filter by SV types
     if sv_types is not None:
         # Convert string sv_types to pattern type set for filtering
-        sv_types_set = {SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv] for sv in sv_types if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE}
+        sv_types_set = {
+            SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv]
+            for sv in sv_types
+            if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE
+        }
         filtered_svComposites = [
             svComposite
             for svComposite in filtered_svComposites
