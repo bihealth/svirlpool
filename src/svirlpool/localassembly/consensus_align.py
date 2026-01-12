@@ -113,9 +113,6 @@ def svPrimitives_to_svPatterns(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
                 SVprimitives=group,
                 max_del_size=max_del_size,
-                log_level_override=logging.DEBUG
-                if _consensusID.startswith("7.")
-                else None,
             )
         )
 
