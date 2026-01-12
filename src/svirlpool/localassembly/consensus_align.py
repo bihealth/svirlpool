@@ -180,6 +180,18 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 )
             elif isinstance(processed_svp, SVpatterns.SVpatternDeletion):
                 continue  # silent skip, as deletions dont have an alt sequence
+            elif isinstance(processed_svp, SVpatterns.SVpatternSingleBreakend):
+                processed_svp.set_clipped_sequence(
+                    sequence=processed_svp.get_clipped_sequence_from_consensus(
+                        consensus=consensus
+                    ),
+                )
+                processed_svp.set_context_sequence(
+                    processed_svp.get_context_sequence_from_consensus(
+                        consensus=consensus
+                    )
+                )
+            # complex re-arrangements are a series of break ends in a SVpatternComplex
             else:
                 log.warning(
                     f"SVpattern type {type(processed_svp)} is not supported. Skipping alt sequence assignment."

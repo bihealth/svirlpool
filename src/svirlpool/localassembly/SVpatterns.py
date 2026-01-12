@@ -183,6 +183,15 @@ def _get_first_svp_on_reference_start_pos(svp: SVpattern) -> tuple[str, int, int
 
 @attrs.define
 class SVpatternSingleBreakend(SVpattern):
+    CONTEXT_SIZE: int = 200
+    sequence_context: bytes | None = (
+        None  # the sequence on the consensus +/- 200 pb around the break end
+    )
+    clipped_tail: bytes | None = (
+        None  # the clipped tail sequence on the consenus sequence
+    )
+    sequence_complexity: bytes | None = None  # Pickled numpy array of float32
+
     @classmethod
     def get_sv_type(cls) -> str:
         return "BND"
@@ -195,6 +204,154 @@ class SVpatternSingleBreakend(SVpattern):
         start = self.SVprimitives[0].ref_start
         end = self.SVprimitives[0].ref_end
         return (chr, min(start, end), max(start, end))
+
+    def get_sequence(self) -> str | None:
+        """returns the context by default. Use get_sequence_clipped() to get the clipped tail."""
+        return self.get_sequence_context()
+
+    def get_sequence_clipped(self) -> str | None:
+        """Retrieve the clipped sequence by unpickling."""
+        if self.clipped_tail is None:
+            return None
+        else:
+            try:
+                return pickle.loads(self.clipped_tail)
+            except Exception:
+                return None
+
+    def get_sequence_context(self) -> str | None:
+        """Retrieve the clipped sequence by unpickling."""
+        if self.sequence_context is None:
+            return None
+        else:
+            try:
+                return pickle.loads(self.sequence_context)
+            except Exception:
+                return None
+
+    def get_sequence_complexity(self) -> np.ndarray | None:
+        """Retrieve the sequence complexity scores."""
+        if self.sequence_complexity is None:
+            return None
+        try:
+            return pickle.loads(self.sequence_complexity)
+        except Exception:
+            return None
+
+    def get_mean_complexity(self) -> float | None:
+        """Get the mean complexity score across the sequence."""
+        complexity = self.get_sequence_complexity()
+        if complexity is not None and len(complexity) > 0:
+            return float(np.mean(complexity))
+        return None
+
+    def get_min_complexity(self) -> float | None:
+        """Get the minimum complexity score in the sequence."""
+        complexity = self.get_sequence_complexity()
+        if complexity is not None and len(complexity) > 0:
+            return float(np.min(complexity))
+        return None
+
+    def get_context_sequence_from_consensus(self, consensus: Consensus) -> str:
+        """Extract context region around the breakpoint (±CONTEXT_SIZE bp)."""
+        if consensus.consensus_padding is None:
+            raise ValueError("Consensus sequence is not set in the Consensus object")
+
+        core_sequence_start: int = consensus.consensus_padding.padding_size_left
+        svp = self.SVprimitives[0]  # Single breakend has exactly one primitive
+        consensus_length = len(consensus.consensus_sequence)
+
+        # Convert read coordinates to consensus coordinates
+        read_start_on_consensus = svp.read_start - core_sequence_start
+        read_end_on_consensus = svp.read_end - core_sequence_start
+
+        # Extract context region around the breakpoint
+        s = max(0, read_start_on_consensus - self.CONTEXT_SIZE)
+        e = min(consensus_length, read_end_on_consensus + self.CONTEXT_SIZE)
+
+        seq = consensus.consensus_sequence[s:e]
+
+        # Apply reverse complement if alignment is reversed
+        if svp.aln_is_reverse:
+            seq = str(Seq(seq).reverse_complement())
+
+        return seq
+
+    def set_context_sequence(
+        self, sequence: str, sequence_complexity_max_length: int = CONTEXT_SIZE
+    ) -> None:
+        """Set the inserted sequence and compute its complexity."""
+        self.sequence_context = pickle.dumps(sequence)
+        if len(sequence) <= sequence_complexity_max_length:
+            dna_iter = iter(sequence)
+            self.sequence_complexity = pickle.dumps(
+                complexity_local_track(
+                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
+                )
+            )
+        else:
+            # Create dummy placeholder with 1.0 values for long sequences
+            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
+            self.sequence_complexity = pickle.dumps(dummy_complexity)
+
+    def get_clipped_sequence_from_consensus(self, consensus: Consensus) -> str:
+        """Extract the clipped tail sequence based on sv_type and aln_is_reverse."""
+        if consensus.consensus_padding is None:
+            raise ValueError("Consensus sequence is not set in the Consensus object")
+
+        core_sequence_start: int = consensus.consensus_padding.padding_size_left
+        svp = self.SVprimitives[0]  # Single breakend has exactly one primitive
+        consensus_length = len(consensus.consensus_sequence)
+
+        # Convert read coordinates to consensus coordinates
+        read_start_on_consensus = svp.read_start - core_sequence_start
+        read_end_on_consensus = svp.read_end - core_sequence_start
+
+        # Extract the clipped tail based on sv_type and aln_is_reverse
+        # Confusion matrix:
+        # sv_type=3 (left), aln_is_reverse=False  → left side clipped  → [0 : read_start]
+        # sv_type=3 (left), aln_is_reverse=True   → right side clipped → [read_end : end]
+        # sv_type=4 (right), aln_is_reverse=False → right side clipped → [read_end : end]
+        # sv_type=4 (right), aln_is_reverse=True  → left side clipped  → [0 : read_start]
+
+        if svp.sv_type == 3:  # Left breakend on reference
+            if not svp.aln_is_reverse:
+                # Forward alignment: left on ref = left on consensus
+                s = 0
+                e = read_start_on_consensus
+            else:
+                # Reverse alignment: left on ref = right on consensus
+                s = read_end_on_consensus
+                e = consensus_length
+        elif svp.sv_type == 4:  # Right breakend on reference
+            if not svp.aln_is_reverse:
+                # Forward alignment: right on ref = right on consensus
+                s = read_end_on_consensus
+                e = consensus_length
+            else:
+                # Reverse alignment: right on ref = left on consensus
+                s = 0
+                e = read_start_on_consensus
+        else:
+            raise ValueError(
+                f"SVpatternSingleBreakend must have sv_type 3 or 4, got {svp.sv_type}"
+            )
+
+        # Ensure valid coordinates
+        s = max(0, s)
+        e = min(consensus_length, e)
+
+        seq = consensus.consensus_sequence[s:e]
+
+        # Apply reverse complement if alignment is reversed
+        if svp.aln_is_reverse:
+            seq = str(Seq(seq).reverse_complement())
+
+        return seq
+
+    def set_clipped_sequence(self, sequence: str) -> None:
+        """Set the clipped sequence."""
+        self.clipped_tail = pickle.dumps(sequence)
 
 
 @attrs.define

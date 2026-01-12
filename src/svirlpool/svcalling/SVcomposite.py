@@ -242,8 +242,13 @@ class SVcomposite:
         # Concatenate alt sequences from the best group
         concatenated_sequence = ""
         for svPattern in best_group:
-            if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
-                svPattern, SVpatterns.SVpatternInversion
+            if any(
+                isinstance(svPattern, t)
+                for t in (
+                    SVpatterns.SVpatternInsertion,
+                    SVpatterns.SVpatternInversion,
+                    SVpatterns.SVpatternSingleBreakend,
+                )
             ):
                 seq = svPattern.get_sequence()
                 if seq is None:

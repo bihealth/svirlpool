@@ -38,6 +38,7 @@ SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInsertion,
     SVpatterns.SVpatternDeletion,
     SVpatterns.SVpatternInversion,
+    SVpatterns.SVpatternSingleBreakend,
 })
 
 SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
@@ -651,9 +652,17 @@ def vertically_merged_svComposites_from_group(
         for i, svc in enumerate(group)
         if issubclass(svc.sv_type, SVpatterns.SVpatternInversion)
     }
+    breakends = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternSingleBreakend)
+    }
 
-    used_indices = (
-        set(insertions.keys()).union(deletions.keys()).union(inversions.keys())
+    used_indices = set().union(
+        insertions.keys(),
+        deletions.keys(),
+        inversions.keys(),
+        breakends.keys(),
     )
     others = [
         svc for i, svc in enumerate(group) if i not in used_indices
@@ -691,8 +700,22 @@ def vertically_merged_svComposites_from_group(
         verbose=verbose,
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
+    merged_breakends = merge_breakends(
+        breakends=list(breakends.values()),
+        d=d,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+        verbose=verbose,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+    )
 
-    return merged_insertions + merged_deletions + merged_inversions + others
+    return (
+        merged_insertions
+        + merged_deletions
+        + merged_inversions
+        + merged_breakends
+        + others
+    )
 
 
 def merge_alt_count_dicts(
@@ -1096,6 +1119,164 @@ def merge_inversions(
     return result
 
 
+def can_merge_svComposites_breakends(
+    a: SVcomposite,
+    b: SVcomposite,
+    apriori_size_difference_fraction_tolerance: float,
+    near: int,
+    d: float = 2.0,
+    min_kmer_overlap: float = 0.7,
+    verbose: bool = False,
+) -> bool:
+    """Check if two breakend SVcomposites can be merged based on proximity and sequence context similarity."""
+    # 1) test if they have svPatterns
+    if (
+        not a.svPatterns
+        or not b.svPatterns
+        or len(a.svPatterns) == 0
+        or len(b.svPatterns) == 0
+    ):
+        raise ValueError(
+            "can_merge_svComposites_breakends: SVcomposites must contain at least one SVpattern to merge."
+        )
+    # 2) check every svPattern if it contains svPrimitives
+    for svp in a.svPatterns + b.svPatterns:
+        if not svp.SVprimitives or len(svp.SVprimitives) == 0:
+            raise ValueError(
+                "can_merge_svComposites_breakends: SVpattern must contain at least one SVprimitive to merge."
+            )
+    # 3) test every svPattern if it has a genotypeMeasurement with supporting_reads_start
+    for svPattern in a.svPatterns + b.svPatterns:
+        for svPrimitive in svPattern.SVprimitives:
+            if (
+                not svPrimitive.genotypeMeasurement
+                or not svPrimitive.genotypeMeasurement.supporting_reads_start
+            ):
+                raise ValueError(
+                    "can_merge_svComposites_breakends: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
+                )
+
+    are_near: bool = a.overlaps_any(
+        b, tolerance_radius=near
+    )  # either spatially close or share at least one repeatID
+    if not are_near:
+        if verbose:
+            print(
+                f"Cannot merge breakends: SVcomposites are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
+            )
+        return False
+
+    # For breakends, we compare sequence contexts using k-mer similarity
+    # Get sequence contexts from both breakends
+    contexts_a = (
+        a.get_inserted_sequences()
+    )  # calls get_sequence on the SVpattern, which routes to get_sequence_context
+    contexts_b = b.get_inserted_sequences()
+
+    if len(contexts_a) == 0 or len(contexts_b) == 0:
+        if verbose:
+            print(
+                "Cannot merge breakends: one or both SVcomposites have no sequence context"
+            )
+        return False
+
+    similarity: float = kmer_similarity_of_groups(
+        group_a=contexts_a, group_b=contexts_b
+    )
+
+    similar_context_kmers: bool = similarity >= min_kmer_overlap
+
+    if verbose:
+        print(
+            f"K-mer similarity: {similarity:.3f}, threshold: {min_kmer_overlap}, similar_kmers: {similar_context_kmers}"
+        )
+
+    if not similar_context_kmers:
+        if verbose:
+            print("Cannot merge breakends: k-mer similarity is too low")
+        return False
+
+    if verbose:
+        print("Can merge breakends: all criteria passed")
+    return True
+
+
+def merge_breakends(
+    breakends: list[SVcomposite],
+    d: float,
+    near: int,
+    min_kmer_overlap: float,
+    apriori_size_difference_fraction_tolerance: float,
+    verbose: bool = False,
+) -> list[SVcomposite]:
+    """Merge breakends that are spatially close and have similar sequence contexts."""
+    # 1) test if they have svPatterns
+    if len(breakends) == 0:
+        return []
+    for svComposite in breakends:
+        if not svComposite.svPatterns or len(svComposite.svPatterns) == 0:
+            raise ValueError(
+                "merge_breakends: SVcomposites must contain at least one SVpattern to merge."
+            )
+        # 2) check every svPattern if it contains svPrimitives
+        for svp in svComposite.svPatterns:
+            if not svp.SVprimitives or len(svp.SVprimitives) == 0:
+                raise ValueError(
+                    "merge_breakends: SVpattern must contain at least one SVprimitive to merge."
+                )
+        # 3) test every svPattern if it has a genotypeMeasurement with supporting_reads_start
+        for svPattern in svComposite.svPatterns:
+            for svPrimitive in svPattern.SVprimitives:
+                if (
+                    not svPrimitive.genotypeMeasurement
+                    or not svPrimitive.genotypeMeasurement.supporting_reads_start
+                ):
+                    raise ValueError(
+                        "merge_breakends: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
+                    )
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternSingleBreakend) for sv in breakends
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternSingleBreakend to merge them."
+        )
+
+    if len(breakends) == 0:
+        return []
+    uf = UnionFind(range(len(breakends)))
+    for i in range(len(breakends)):
+        for j in range(i + 1, len(breakends)):
+            if verbose:
+                print(
+                    f"Checking breakends {i} and {j}: {breakends[i].svPatterns[0].samplename}:{breakends[i].svPatterns[0].consensusID} vs {breakends[j].svPatterns[0].samplename}:{breakends[j].svPatterns[0].consensusID}"
+                )
+            if can_merge_svComposites_breakends(
+                a=breakends[i],
+                b=breakends[j],
+                apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+                d=d,
+                near=near,
+                min_kmer_overlap=min_kmer_overlap,
+                verbose=verbose,
+            ):
+                uf.union(i, j)
+            else:
+                if verbose:
+                    print(f"Not merging breakends {i} and {j}")
+    result: list[SVcomposite] = []
+    for cc in uf.get_connected_components(
+        allow_singletons=True
+    ):  # connected components of svComposites to merge
+        result.append(
+            SVcomposite.from_SVpatterns(
+                svPatterns=[
+                    svPattern for idx in cc for svPattern in breakends[idx].svPatterns
+                ]
+            )
+        )
+    return result
+
+
 # %%
 
 
@@ -1128,11 +1309,11 @@ def generate_svComposites_from_dbs(
         )
         # DEBUG START
         # if there are sv patterns with consensusID "7.x", then print their consensusID and sv_type
-        for svp in svPatterns:
-            if svp.consensusID.startswith("7."):
-                print(
-                    f"generate_svComposites_from_dbs:: {svp.consensusID} - {svp.get_sv_type()}"
-                )
+        # for svp in svPatterns:
+        #     if svp.consensusID.startswith("7."):
+        #         print(
+        #             f"generate_svComposites_from_dbs:: {svp.consensusID} - {svp.get_sv_type()}"
+        #         )
         # note: 7.0, 7.1, 7.2 are here
         # DEBUG END
 
@@ -1639,32 +1820,24 @@ def SVcalls_from_SVcomposite(
             case _:
                 pass
 
-        # acquire the correct DNA sequences by querying all inserted sequences from the
-        # given SVpatterns
-        alt_seq: str | None = (
-            svComposite.get_alt_sequence()
-            if svComposite.sv_type
-            in (
-                SVpatterns.SVpatternInsertion,
-                SVpatterns.SVpatternInversion,
-                SVpatterns.SVpatternInversionDuplication,
-                SVpatterns.SVpatternInversionDeletion,
-                SVpatterns.SVpatternInversionTranslocation,
-            )
-            else None
-        )  # TODO: revcomp if representing consensus sequence is reverse complement (carrying consensus aln is reverse)
-        ref_seq: str | None = (
-            svComposite.get_ref_sequence()
-            if svComposite.sv_type
-            in (
-                SVpatterns.SVpatternDeletion,
-                SVpatterns.SVpatternInversion,
-                SVpatterns.SVpatternInversionDuplication,
-                SVpatterns.SVpatternInversionDeletion,
-                SVpatterns.SVpatternInversionTranslocation,
-            )
-            else None
-        )
+        alt_seq: str | None = None
+        ref_seq: str | None = None
+        if any(
+            issubclass(svComposite.sv_type, t)
+            for t in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternInversion)
+        ):
+            alt_seq = svComposite.get_alt_sequence()
+            if len(alt_seq) <= 1:
+                raise ValueError(
+                    f"SVcalls_from_SVcomposite: alt_seq length is {len(alt_seq)} for svComposite {svComposite}.\nThe alt sequence of the best group is: {svComposite.svPatterns[0].get_sequence()}"
+                )
+        if issubclass(svComposite.sv_type, SVpatterns.SVpatternSingleBreakend):
+            alt_seq = svComposite._get_best_group()[0].get_sequence_clipped()
+        if any(
+            issubclass(svComposite.sv_type, t)
+            for t in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInversion)
+        ):
+            ref_seq = svComposite.get_ref_sequence()
 
         pass_altreads: bool = (
             max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
@@ -2308,6 +2481,7 @@ def multisample_sv_calling(
 
     # # DEBUG END
 
+    # --- vertical merging of svComposites across samples and consensus sequences --- #
     merged: list[SVcomposite] = merge_svComposites(
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
         svComposites=data,
