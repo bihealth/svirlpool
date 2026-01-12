@@ -715,7 +715,6 @@ def merge_insertions(
     apriori_size_difference_fraction_tolerance: float,
     verbose: bool = False,
 ) -> list[SVcomposite]:
-    # DEBUG: throroughly check the input svComposites
     # 1) test if they have svPatterns
     if len(insertions) == 0:
         return []
@@ -740,6 +739,12 @@ def merge_insertions(
                     raise ValueError(
                         "merge_insertions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                     )
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternInsertion) for sv in insertions
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternInsertion to merge them."
+        )
 
     """Merge insertions that overlap on the reference and have similar sizes."""
     if len(insertions) == 0:
@@ -791,8 +796,12 @@ def merge_deletions(
     if len(deletions) == 0:
         return []
     # check if all svPatterns are deletions
-    if any(sv.sv_type != "DEL" for sv in deletions):
-        raise ValueError("All SVcomposites must be of type DEL to merge them.")
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternDeletion) for sv in deletions
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternDeletion to merge them."
+        )
     uf = UnionFind(range(len(deletions)))
     for i in range(len(deletions)):
         for j in range(i + 1, len(deletions)):
@@ -1038,6 +1047,12 @@ def merge_inversions(
                     raise ValueError(
                         "merge_inversions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                     )
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternInversion) for sv in inversions
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternInversion to merge them."
+        )
 
     # check if all svPatterns are inversions
     # create a set of sv_types and check if all are subclasses of SVpatternInversion
