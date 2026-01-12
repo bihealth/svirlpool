@@ -147,7 +147,9 @@ class SVcomposite:
             )
         return alt_readnames
 
-    def get_size(self) -> int:
+    def get_size(self, inner :bool | None = None) -> int:
+        """returns the size of the SVcomposite, calculated from the SVpatterns with the highest support (same logic as get_alt_sequence).
+        The inner parameter can override the SVpattern.get_size() 'inner' parameter, which is useful for inversions or other 4+ relations-driven SV patterns."""
         # Group SVpatterns by (samplename, consensusID) - same logic as get_alt_sequence
         groups = {}
         for svPattern in self.svPatterns:
@@ -179,16 +181,19 @@ class SVcomposite:
         # Calculate summed size from the best group only
         summed_bp = 0
         for svPattern in best_group:
-            value = svPattern.get_size()
+            if inner is not None and isinstance(svPattern, SVpatterns.SVpatternInversion):
+                value = svPattern.get_size(inner=inner)
+            else:
+                value = svPattern.get_size()
             if isinstance(svPattern, SVpatterns.SVpatternDeletion):
                 summed_bp -= value
             else:
                 summed_bp += value
 
         return abs(summed_bp)  # Return absolute value for size
-
-
-    def get_alt_sequence(self) -> str:
+    
+    def _get_best_group(self) -> list[SVpatterns.SVpatternType]:
+        """Helper function to get the group of SVpatterns with the highest support."""
         # Group SVpatterns by (samplename, consensusID)
         groups = {}
         for svPattern in self.svPatterns:
@@ -198,7 +203,7 @@ class SVcomposite:
             groups[key].append(svPattern)
 
         if not groups:
-            return ""
+            raise ValueError("No SVpatterns in SVcomposite")
 
         # Find the group with maximum supporting unique reads
         best_group = None
@@ -215,8 +220,20 @@ class SVcomposite:
                 best_group = group_patterns
 
         if best_group is None:
-            return ""
+            raise ValueError("No SVpatterns in SVcomposite")
 
+        return best_group
+    
+    def get_representative_SVpattern(self) -> SVpatterns.SVpatternType:
+        """returns the SVpattern with the highest support (same logic as get_alt_sequence)."""
+        best_group = self._get_best_group()
+        # Return the SVpattern with the highest support from the best group
+        return max(best_group, key=lambda svp: len(svp.get_supporting_reads()))
+
+
+    def get_alt_sequence(self) -> str:
+        best_group = self._get_best_group()
+        
         # Concatenate alt sequences from the best group
         concatenated_sequence = ""
         for svPattern in best_group:
@@ -234,34 +251,8 @@ class SVcomposite:
         return concatenated_sequence[:size] if size > 0 else ""
 
     def get_ref_sequence(self) -> str:
-        # Group SVpatterns by (samplename, consensusID)
-        groups = {}
-        for svPattern in self.svPatterns:
-            key = (svPattern.samplename, svPattern.consensusID)
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(svPattern)
-
-        if not groups:
-            return ""
-
-        # Find the group with maximum supporting unique reads
-        best_group = None
-        max_supporting_reads = 0
-
-        for group_patterns in groups.values():
-            # Get all unique supporting reads from this group
-            all_supporting_reads = set()
-            for svPattern in group_patterns:
-                all_supporting_reads.update(svPattern.get_supporting_reads())
-
-            if len(all_supporting_reads) > max_supporting_reads:
-                max_supporting_reads = len(all_supporting_reads)
-                best_group = group_patterns
-
-        if best_group is None:
-            return ""
-
+        best_group = self._get_best_group()
+        
         # Concatenate reference sequences from the best group
         concatenated_sequence = ""
         for svPattern in best_group:

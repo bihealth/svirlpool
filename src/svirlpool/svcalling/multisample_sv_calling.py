@@ -435,7 +435,7 @@ def can_merge_svComposites_insertions(
 def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
     # if a is sv type insertion or inversion, get inserted complexity tracks
     mean_complexity: float = 1.0
-    if a.sv_type in ("INS", "INV"):
+    if issubclass(a.sv_type, SVpatterns.SVpatternInsertion) or issubclass(a.sv_type, SVpatterns.SVpatternInversion):
         complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
         if (
             complexities is None
@@ -450,7 +450,7 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
                     weights=[len(c) for c in complexities],
                 )
             )
-    elif a.sv_type == "DEL":
+    elif issubclass(a.sv_type, SVpatterns.SVpatternDeletion):
         complexities: list[np.ndarray] = a.get_reference_complexity_tracks()
         if (
             complexities is None
@@ -630,10 +630,10 @@ def vertically_merged_svComposites_from_group(
         verbose: bool = False,
 ) -> list[SVcomposite]:
     # The group is divided into subgroups with shared SV types
-    insertions = {i:svc for i, svc in enumerate(group) if isinstance(svc.sv_type, SVpatterns.SVpatternInsertion)}
-    deletions = {i:svc for i, svc in enumerate(group) if isinstance(svc.sv_type, SVpatterns.SVpatternDeletion)}
-    inversions = {i:svc for i, svc in enumerate(group) if isinstance(svc.sv_type, SVpatterns.SVpatternInversion)}
-    raise NotImplementedError("Merging of inversions is not implemented yet.")
+    insertions = {i:svc for i, svc in enumerate(group) if issubclass(svc.sv_type, SVpatterns.SVpatternInsertion)}
+    deletions = {i:svc for i, svc in enumerate(group) if issubclass(svc.sv_type, SVpatterns.SVpatternDeletion)}
+    inversions = {i:svc for i, svc in enumerate(group) if issubclass(svc.sv_type, SVpatterns.SVpatternInversion)}
+
     used_indices = set(insertions.keys()).union(deletions.keys()).union(inversions.keys())
     others = [
         svc for i, svc in enumerate(group) if i not in used_indices
@@ -812,11 +812,7 @@ def can_merge_svComposites_inversions(
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
-    # throroughly check the input svComposites
-    # 1) test if they have svPatterns
-    if a.sv_type != b.sv_type: # non-matching sub types of inversions cannot be merged
-        log.debug(f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} have different subtypes: {a.sv_type} vs {b.sv_type}")
-        return False
+    """"""
     if (
         not a.svPatterns
         or not b.svPatterns
@@ -842,6 +838,11 @@ def can_merge_svComposites_inversions(
                 raise ValueError(
                     "can_merge_svComposites_inversions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                 )
+    if issubclass(a.sv_type, SVpatterns.SVpatternInversionTranslocation) != issubclass(b.sv_type, SVpatterns.SVpatternInversionTranslocation):
+        log.debug(
+            f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are of different subclasses (InversionTranslocation vs Inversion)."
+        )
+        return False
 
     are_near: bool = a.overlaps_any(
         b, tolerance_radius=near
@@ -852,10 +853,20 @@ def can_merge_svComposites_inversions(
             )
         return False
 
+    if a.get_representative_SVpattern().SVprimitives[0].chr != b.get_representative_SVpattern().SVprimitives[0].chr or \
+         a.get_representative_SVpattern().SVprimitives[-1].chr != b.get_representative_SVpattern().SVprimitives[-1].chr:
+        log.debug(
+                f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are on different chromosomes ({a.get_representative_SVpattern().SVprimitives[0].chr},{a.get_representative_SVpattern().SVprimitives[-1].chr} vs {b.get_representative_SVpattern().SVprimitives[0].chr},{b.get_representative_SVpattern().SVprimitives[-1].chr})"
+            )
+        return False
+
+    # in the case that inversions of different subclasses are merged, it is necessary to measure their inner sizes to find a good size comparison,
+    # since outer break ends can align very well while the inverted interval can be of very different sizes.
+    # this allows to merge e.g. inverted dels with inverted dups given a stronger local noise.
     size_tolerance_a = sizetolerance_from_SVcomposite(a)
-    size_a = abs(a.get_size())
+    size_a = abs(a.get_size(inner=True))
     size_tolerance_b = sizetolerance_from_SVcomposite(b)
-    size_b = abs(b.get_size())
+    size_b = abs(b.get_size(inner=True))
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -1003,11 +1014,10 @@ def merge_inversions(
                     )
 
     # check if all svPatterns are inversions
-    # create a set of sv_types and check if it is a subset of the allowed types
+    # create a set of sv_types and check if all are subclasses of SVpatternInversion
     present_sv_types = {sv.sv_type for sv in inversions}
-    allowed_sv_types = {"INV", "INV-TRANS", "INV-DUP", "INV-DEL"}
-    if not present_sv_types.issubset(allowed_sv_types):
-        raise ValueError("All SVcomposites must be of type INV(-XXX) to merge them.")
+    if not all(issubclass(sv_type, SVpatterns.SVpatternInversion) for sv_type in present_sv_types):
+        raise ValueError("All SVcomposites must be a subclass of SVpatternInversion to merge them.")
     uf = UnionFind(range(len(inversions)))
     log.debug(f"Starting merge of {len(inversions)} inversions.")
     for i in range(len(inversions)):

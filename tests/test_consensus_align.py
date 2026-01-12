@@ -295,7 +295,6 @@ def test_svPrimitives_to_svPatterns_inv15():
     sv_primitives = load_svprimitives(svp_path)
     max_del_size = load_max_del_size(svp_path)
 
-    # filter sv_primitives to only those with consensusID "15.0"
     group = [
         svp for svp in sv_primitives if svp.consensusID == "15.0"
     ]
