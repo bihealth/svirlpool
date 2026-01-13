@@ -39,6 +39,7 @@ SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternDeletion,
     SVpatterns.SVpatternInversion,
     SVpatterns.SVpatternSingleBreakend,
+    SVpatterns.SVpatternComplex,
 })
 
 SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
@@ -208,43 +209,40 @@ def binary_svpattern_index_mask(
 
 
 # the horizontal merge allows to merge inter with intra alignment SVpatterns
+# this really only concerns insertions and deletions, which can be split across multiple aligned fragments
 def svPatterns_to_horizontally_merged_svComposites(
     svPatterns: list[SVpatterns.SVpatternType],
     sv_types: set[type[SVpatterns.SVpatternType]],
 ) -> list[SVcomposite]:
-    def get_sv_group_key(sv_type_cls: type[SVpatterns.SVpatternType]) -> str:
-        """Map SV types to group keys. INS and DEL are grouped together as INDEL."""
-        if sv_type_cls in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion):
-            return "INDEL"
-        return sv_type_cls.get_sv_type()
-
+    
     result: list[SVcomposite] = []
     if len(svPatterns) == 0:
         log.warning(f"No SVpatterns found in {svPatterns}. Returning empty list.")
         return result
-    # filter by size and type
-    _svPatterns: list[SVpatterns.SVpatternType] = []
-    for svp in svPatterns:
-        if type(svp) not in sv_types:
-            log.info(
-                f"Skipping SVpattern of unsupported type: {svp.get_sv_type()}"
-            )  # debug
-            continue
-        elif svp.get_size() is None:
-            log.info(f"Skipping SVpattern with undefined size: {svp}")  # debug
-            continue
-        else:
-            _svPatterns.append(svp)
+    # split the insertiosn and deletions. Add the rest to results immediately.
+    # filter svPatterns for supported types
+    _svPatterns = [svp for svp in svPatterns if type(svp) in sv_types]
+    unsupported = [svp for svp in svPatterns if type(svp) not in sv_types]
+    if unsupported:
+        log.warning(f"Skipping {len(unsupported)} unsupported SVpatterns during horizontal merging: {[type(svp).__name__ for svp in unsupported]}")
+        unsupported.clear()
+    indels = [svp for svp in _svPatterns if type(svp) in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)]
+    others = [svp for svp in _svPatterns if type(svp) not in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)]
+    _svPatterns.clear()
+
+    # convert other svPatterns directly to svComposites
+    for svComposite in others:
+        result.append(SVcomposite.from_SVpattern(svComposite))
 
     # sort svPatterns by consensusID and read_start
-    _svPatterns = sorted(_svPatterns, key=lambda x: (x.consensusID, type(x).__name__))
+    indels = sorted(indels, key=lambda x: (x.consensusID, x.read_start))
 
     groups = groupby(
-        _svPatterns, key=lambda x: (x.consensusID, get_sv_group_key(type(x)))
+        indels, key=lambda x: x.consensusID
     )
 
     # loop svPatterns of each group and connect them if they share at least one repeatID
-    for (_consensusID, _sv_type), group in groups:
+    for (_consensusID, group) in groups:
         group = list(group)
         if len(group) == 1:
             result.append(SVcomposite.from_SVpatterns(group))
@@ -266,20 +264,6 @@ def svPatterns_to_horizontally_merged_svComposites(
             sv_patterns_in_component = [group[idx] for idx in component]
             if len(sv_patterns_in_component) > 0:
                 result.append(SVcomposite.from_SVpatterns(sv_patterns_in_component))
-
-    # check result.
-    # any insertions and deletions needs to have all svprimitives on the same chromosome
-    for svComposite in result:
-        chr_set: set[str] = {
-            svp.get_reference_region()[0]
-            for svp in svComposite.svPatterns
-            if type(svp)
-            in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInsertion)
-        }
-        if len(chr_set) > 1:
-            raise ValueError(
-                f"SVcomposite of type {svComposite.sv_type.__name__} has SVpatterns on different chromosomes: {chr_set}. This is not allowed. svComposite: {svComposite}"
-            )
 
     return result
 
@@ -657,12 +641,18 @@ def vertically_merged_svComposites_from_group(
         for i, svc in enumerate(group)
         if issubclass(svc.sv_type, SVpatterns.SVpatternSingleBreakend)
     }
+    cpx = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternComplex)
+    }
 
     used_indices = set().union(
         insertions.keys(),
         deletions.keys(),
         inversions.keys(),
         breakends.keys(),
+        cpx.keys(),
     )
     others = [
         svc for i, svc in enumerate(group) if i not in used_indices
@@ -708,12 +698,19 @@ def vertically_merged_svComposites_from_group(
         verbose=verbose,
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
+    merged_cpx = merge_complexes(
+        complexes=list(cpx.values()),
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+        verbose=verbose,
+    )
 
     return (
         merged_insertions
         + merged_deletions
         + merged_inversions
         + merged_breakends
+        + merged_cpx
         + others
     )
 
@@ -1277,6 +1274,116 @@ def merge_breakends(
     return result
 
 
+def _complexes_overlap(complex_a: SVcomposite, complex_b: SVcomposite, near: int) -> bool:
+    """Check if two complex SVcomposites overlap in all their breakends within a given tolerance.
+    It is assumed that each sv complex is composed of exactly one sv pattern at this point."""
+    if len(complex_a.svPatterns) != 1 or len(complex_b.svPatterns) != 1:
+        raise ValueError(
+            f"_complexes_overlap: SVcomposites must contain exactly one SVpattern each to check for overlap. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
+        )
+    
+    primitives_a = sorted(complex_a.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start))
+    primitives_b = sorted(complex_b.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start))
+
+    if len(primitives_a) != len(primitives_b):
+        return False  # Different number of breakends, cannot overlap
+
+    for prim_a, prim_b in zip(primitives_a, primitives_b):
+        if prim_a.chr != prim_b.chr:
+            return False  # Different chromosomes, cannot overlap
+        start_a, end_a = sorted((prim_a.ref_start, prim_a.ref_end))
+        start_b, end_b = sorted((prim_b.ref_start, prim_b.ref_end))
+
+        # Check if the intervals overlap within the tolerance
+        if end_a + near < start_b or end_b + near < start_a:
+            return False  # No overlap within tolerance
+
+    return True  # All breakends overlap within tolerance
+
+
+def _complexes_kmer_similarity(
+    complex_a: SVcomposite,
+    complex_b: SVcomposite,
+    min_kmer_overlap: float,
+) -> bool:
+    """Calculate k-mer similarity between two complex SVcomposites based on their breakend sequences."""
+    # each complex has exactly one sv pattern at this point
+    if len(complex_a.svPatterns) != 1 or len(complex_b.svPatterns) != 1:
+        raise ValueError(
+            f"_complexes_kmer_similarity: SVcomposites must contain exactly one SVpattern each to calculate k-mer similarity. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
+        )
+    # each sv pattern has saved sequence contexts (400 bp of consenus sequence, just like an inserrtion)
+    # they are indexed by their sv primitive ID
+    # this is not necessarily in the same order as the sv primitves sorted by reference chr, start_pos.
+    # so it is necessary to keep track of the indexes.
+    # sort sv primitives by chr, start_pos to get a consistent order. keep track of their old ID, so they can be mapped back to the sequences.
+    
+    # generate tuples of (original sv primtive index, sv primitive, sequence context)
+    data_a = sorted(
+        [
+            (idx, sv_prim, complex_a.svPatterns[0].get_sequence_context(sv_prim_idx=idx))
+            for idx, sv_prim in enumerate(complex_a.svPatterns[0].SVprimitives)
+        ],        key=lambda x: (x[1].chr, x[1].ref_start),
+    )
+    data_b = sorted(
+        [
+            (idx, sv_prim, complex_b.svPatterns[0].get_sequence_context(sv_prim_idx=idx))
+            for idx, sv_prim in enumerate(complex_b.svPatterns[0].SVprimitives)
+        ],        key=lambda x: (x[1].chr, x[1].ref_start),
+    )
+    # now calculate kmer similarity for each group
+    group_a = [seq for _, _, seq in data_a]
+    group_b = [seq for _, _, seq in data_b]
+    similarity: float = kmer_similarity_of_groups(
+        group_a=group_a, group_b=group_b
+    )
+    return similarity >= min_kmer_overlap
+    
+
+def merge_complexes(
+    complexes: list[SVcomposite],
+    near: int,
+    min_kmer_overlap: float,
+    verbose: bool = False,
+) -> list[SVcomposite]:
+    """Merge complex SVcomposites that are spatially close in every underlying sv primitive (breakend), and if their kmer similarities are high enough."""
+    # any combination of complexes can be merged here, so every combination of complexes must be tested.
+    uf: UnionFind = UnionFind(range(len(complexes)))
+    # if two complexes match, connect them. Every connected component will be merged into one complex at the end.
+    for i in range(len(complexes)):
+        for j in range(i + 1, len(complexes)):
+            if _complexes_overlap(complex_a=complexes[i], complex_b=complexes[j], near=near):
+                if _complexes_kmer_similarity(
+                    complex_a=complexes[i],
+                    complex_b=complexes[j],
+                    min_kmer_overlap=min_kmer_overlap,
+                ):
+                    uf.union(i, j)
+                    if verbose:
+                        print(
+                            f"Merging complexes {i} and {j} based on overlap and k-mer similarity."
+                        )
+                else:
+                    if verbose:
+                        print(
+                            f"Not merging complexes {i} and {j}: k-mer similarity too low."
+                        )
+            else:
+                if verbose:
+                    print(
+                        f"Not merging complexes {i} and {j}: no overlap within tolerance."
+                    )
+    result: list[SVcomposite] = []
+    for cc in uf.get_connected_components(allow_singletons=True):
+        result.append(
+            SVcomposite.from_SVpatterns(
+                svPatterns=[
+                    svPattern for idx in cc for svPattern in complexes[idx].svPatterns
+                ]
+            )
+        )
+    return result
+
 # %%
 
 
@@ -1346,6 +1453,82 @@ def generate_svComposites_from_dbs(
 
     return svComposites
 
+def merge_svComposites_across_chromosomes(
+    svComposites: list[SVcomposite],
+    apriori_size_difference_fraction_tolerance: float,
+    max_cohens_d: float,
+    near: int,
+    min_kmer_overlap: float,
+    verbose: bool = False,
+) -> list[SVcomposite]:
+    """
+    Merge SVcomposites across chromosomes without parallelization.
+    This function processes all chromosomes sequentially.
+    """
+    log.debug(f"Processing {len(svComposites)} SVcomposites across chromosomes")
+    
+    # build overlap trees for all chromosomes
+    overlap_trees: dict[str, IntervalTree] = defaultdict(IntervalTree)
+    for idx, svComposite in enumerate(svComposites):
+        for svpID, svprimitive in enumerate(svComposite.svPatterns[0].SVprimitives): # assuming there is only one sv pattern per sv composite at this point
+            chr = svprimitive.chr
+            start = svprimitive.ref_start
+            end = svprimitive.ref_end
+            if start > end:
+                start, end = end, start
+            if end - start < near:
+                start -= near
+                end += near
+            if start < 0:
+                start = 0
+            overlap_trees[chr].addi(start, end, (idx, svpID))
+    log.debug(f"Merging overlap trees for all chromosomes")
+    uf = UnionFind(range(len(svComposites)))
+    
+    for _chr_name, tree in overlap_trees.items():
+        tree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
+
+    for _chr_name, tree in overlap_trees.items():
+        for interval in tree:
+            indices = list(set([x[0] for x in interval.data]))
+            if len(indices) > 1:
+                for i in range(len(indices)):
+                    for j in range(i + 1, len(indices)):
+                        uf.union_by_name(indices[i], indices[j])
+    
+    # vertical merging
+    connected_components = uf.get_connected_components(allow_singletons=True)
+    merged_svComposites = []
+    log.debug(f"Vertically merging {len(connected_components)} groups across chromosomes")
+    for cc in tqdm(connected_components, desc=f"All Chromosomes"):
+        if verbose:
+            log.info(f"Merging group with {len(cc)} svComposites: {cc}")
+        svComposite_group = [svComposites[idx] for idx in cc]
+
+        if len(svComposite_group) > 1:
+            log.debug(
+                f"Vertically merging group of size {len(svComposite_group)} with consensusIDs: {[svc.svPatterns[0].consensusID for svc in svComposite_group]}"
+            )
+            merged = vertically_merged_svComposites_from_group(
+                group=svComposite_group,
+                d=max_cohens_d,
+                near=near,
+                min_kmer_overlap=min_kmer_overlap,
+                apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+                verbose=verbose,
+            )
+            merged_svComposites.extend(merged)
+        else:
+            log.info(
+                f"Singleton group for consensusID: {svComposite_group[0].svPatterns[0].consensusID}, adding without merging."
+            )
+            merged_svComposites.append(svComposite_group[0])
+    log.debug(
+        f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across chromosomes"
+    )
+    return merged_svComposites
+    
+        
 
 def merge_svComposites_for_chromosome(
     chr_name: str,
@@ -1437,7 +1620,6 @@ def merge_svComposites_for_chromosome(
         f"Chromosome {chr_name}: Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)}"
     )
     return merged_svComposites
-
 
 def merge_svComposites(
     svComposites: list[SVcomposite],
@@ -1536,6 +1718,11 @@ def merge_svComposites(
                 verbose=verbose,
             )
             merged_svComposites.extend(chr_merged)
+
+    # cpx_groups can jump across chromosomes, so they cannot be parallelized by chromosome.
+    # they are merged here sequentially.
+    
+
 
     log.info(
         f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across all chromosomes."
@@ -2292,7 +2479,8 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import \
+        load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(

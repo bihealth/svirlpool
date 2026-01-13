@@ -1822,7 +1822,7 @@ def kmer_similarity(
 def kmer_similarity_of_groups(
     group_a: list[str],
     group_b: list[str],
-    letter_dict: dict = None,
+    letter_dict: dict | None = None,
     k: int = 9,
 ) -> float:
     # construct kmer counter dicts for each group and combine them. Combining them means is summing their values

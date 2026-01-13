@@ -191,7 +191,10 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                         consensus=consensus
                     )
                 )
-            # complex re-arrangements are a series of break ends in a SVpatternComplex
+            elif isinstance(processed_svp, SVpatterns.SVpatternComplex):
+                processed_svp.set_all_sequence_contexts(
+                    processed_svp.get_sequence_contexts_from_consensus(consensus=consensus)
+                )
             else:
                 log.warning(
                     f"SVpattern type {type(processed_svp)} is not supported. Skipping alt sequence assignment."

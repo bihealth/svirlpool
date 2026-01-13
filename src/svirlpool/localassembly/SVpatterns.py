@@ -582,6 +582,12 @@ class SVpatternTranslocation(SVpattern):
 
 @attrs.define
 class SVpatternComplex(SVpattern):
+    CONTEXT_SIZE: int = 200
+    sequence_contexts: dict[int, bytes] | None = None
+    """A dictionary mapping SVprimitive indices to their sequence contexts (pickled byte strings)."""
+    sequence_contexts_complexities: dict[int, bytes] | None = None
+    """A dictionary mapping SVprimitive indices to their sequence complexities (pickled numpy arrays)."""
+        
     @classmethod
     def get_sv_type(cls) -> str:
         return "CPX"
@@ -592,6 +598,102 @@ class SVpatternComplex(SVpattern):
 
     def get_reference_region(self) -> tuple[str, int, int]:
         return _get_first_svp_on_reference_start_pos(self)
+
+    def set_sequence_context(
+        self,
+        svp_index: int,
+        sequence: str,
+        sequence_complexity_max_length: int = 300,
+    ) -> None:
+        """Set the sequence context and compute its complexity for a specific SVprimitive index."""
+        if self.sequence_contexts is None:
+            self.sequence_contexts = {}
+        if self.sequence_contexts_complexities is None:
+            self.sequence_contexts_complexities = {}
+
+        self.sequence_contexts[svp_index] = pickle.dumps(sequence)
+        if len(sequence) <= sequence_complexity_max_length:
+            dna_iter = iter(sequence)
+            self.sequence_contexts_complexities[svp_index] = pickle.dumps(
+                complexity_local_track(
+                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
+                )
+            )
+        else:
+            # Create dummy placeholder with 1.0 values for long sequences
+            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
+            self.sequence_contexts_complexities[svp_index] = pickle.dumps(dummy_complexity)
+
+    def set_all_sequence_contexts(
+        self,
+        contexts: dict[int, str],
+        sequence_complexity_max_length: int = CONTEXT_SIZE,
+    ) -> None:
+        """Set the sequence contexts and compute their complexities for all SVprimitive indices."""
+        for svp_index, sequence in contexts.items():
+            self.set_sequence_context(
+                svp_index,
+                sequence,
+                sequence_complexity_max_length=sequence_complexity_max_length,
+            )
+
+    def get_sequence_context(self, svp_index: int) -> str | None:
+        """Retrieve the sequence context for a specific SVprimitive index by unpickling."""
+        if self.sequence_contexts is None or svp_index not in self.sequence_contexts:
+            return None
+        try:
+            return pickle.loads(self.sequence_contexts[svp_index])
+        except Exception:
+            return None
+    
+    def get_all_sequence_contexts(self) -> dict[int, str]:
+        """Retrieve all sequence contexts by unpickling."""
+        if self.sequence_contexts is None:
+            return {}
+        contexts = {}
+        for svp_index, seq_bytes in self.sequence_contexts.items():
+            try:
+                contexts[svp_index] = pickle.loads(seq_bytes)
+            except Exception:
+                contexts[svp_index] = None
+        return contexts
+
+    def get_sequence_contexts_from_consensus(self, consensus: Consensus) -> dict[int, str]:
+        """Extract context regions around the breakpoints (±CONTEXT_SIZE bp) for all SVprimitives."""
+        if consensus.consensus_padding is None:
+            raise ValueError("Consensus sequence is not set in the Consensus object")
+
+        core_sequence_start: int = consensus.consensus_padding.padding_size_left
+        consensus_length = len(consensus.consensus_sequence)
+        contexts = {}
+
+        for idx, svp in enumerate(self.SVprimitives):
+            # Convert read coordinates to consensus coordinates
+            read_start_on_consensus = svp.read_start - core_sequence_start
+            read_end_on_consensus = svp.read_end - core_sequence_start
+
+            # Extract context region around the breakpoint
+            s = max(0, read_start_on_consensus - self.CONTEXT_SIZE)
+            e = min(consensus_length, read_end_on_consensus + self.CONTEXT_SIZE)
+
+            seq = consensus.consensus_sequence[s:e]
+
+            # Apply reverse complement if alignment is reversed
+            if svp.aln_is_reverse:
+                seq = str(Seq(seq).reverse_complement())
+
+            contexts[idx] = seq
+
+        return contexts
+
+    def get_sequence_context_complexity(self, svp_index: int) -> np.ndarray | None:
+        """Retrieve the sequence context complexity for a specific SVprimitive index by unpickling."""
+        if self.sequence_contexts_complexities is None or svp_index not in self.sequence_contexts_complexities:
+            return None
+        try:
+            return pickle.loads(self.sequence_contexts_complexities[svp_index])
+        except Exception:
+            return None
 
 
 @attrs.define
@@ -1168,6 +1270,7 @@ def parse_SVprimitives_to_SVpatterns(
     SVprimitives: list[SVprimitive],
     max_del_size: int = 100_000,
     log_level_override: int | None = None,
+    break_up_complex_into_pairs:bool=True,
 ) -> list[SVpatternType]:
     """
     Parses Sv patterns from the SVprimitives of one consensus. All SVprimitives must have the same consensusID.
@@ -1304,13 +1407,67 @@ def parse_SVprimitives_to_SVpatterns(
         used_indices.add(unused_index)
         log.debug(f"Parsed single-ended breakend from BND: {result[-1]}")
 
-    # if there are still unused breakends, create a complex SVpattern
     unused_indices = set(range(len(breakends))) - used_indices
     if unused_indices:
-        remaining_breakends = [breakends[i] for i in unused_indices]
-        result.append(SVpatternComplex(SVprimitives=remaining_breakends))
-        log.debug(f"Parsed complex SVpattern from BNDs: {result[-1]}")
+        if break_up_complex_into_pairs:
+            result.extend(break_up_CPX(SVprimitives=breakends, unused_indices=unused_indices))
+        else:
+            remaining_breakends = [breakends[i] for i in unused_indices]
+            result.append(SVpatternComplex(SVprimitives=remaining_breakends))
+            log.debug(f"Parsed complex SVpattern from BNDs: {result[-1]}")
 
+    return result
+
+
+def break_up_CPX(SVprimitives:list[SVprimitive], unused_indices:set[int]) -> list[SVpatternType]:
+    """Break up a complex SVpattern into multiple complex patterns that have each two connected break end sv primitives or
+    into multiple 2-cpx and one or two single ended breaks.
+    The set of unused indices tells if two primitives are adjacent."""
+    # the already SVprimitives are sorted by location on the read. Their order must not be changed.
+    # if two sv primitives are of type 3 or 4 and have different alignmentIDs and are adjacent (indices differ by 1),
+    # then they are adjacencies and are grouped into one complex pattern
+    # if they share the same alignmentID, the are on the same alignment fragment and not a novel adjacency.
+    # if they cannot be paried with other breakends, they are single-ended breakends
+    # the first and the last breakend can be single break ends
+    if not all (svp.sv_type == 3 or svp.sv_type == 4 for svp in SVprimitives):
+        raise ValueError("All SVprimitives must be of type BND to break up complex SVpatterns")
+        
+    if not unused_indices:
+        return []
+    
+    result: list[SVpatternType] = []
+    sorted_indices = sorted(unused_indices)
+    paired_indices: set[int] = set()
+    
+    # Iterate through consecutive pairs of unused indices
+    for i in range(len(sorted_indices) - 1):
+        idx_a = sorted_indices[i]
+        idx_b = sorted_indices[i + 1]
+        
+        # Skip if already paired
+        if idx_a in paired_indices or idx_b in paired_indices:
+            continue
+        
+        svp_a = SVprimitives[idx_a]
+        svp_b = SVprimitives[idx_b]
+        
+        # Check if they form a novel adjacency:
+        # 1. Both must be breakends (type 3 or 4)
+        # 2. Must be consecutive indices (differ by 1)
+        # 3. Must have different alignmentIDs
+        if (abs(idx_b - idx_a) == 1) and svp_a.alignmentID != svp_b.alignmentID:
+            
+            # Create a 2-breakend complex pattern
+            result.append(SVpatternComplex(SVprimitives=[svp_a, svp_b]))
+            paired_indices.update([idx_a, idx_b])
+            log.debug(f"Paired breakends at indices {idx_a}, {idx_b} into SVpatternComplex")
+    
+    # Handle unpaired breakends - create single breakends
+    unpaired_indices = set(sorted_indices) - paired_indices
+    for idx in sorted(unpaired_indices):
+        result.append(SVpatternSingleBreakend(SVprimitives=[SVprimitives[idx]]))
+        log.debug(f"Created SVpatternSingleBreakend for unpaired breakend at index {idx}")
+    
     return result
 
 
