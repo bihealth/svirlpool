@@ -231,8 +231,8 @@ def svPatterns_to_horizontally_merged_svComposites(
     _svPatterns.clear()
 
     # convert other svPatterns directly to svComposites
-    for svComposite in others:
-        result.append(SVcomposite.from_SVpattern(svComposite))
+    for svp in others:
+        result.append(SVcomposite.from_SVpattern(svp))
 
     # sort svPatterns by consensusID and read_start
     indels = sorted(indels, key=lambda x: (x.consensusID, x.read_start))
@@ -1312,6 +1312,14 @@ def _complexes_kmer_similarity(
         raise ValueError(
             f"_complexes_kmer_similarity: SVcomposites must contain exactly one SVpattern each to calculate k-mer similarity. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
         )
+    if not issubclass(complex_a.sv_type, SVpatterns.SVpatternComplex):
+        raise ValueError(
+            f"_complexes_kmer_similarity: SVcomposite 'a' must be of type SVpatternComplex. Got {complex_a.sv_type}."
+        )
+    if not issubclass(complex_b.sv_type, SVpatterns.SVpatternComplex):
+        raise ValueError(
+            f"_complexes_kmer_similarity: SVcomposite 'b' must be of type SVpatternComplex. Got {complex_b.sv_type}."
+        )
     # each sv pattern has saved sequence contexts (400 bp of consenus sequence, just like an inserrtion)
     # they are indexed by their sv primitive ID
     # this is not necessarily in the same order as the sv primitves sorted by reference chr, start_pos.
@@ -1321,13 +1329,13 @@ def _complexes_kmer_similarity(
     # generate tuples of (original sv primtive index, sv primitive, sequence context)
     data_a = sorted(
         [
-            (idx, sv_prim, complex_a.svPatterns[0].get_sequence_context(sv_prim_idx=idx))
+            (idx, sv_prim, complex_a.svPatterns[0].get_sequence_context(svp_index=idx))
             for idx, sv_prim in enumerate(complex_a.svPatterns[0].SVprimitives)
         ],        key=lambda x: (x[1].chr, x[1].ref_start),
     )
     data_b = sorted(
         [
-            (idx, sv_prim, complex_b.svPatterns[0].get_sequence_context(sv_prim_idx=idx))
+            (idx, sv_prim, complex_b.svPatterns[0].get_sequence_context(svp_index=idx))
             for idx, sv_prim in enumerate(complex_b.svPatterns[0].SVprimitives)
         ],        key=lambda x: (x[1].chr, x[1].ref_start),
     )
@@ -1382,6 +1390,7 @@ def merge_complexes(
                 ]
             )
         )
+
     return result
 
 # %%
@@ -1470,7 +1479,7 @@ def merge_svComposites_across_chromosomes(
     # build overlap trees for all chromosomes
     overlap_trees: dict[str, IntervalTree] = defaultdict(IntervalTree)
     for idx, svComposite in enumerate(svComposites):
-        for svpID, svprimitive in enumerate(svComposite.svPatterns[0].SVprimitives): # assuming there is only one sv pattern per sv composite at this point
+        for svprimitive in svComposite.svPatterns[0].SVprimitives: # assuming there is only one sv pattern per sv composite at this point
             chr = svprimitive.chr
             start = svprimitive.ref_start
             end = svprimitive.ref_end
@@ -1481,7 +1490,7 @@ def merge_svComposites_across_chromosomes(
                 end += near
             if start < 0:
                 start = 0
-            overlap_trees[chr].addi(start, end, (idx, svpID))
+            overlap_trees[chr].addi(start, end, {idx})
     log.debug(f"Merging overlap trees for all chromosomes")
     uf = UnionFind(range(len(svComposites)))
     
@@ -1490,7 +1499,7 @@ def merge_svComposites_across_chromosomes(
 
     for _chr_name, tree in overlap_trees.items():
         for interval in tree:
-            indices = list(set([x[0] for x in interval.data]))
+            indices = sorted(interval.data)
             if len(indices) > 1:
                 for i in range(len(indices)):
                     for j in range(i + 1, len(indices)):
@@ -1509,6 +1518,7 @@ def merge_svComposites_across_chromosomes(
             log.debug(
                 f"Vertically merging group of size {len(svComposite_group)} with consensusIDs: {[svc.svPatterns[0].consensusID for svc in svComposite_group]}"
             )
+
             merged = vertically_merged_svComposites_from_group(
                 group=svComposite_group,
                 d=max_cohens_d,
@@ -1517,11 +1527,9 @@ def merge_svComposites_across_chromosomes(
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
                 verbose=verbose,
             )
+
             merged_svComposites.extend(merged)
         else:
-            log.info(
-                f"Singleton group for consensusID: {svComposite_group[0].svPatterns[0].consensusID}, adding without merging."
-            )
             merged_svComposites.append(svComposite_group[0])
     log.debug(
         f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across chromosomes"
@@ -1611,9 +1619,6 @@ def merge_svComposites_for_chromosome(
             )
             merged_svComposites.extend(merged)
         else:
-            log.info(
-                f"Singleton group for consensusID: {svComposite_group[0].svPatterns[0].consensusID}, adding without merging."
-            )
             merged_svComposites.append(svComposite_group[0])
 
     log.debug(
@@ -1640,7 +1645,7 @@ def merge_svComposites(
     # not part of this merging should be all types of SV composites that are of a translocation type
     # since the work is parallelized across chromosomes.
 
-    cpx_groups: dict[str, list[SVcomposite]] = defaultdict(list)
+    cpx_groups: list[SVcomposite] = []
     # how to handle the cpx groups?
     # since they can have parts hopping to homologous regions, the chromosome pattern
     # can easily be disturbed. It could work much better to align all associated consensus
@@ -1656,7 +1661,7 @@ def merge_svComposites(
             SVpatterns.SVpatternInvertedTranslocation,
             SVpatterns.SVpatternInversionTranslocation,
         ):
-            cpx_groups[svComposite.sv_type.get_sv_type()].append(svComposite)
+            cpx_groups.append(svComposite)
         else:
             chr_name = svComposite.ref_start[0]  # Get chromosome from ref_start tuple
             chr_groups[chr_name].append(svComposite)
@@ -1721,8 +1726,14 @@ def merge_svComposites(
 
     # cpx_groups can jump across chromosomes, so they cannot be parallelized by chromosome.
     # they are merged here sequentially.
-    
-
+    merged_svComposites.extend(merge_svComposites_across_chromosomes(
+        svComposites=cpx_groups,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+        max_cohens_d=max_cohens_d,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+        verbose=verbose,
+    ))
 
     log.info(
         f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across all chromosomes."
@@ -1899,7 +1910,6 @@ def SVcalls_from_SVcomposite(
         consensusIDs: list[str] = list({
             svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
         })
-        print(consensusIDs)
         # TODO: add precise / imprecise flag: precise: all regions are near; imprecise: all regions are farther than X bp apart
         # add genotypes: for each samplename collect supporting reads and max total coverage (from genotype measurements)
         genotypes: dict[str, Genotype] = {}
@@ -1921,14 +1931,6 @@ def SVcalls_from_SVcomposite(
                 all_alt_reads.get(samplename, set())
             )
             ref_reads: set[int] = all_reads.difference(alt_reads)
-
-            # # DEBUG START
-            # # check if one consensusIS starts with "7.". If so, then print all_reads, alt_reads, ref_reads (separated by a newline) for debugging
-            # if any(cid.startswith("HG002:7") for cid in consensusIDs):
-            #     log.debug(
-            #         f"SVcalls_from_SVcomposite: Debugging sample {samplename} at {chrname}:{start}-{end} for consensusID starting with 'HG002:7':\nAll reads: {all_reads}\nAlt reads: {alt_reads}\nRef reads: {ref_reads}"
-            #     )
-            # # DEBUG END
 
             if len(alt_reads) == 0:
                 log.warning(
@@ -2655,20 +2657,6 @@ def multisample_sv_calling(
             data=data, output_path=Path(tmp_dir_path) / "all_svComposites.json.gz"
         )
 
-    # # DEBUG START
-    # # if there is one svCmposite with an underlying SVpattern from consensus 7.0 or 7.1 or 7.2, then print it here
-    # print(f" before merging, checking for SVpatterns from consensus 7.x")
-    # for svp in data:
-    #     if any(
-    #         sp.consensusID.startswith("7.")
-    #         for sp in svp.svPatterns
-    #     ):
-    #         log.info(
-    #             f"   =====> Found SVcomposite:\n{svp}"
-    #         )
-
-    # # DEBUG END
-
     # --- vertical merging of svComposites across samples and consensus sequences --- #
     merged: list[SVcomposite] = merge_svComposites(
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -2679,17 +2667,6 @@ def multisample_sv_calling(
         threads=threads,
         verbose=verbose,
     )
-    # # DEBUG START
-    # print(f" after merging, checking for SVpatterns from consensus 7.x")
-    # for svp in merged:
-    #     if any(
-    #         sp.consensusID.startswith("7.")
-    #         for sp in svp.svPatterns
-    #     ):
-    #         log.info(
-    #             f"   =====> Found Merged SVcomposite:\n{svp}"
-    #         )
-    # # DEBUG END
 
     if verbose:
         svtype_counts_merged: dict[str, int] = {}
