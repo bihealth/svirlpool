@@ -230,14 +230,35 @@ class SVcomposite:
 
         return best_group
 
+    def get_all_groups(self) -> dict[tuple[str, str], list[SVpatterns.SVpatternType]]:
+        """Helper function to get all groups of SVpatterns. The key is (samplename, consensusID)."""
+        # Group SVpatterns by (samplename, consensusID)
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
+
+        return groups
+
     def get_representative_SVpattern(self) -> SVpatterns.SVpatternType:
         """returns the SVpattern with the highest support (same logic as get_alt_sequence)."""
         best_group = self._get_best_group()
         # Return the SVpattern with the highest support from the best group
         return max(best_group, key=lambda svp: len(svp.get_supporting_reads()))
 
-    def get_alt_sequence(self) -> str:
+    def get_alt_sequence(self) -> str | None:
+        if not any(issubclass(self.sv_type, t) for t in (
+                SVpatterns.SVpatternSingleBreakend,
+                SVpatterns.SVpatternInsertion,
+                SVpatterns.SVpatternInversion)):
+            return None
+        
         best_group = self._get_best_group()
+
+        if isinstance(best_group[0], SVpatterns.SVpatternSingleBreakend):
+            return best_group[0].get_sequence_clipped()
 
         # Concatenate alt sequences from the best group
         concatenated_sequence = ""
@@ -247,7 +268,6 @@ class SVcomposite:
                 for t in (
                     SVpatterns.SVpatternInsertion,
                     SVpatterns.SVpatternInversion,
-                    SVpatterns.SVpatternSingleBreakend,
                 )
             ):
                 seq = svPattern.get_sequence()
@@ -260,23 +280,28 @@ class SVcomposite:
         size = self.get_size()
         return concatenated_sequence[:size] if size > 0 else ""
 
-    def get_ref_sequence(self) -> str:
+    def get_ref_sequence(self) -> str | None:
+        if not any(
+            issubclass(self.sv_type, t)
+            for t in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInversion)
+        ):
+            return None
+        
         best_group = self._get_best_group()
 
         # Concatenate reference sequences from the best group
         concatenated_sequence = ""
         for svPattern in best_group:
-            if type(svPattern) is SVpatterns.SVpatternDeletion:
-                seq = svPattern.get_sequence()
-                if seq is None:
-                    raise ValueError(
-                        f"SVpattern {svPattern} in SVcomposite has no ref sequence set."
-                    )
-                concatenated_sequence += seq
+            seq = svPattern.get_sequence()
+            if seq is None:
+                raise ValueError(
+                    f"SVpattern {svPattern} in SVcomposite has no ref sequence set."
+                )
+            concatenated_sequence += seq
             # Add other pattern types as needed
 
         size = self.get_size()
-        return concatenated_sequence[:size] if size > 0 else ""
+        return concatenated_sequence[:size] if size > 0 else None
 
     def overlaps_any(self, other: SVcomposite, tolerance_radius: int = 50) -> bool:
         if self.repeatIDs.intersection(other.repeatIDs):

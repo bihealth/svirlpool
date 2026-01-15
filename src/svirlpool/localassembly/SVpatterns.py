@@ -552,151 +552,6 @@ class SVpatternInsertion(SVpattern):
 
 
 @attrs.define
-class SVpatternInvertedTranslocation(SVpattern):
-    """A translocation where both breakends are aligned to different strands."""
-
-    @classmethod
-    def get_sv_type(cls) -> str:
-        return "TRANS-INV"
-
-    def get_size(self) -> int:
-        """Returns the size of the inverted translocation."""
-        return abs(self.SVprimitives[-1].read_end - self.SVprimitives[0].read_start)
-
-    def get_reference_region(self) -> tuple[str, int, int]:
-        return _get_first_svp_on_reference_start_pos(self)
-
-
-@attrs.define
-class SVpatternTranslocation(SVpattern):
-    @classmethod
-    def get_sv_type(cls) -> str:
-        return "TRANS"
-
-    def get_size(self) -> int:
-        return abs(self.SVprimitives[-1].read_start - self.SVprimitives[0].read_end)
-
-    def get_reference_region(self) -> tuple[str, int, int]:
-        return _get_first_svp_on_reference_start_pos(self)
-
-
-@attrs.define
-class SVpatternComplex(SVpattern):
-    CONTEXT_SIZE: int = 200
-    sequence_contexts: dict[int, bytes] | None = None
-    """A dictionary mapping SVprimitive indices to their sequence contexts (pickled byte strings)."""
-    sequence_contexts_complexities: dict[int, bytes] | None = None
-    """A dictionary mapping SVprimitive indices to their sequence complexities (pickled numpy arrays)."""
-        
-    @classmethod
-    def get_sv_type(cls) -> str:
-        return "CPX"
-
-    def get_size(self) -> int:
-        """Returns the size of the complex SV re-arrangement."""
-        return abs(self.SVprimitives[-1].read_end - self.SVprimitives[0].read_start)
-
-    def get_reference_region(self) -> tuple[str, int, int]:
-        return _get_first_svp_on_reference_start_pos(self)
-
-    def set_sequence_context(
-        self,
-        svp_index: int,
-        sequence: str,
-        sequence_complexity_max_length: int = 300,
-    ) -> None:
-        """Set the sequence context and compute its complexity for a specific SVprimitive index."""
-        if self.sequence_contexts is None:
-            self.sequence_contexts = {}
-        if self.sequence_contexts_complexities is None:
-            self.sequence_contexts_complexities = {}
-
-        self.sequence_contexts[svp_index] = pickle.dumps(sequence)
-        if len(sequence) <= sequence_complexity_max_length:
-            dna_iter = iter(sequence)
-            self.sequence_contexts_complexities[svp_index] = pickle.dumps(
-                complexity_local_track(
-                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
-                )
-            )
-        else:
-            # Create dummy placeholder with 1.0 values for long sequences
-            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
-            self.sequence_contexts_complexities[svp_index] = pickle.dumps(dummy_complexity)
-
-    def set_all_sequence_contexts(
-        self,
-        contexts: dict[int, str],
-        sequence_complexity_max_length: int = CONTEXT_SIZE,
-    ) -> None:
-        """Set the sequence contexts and compute their complexities for all SVprimitive indices."""
-        for svp_index, sequence in contexts.items():
-            self.set_sequence_context(
-                svp_index,
-                sequence,
-                sequence_complexity_max_length=sequence_complexity_max_length,
-            )
-
-    def get_sequence_context(self, svp_index: int) -> str | None:
-        """Retrieve the sequence context for a specific SVprimitive index by unpickling."""
-        if self.sequence_contexts is None or svp_index not in self.sequence_contexts:
-            return None
-        try:
-            return pickle.loads(self.sequence_contexts[svp_index])
-        except Exception:
-            return None
-    
-    def get_all_sequence_contexts(self) -> dict[int, str]:
-        """Retrieve all sequence contexts by unpickling."""
-        if self.sequence_contexts is None:
-            return {}
-        contexts = {}
-        for svp_index, seq_bytes in self.sequence_contexts.items():
-            try:
-                contexts[svp_index] = pickle.loads(seq_bytes)
-            except Exception:
-                contexts[svp_index] = None
-        return contexts
-
-    def get_sequence_contexts_from_consensus(self, consensus: Consensus) -> dict[int, str]:
-        """Extract context regions around the breakpoints (±CONTEXT_SIZE bp) for all SVprimitives."""
-        if consensus.consensus_padding is None:
-            raise ValueError("Consensus sequence is not set in the Consensus object")
-
-        core_sequence_start: int = consensus.consensus_padding.padding_size_left
-        consensus_length = len(consensus.consensus_sequence)
-        contexts = {}
-
-        for idx, svp in enumerate(self.SVprimitives):
-            # Convert read coordinates to consensus coordinates
-            read_start_on_consensus = svp.read_start - core_sequence_start
-            read_end_on_consensus = svp.read_end - core_sequence_start
-
-            # Extract context region around the breakpoint
-            s = max(0, read_start_on_consensus - self.CONTEXT_SIZE)
-            e = min(consensus_length, read_end_on_consensus + self.CONTEXT_SIZE)
-
-            seq = consensus.consensus_sequence[s:e]
-
-            # Apply reverse complement if alignment is reversed
-            if svp.aln_is_reverse:
-                seq = str(Seq(seq).reverse_complement())
-
-            contexts[idx] = seq
-
-        return contexts
-
-    def get_sequence_context_complexity(self, svp_index: int) -> np.ndarray | None:
-        """Retrieve the sequence context complexity for a specific SVprimitive index by unpickling."""
-        if self.sequence_contexts_complexities is None or svp_index not in self.sequence_contexts_complexities:
-            return None
-        try:
-            return pickle.loads(self.sequence_contexts_complexities[svp_index])
-        except Exception:
-            return None
-
-
-@attrs.define
 class SVpatternInversion(SVpattern):
     inserted_sequence: bytes | None = None
     deleted_sequence: bytes | None = None
@@ -845,45 +700,202 @@ class SVpatternInversionDuplication(SVpatternInversion):
 
 
 @attrs.define
-class SVpatternInversionTranslocation(SVpatternInversion):
+class SVpatternAdjacency(SVpattern):
+    """A pattern that defines an adjacency defined by two connected break ends."""
+    CONTEXT_SIZE: int = 200
+    sequence_contexts: dict[int, bytes] | None = None
+    """A dictionary mapping SVprimitive indices to their sequence contexts (pickled byte strings)."""
+    sequence_contexts_complexities: dict[int, bytes] | None = None
+    """A dictionary mapping SVprimitive indices to their sequence complexities (pickled numpy arrays)."""
+    
+    def __attrs_post_init__(self):
+        super().__attrs_post_init__()
+        if len(self.SVprimitives) != 2:
+            raise ValueError(
+                f"SVpatternAdjacency must contain exactly two SVprimitives, got {len(self.SVprimitives)}"
+            )
+    
     @classmethod
     def get_sv_type(cls) -> str:
-        return "INV-TRANS"
+        return "BND"
 
-    def get_size(self, inner: bool = True) -> int:
-        """Returns the size of the inverted alignment on the reference,
-        which is super's get_size(inner=true)"""
-        if not inner:
-            raise ValueError(
-                "Inverted Translocation size can only be calculated for inner region."
-            )
-        return super().get_size(inner=True)
+    def get_size(self) -> int:
+        """Returns the size of the adjacency on the reference."""
+        return abs(self.SVprimitives[-1].ref_end - self.SVprimitives[0].ref_start)
 
-    def get_reference_region(self, inner: bool = True) -> tuple[str, int, int]:
-        # outer region can be calculated if the two outer breakends are on the same chr
-        if inner:
-            return super().get_reference_region(inner=True)
-        elif self.SVprimitives[0].chr != self.SVprimitives[3].chr:
-            log.warning(
-                "Inverted Translocation outer reference region cannot be calculated for different chromosomes. Returning inner region."
+    def get_reference_region(self) -> tuple[str, int, int]:
+        return _get_first_svp_on_reference_start_pos(self)
+
+    def get_reference_regions(self) -> list[tuple[str, int, int]]:
+        """Gets all reference regions from all SVprimitives."""
+        if len(self.SVprimitives) != 2:
+            raise ValueError("Adjacency must have exactly two SVprimitives.")
+        return [(self.SVprimitives[0].chr, self.SVprimitives[0].ref_start, self.SVprimitives[0].ref_end),
+                (self.SVprimitives[1].chr, self.SVprimitives[1].ref_start, self.SVprimitives[1].ref_end)]
+    
+    def set_sequence_context(
+        self,
+        svp_index: int,
+        sequence: str,
+        sequence_complexity_max_length: int = 300,
+    ) -> None:
+        """Set the sequence context and compute its complexity for a specific SVprimitive.
+        
+        Args:
+            svp_index: Index of the SVprimitive (must be 0 or 1)
+            sequence: The sequence context to set
+            sequence_complexity_max_length: Maximum length for complexity computation
+        """
+        if svp_index not in (0, 1):
+            raise ValueError(f"svp_index must be 0 or 1, got {svp_index}")
+        
+        if self.sequence_contexts is None:
+            self.sequence_contexts = {}
+        if self.sequence_contexts_complexities is None:
+            self.sequence_contexts_complexities = {}
+
+        self.sequence_contexts[svp_index] = pickle.dumps(sequence)
+        if len(sequence) <= sequence_complexity_max_length:
+            dna_iter = iter(sequence)
+            self.sequence_contexts_complexities[svp_index] = pickle.dumps(
+                complexity_local_track(
+                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
+                )
             )
-            return super().get_reference_region(inner=True)
         else:
-            return super().get_reference_region(inner=False)
+            # Create dummy placeholder with 1.0 values for long sequences
+            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
+            self.sequence_contexts_complexities[svp_index] = pickle.dumps(dummy_complexity)
 
+    def set_all_sequence_contexts(
+        self,
+        contexts: dict[int, str],
+        sequence_complexity_max_length: int = CONTEXT_SIZE,
+    ) -> None:
+        """Set the sequence contexts and compute their complexities for both SVprimitives.
+        
+        Args:
+            contexts: Dictionary mapping indices (0 and 1) to sequence contexts
+            sequence_complexity_max_length: Maximum length for complexity computation
+        """
+        if not contexts:
+            return
+        
+        # Validate that we have contexts for indices 0 and 1 only
+        invalid_indices = set(contexts.keys()) - {0, 1}
+        if invalid_indices:
+            raise ValueError(f"contexts dict contains invalid indices: {invalid_indices}. Only 0 and 1 are allowed.")
+        
+        for svp_index in (0, 1):
+            if svp_index in contexts:
+                self.set_sequence_context(
+                    svp_index,
+                    contexts[svp_index],
+                    sequence_complexity_max_length=sequence_complexity_max_length,
+                )
+
+    def get_sequence_context(self, svp_index: int) -> str | None:
+        """Retrieve the sequence context for a specific SVprimitive by unpickling.
+        
+        Args:
+            svp_index: Index of the SVprimitive (must be 0 or 1)
+            
+        Returns:
+            The sequence context string, or None if not set
+        """
+        if svp_index not in (0, 1):
+            raise ValueError(f"svp_index must be 0 or 1, got {svp_index}")
+        
+        if self.sequence_contexts is None or svp_index not in self.sequence_contexts:
+            return None
+        try:
+            return pickle.loads(self.sequence_contexts[svp_index])
+        except Exception:
+            return None
+    
+    def get_all_sequence_contexts(self) -> dict[int, str]:
+        """Retrieve both sequence contexts by unpickling.
+        
+        Returns:
+            Dictionary mapping indices (0, 1) to sequence context strings.
+            Missing or unpickleable contexts are set to None.
+        """
+        if self.sequence_contexts is None:
+            return {}
+        
+        contexts = {}
+        # Process both indices explicitly (0 and 1)
+        for svp_index in (0, 1):
+            if svp_index in self.sequence_contexts:
+                try:
+                    contexts[svp_index] = pickle.loads(self.sequence_contexts[svp_index])
+                except Exception:
+                    contexts[svp_index] = None
+        return contexts
+
+    def get_sequence_contexts_from_consensus(self, consensus: Consensus) -> dict[int, str]:
+        """Extract context regions around both breakpoints (±CONTEXT_SIZE bp).
+        
+        Returns:
+            Dictionary with keys 0 and 1 mapping to sequence contexts for each SVprimitive
+        """
+        if consensus.consensus_padding is None:
+            raise ValueError("Consensus sequence is not set in the Consensus object")
+
+        core_sequence_start: int = consensus.consensus_padding.padding_size_left
+        consensus_length = len(consensus.consensus_sequence)
+        contexts = {}
+
+        # Process both SVprimitives (indices 0 and 1)
+        svp_0, svp_1 = self.SVprimitives[0], self.SVprimitives[1]
+        
+        for idx, svp in [(0, svp_0), (1, svp_1)]:
+            # Convert read coordinates to consensus coordinates
+            read_start_on_consensus = svp.read_start - core_sequence_start
+            read_end_on_consensus = svp.read_end - core_sequence_start
+
+            # Extract context region around the breakpoint
+            s = max(0, read_start_on_consensus - self.CONTEXT_SIZE)
+            e = min(consensus_length, read_end_on_consensus + self.CONTEXT_SIZE)
+
+            seq = consensus.consensus_sequence[s:e]
+
+            # Apply reverse complement if alignment is reversed
+            if svp.aln_is_reverse:
+                seq = str(Seq(seq).reverse_complement())
+
+            contexts[idx] = seq
+
+        return contexts
+
+    def get_sequence_context_complexity(self, svp_index: int) -> np.ndarray | None:
+        """Retrieve the sequence context complexity for a specific SVprimitive by unpickling.
+        
+        Args:
+            svp_index: Index of the SVprimitive (must be 0 or 1)
+            
+        Returns:
+            Numpy array of complexity scores, or None if not set
+        """
+        if svp_index not in (0, 1):
+            raise ValueError(f"svp_index must be 0 or 1, got {svp_index}")
+        
+        if self.sequence_contexts_complexities is None or svp_index not in self.sequence_contexts_complexities:
+            return None
+        try:
+            return pickle.loads(self.sequence_contexts_complexities[svp_index])
+        except Exception:
+            return None
 
 # Use Union for better type hints
 SVpatternType = (
     SVpatternInsertion
     | SVpatternDeletion
-    | SVpatternTranslocation
-    | SVpatternInvertedTranslocation
     | SVpatternSingleBreakend
-    | SVpatternComplex
     | SVpatternInversion  # Balanced Inversion
     | SVpatternInversionDeletion  # Inverted Deletion
     | SVpatternInversionDuplication  # Inverted Duplication
-    | SVpatternInversionTranslocation  # Inverted Translocation (4-relation HOP)
+    | SVpatternAdjacency  # Adjacent SVs (2-relation READCLOSED or REFCLOSED)
 )
 
 # endregion
@@ -1322,10 +1334,6 @@ def parse_SVprimitives_to_SVpatterns(
         checks = [
             (possible_inversions_deletions_from_BNDs, SVpatternInversionDeletion),
             (possible_inversions_duplications_from_BNDs, SVpatternInversionDuplication),
-            (
-                possible_inversions_translocations_from_BNDs,
-                SVpatternInversionTranslocation,
-            ),
             (possible_inversions_from_BNDs, SVpatternInversion),
         ]
 
@@ -1372,34 +1380,6 @@ def parse_SVprimitives_to_SVpatterns(
             result.append(SVpatternDeletion(SVprimitives=[breakends[a], breakends[b]]))
             log.debug(f"Parsed deletion from BNDs: {result[-1]}")
 
-        idx_tuples_inverted_translocations: list[tuple[int, int]] = (
-            possible_inverted_translocations_from_BNDs(
-                svps=breakends, tworelations=tworelations
-            )
-        )
-        for a, b in idx_tuples_inverted_translocations:
-            if a in used_indices or b in used_indices:
-                continue
-            used_indices.update([a, b])
-            result.append(
-                SVpatternInvertedTranslocation(
-                    SVprimitives=[breakends[a], breakends[b]]
-                )
-            )
-            log.debug(f"Parsed inverted translocation from BNDs: {result[-1]}")
-
-        idx_tuples_translocations: list[tuple[int, int]] = (
-            possible_translocations_from_BNDs(svps=breakends, tworelations=tworelations)
-        )
-        for a, b in idx_tuples_translocations:
-            if a in used_indices or b in used_indices:
-                continue
-            used_indices.update([a, b])
-            result.append(
-                SVpatternTranslocation(SVprimitives=[breakends[a], breakends[b]])
-            )
-            log.debug(f"Parsed translocation from BNDs: {result[-1]}")
-
     # if there is only one breakend left, it is a single-ended breakend
     if len(used_indices) - len(breakends) == 1:
         unused_index = (set(range(len(breakends))) - used_indices).pop()
@@ -1407,14 +1387,10 @@ def parse_SVprimitives_to_SVpatterns(
         used_indices.add(unused_index)
         log.debug(f"Parsed single-ended breakend from BND: {result[-1]}")
 
+    # parse all leftover breakends to single ended BNDs or Adjacency BNDs
     unused_indices = set(range(len(breakends))) - used_indices
     if unused_indices:
-        if break_up_complex_into_pairs:
-            result.extend(break_up_CPX(SVprimitives=breakends, unused_indices=unused_indices))
-        else:
-            remaining_breakends = [breakends[i] for i in unused_indices]
-            result.append(SVpatternComplex(SVprimitives=remaining_breakends))
-            log.debug(f"Parsed complex SVpattern from BNDs: {result[-1]}")
+        result.extend(break_up_CPX(SVprimitives=breakends, unused_indices=unused_indices))
 
     return result
 
@@ -1457,10 +1433,10 @@ def break_up_CPX(SVprimitives:list[SVprimitive], unused_indices:set[int]) -> lis
         # 3. Must have different alignmentIDs
         if (abs(idx_b - idx_a) == 1) and svp_a.alignmentID != svp_b.alignmentID:
             
-            # Create a 2-breakend complex pattern
-            result.append(SVpatternComplex(SVprimitives=[svp_a, svp_b]))
+            # Create a 2-breakend adjacency pattern
+            result.append(SVpatternAdjacency(SVprimitives=[svp_a, svp_b]))
             paired_indices.update([idx_a, idx_b])
-            log.debug(f"Paired breakends at indices {idx_a}, {idx_b} into SVpatternComplex")
+            log.debug(f"Paired breakends at indices {idx_a}, {idx_b} into SVpatternAdjacency")
     
     # Handle unpaired breakends - create single breakends
     unpaired_indices = set(sorted_indices) - paired_indices
@@ -1607,31 +1583,10 @@ def _unstructure_svpattern_inversion(obj):
     return {"type": "SVpatternInversion", "data": base_converter.unstructure(obj)}
 
 
-def _unstructure_svpattern_translocation(obj):
-    base_converter = cattrs.Converter()
-    base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {"type": "SVpatternTranslocation", "data": base_converter.unstructure(obj)}
-
-
-def _unstructure_svpattern_inverted_translocation(obj):
-    base_converter = cattrs.Converter()
-    base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {
-        "type": "SVpatternInvertedTranslocation",
-        "data": base_converter.unstructure(obj),
-    }
-
-
 def _unstructure_svpattern_single_breakend(obj):
     base_converter = cattrs.Converter()
     base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
     return {"type": "SVpatternSingleBreakend", "data": base_converter.unstructure(obj)}
-
-
-def _unstructure_svpattern_complex(obj):
-    base_converter = cattrs.Converter()
-    base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {"type": "SVpatternComplex", "data": base_converter.unstructure(obj)}
 
 
 def _unstructure_svpattern_inversion_deletion(obj):
@@ -1652,13 +1607,10 @@ def _unstructure_svpattern_inversion_duplication(obj):
     }
 
 
-def _unstructure_svpattern_inversion_translocation(obj):
+def _unstructure_svpattern_adjacency(obj):
     base_converter = cattrs.Converter()
     base_converter.register_unstructure_hook(bytes, unstructure_bytes_field)
-    return {
-        "type": "SVpatternInversionTranslocation",
-        "data": base_converter.unstructure(obj),
-    }
+    return {"type": "SVpatternAdjacency", "data": base_converter.unstructure(obj)}
 
 
 converter.register_unstructure_hook(
@@ -1669,23 +1621,16 @@ converter.register_unstructure_hook(
     SVpatternInversion, _unstructure_svpattern_inversion
 )
 converter.register_unstructure_hook(
-    SVpatternTranslocation, _unstructure_svpattern_translocation
-)
-converter.register_unstructure_hook(
-    SVpatternInvertedTranslocation, _unstructure_svpattern_inverted_translocation
+    SVpatternAdjacency, _unstructure_svpattern_adjacency
 )
 converter.register_unstructure_hook(
     SVpatternSingleBreakend, _unstructure_svpattern_single_breakend
 )
-converter.register_unstructure_hook(SVpatternComplex, _unstructure_svpattern_complex)
 converter.register_unstructure_hook(
     SVpatternInversionDeletion, _unstructure_svpattern_inversion_deletion
 )
 converter.register_unstructure_hook(
     SVpatternInversionDuplication, _unstructure_svpattern_inversion_duplication
-)
-converter.register_unstructure_hook(
-    SVpatternInversionTranslocation, _unstructure_svpattern_inversion_translocation
 )
 
 
@@ -1704,20 +1649,14 @@ def structure_svpattern(data, _):
         return base_converter.structure(pattern_data, SVpatternDeletion)
     elif pattern_type == "SVpatternInversion":
         return base_converter.structure(pattern_data, SVpatternInversion)
-    elif pattern_type == "SVpatternTranslocation":
-        return base_converter.structure(pattern_data, SVpatternTranslocation)
-    elif pattern_type == "SVpatternInvertedTranslocation":
-        return base_converter.structure(pattern_data, SVpatternInvertedTranslocation)
     elif pattern_type == "SVpatternSingleBreakend":
         return base_converter.structure(pattern_data, SVpatternSingleBreakend)
-    elif pattern_type == "SVpatternComplex":
-        return base_converter.structure(pattern_data, SVpatternComplex)
+    elif pattern_type == "SVpatternAdjacency":
+        return base_converter.structure(pattern_data, SVpatternAdjacency)
     elif pattern_type == "SVpatternInversionDeletion":
         return base_converter.structure(pattern_data, SVpatternInversionDeletion)
     elif pattern_type == "SVpatternInversionDuplication":
         return base_converter.structure(pattern_data, SVpatternInversionDuplication)
-    elif pattern_type == "SVpatternInversionTranslocation":
-        return base_converter.structure(pattern_data, SVpatternInversionTranslocation)
     else:
         raise ValueError(f"Unknown SVpattern type: {pattern_type}")
 

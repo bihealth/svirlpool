@@ -13,6 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from itertools import groupby
+from math import ceil, floor
 from pathlib import Path
 from shlex import split
 
@@ -34,12 +35,11 @@ log = logging.getLogger(__name__)
 SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInversionDeletion,
     SVpatterns.SVpatternInversionDuplication,
-    SVpatterns.SVpatternInversionTranslocation,
     SVpatterns.SVpatternInsertion,
     SVpatterns.SVpatternDeletion,
     SVpatterns.SVpatternInversion,
     SVpatterns.SVpatternSingleBreakend,
-    SVpatterns.SVpatternComplex,
+    SVpatterns.SVpatternAdjacency,
 })
 
 SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
@@ -1884,158 +1884,250 @@ class SVcall:
         ])
 
 
+def get_ref_reads_from_covtrees(
+    samplename: str,
+    chrname: str,
+    start: int,
+    end: int,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    min_radius:int=1,
+) -> set[int]:
+    if end < start:
+        raise ValueError(
+            f"get_ref_reads_from_covtrees: end {end} is less than start {start} for sample {samplename} at {chrname}:{start}-{end}."
+        )
+    min_radius = abs(min_radius)
+    if end-start < min_radius * 2:
+        difference = min_radius * 2 - (end - start)
+        start -= floor(difference * 0.5)
+        end += ceil(difference * 0.5)
+        if start < 0:
+            start = 0
+    all_reads: set[int] = {
+        int(it.data)
+        for it in covtrees[samplename][chrname][start:end]
+    }
+    return all_reads
+
+
+def genotype_of_sample(
+    samplename: str,
+    chrname: str,
+    start: int,
+    end: int,
+    raw_alt_reads: set[int],
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    min_radius:int = 1,
+) -> Genotype:
+    genotype:Genotype
+    if chrname not in covtrees.get(samplename, {}):
+        log.warning(
+            f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree for sample {samplename}. Assigning 0/0 genotype."
+        )
+        genotype = create_wild_type_genotype(
+            samplename=samplename, total_coverage=0
+        )
+        return genotype
+    all_reads: set[int] = get_ref_reads_from_covtrees(
+        samplename=samplename,
+        chrname=chrname,
+        start=start,
+        end=end,
+        covtrees=covtrees,
+        min_radius=min_radius,
+    )
+    alt_reads: set[int] = all_reads.intersection(raw_alt_reads)
+
+    ref_reads: set[int] = all_reads.difference(alt_reads)
+
+    if len(alt_reads) == 0:
+        log.warning(
+            f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
+        )
+        genotype = create_wild_type_genotype(
+            samplename=samplename, total_coverage=len(all_reads)
+        )
+        return genotype
+
+    if len(all_reads) == 0:
+        log.warning(
+            f"SVcalls_from_SVcomposite: No ref/alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
+        )
+        genotype = create_wild_type_genotype(
+            samplename=samplename, total_coverage=0
+        )
+        return genotype
+
+    # Query copy number for this locus from CN tracks
+    copy_number : int = 2  # Default diploid - if no copy number track is available
+    if samplename in cn_tracks and chrname in cn_tracks[samplename]:
+        try:
+            # Query overlapping intervals from the CN track IntervalTree
+            overlapping_cn = cn_tracks[samplename][chrname][start:end]
+            if overlapping_cn:
+                # Take the most common CN in the overlapping intervals
+                cn_values = [interval.data for interval in overlapping_cn]
+                copy_number = (
+                    max(set(cn_values), key=cn_values.count) if cn_values else 2
+                )
+                log.debug(
+                    f"Copy number at {chrname}:{start}-{end} for {samplename}: CN={copy_number} (from {len(cn_values)} overlapping bins)"
+                )
+            else:
+                log.debug(
+                    f"No CN data overlapping {chrname}:{start}-{end} for {samplename}, using default CN=2"
+                )
+        except Exception as e:
+            log.warning(
+                f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
+            )
+            # default copy number remains
+    else:
+        log.debug(
+            f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
+        )
+
+    # first compute the total gt for this locus and this sample (for all SVcomposites, that once overlapped)
+    gt_likelihoods: dict[str, float] = genotype_likelihood(
+        n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
+    )
+
+    gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
+    # if not gt in ('0/0', '0/1', '1/1'):
+    #     raise ValueError(f"Invalid genotype {gt} for sample {samplename}, in region: {chrname,start,end}, with {len(alt_reads)} alt reads and {len(all_reads)} total reads.")
+
+    genotype = Genotype(
+        samplename=samplename,
+        genotype=gt,
+        gt_likelihood=gt_likelihoods[gt],
+        genotype_quality=(
+            int(-10 * np.log10(1.0 - gt_likelihoods[gt]))
+            if gt_likelihoods[gt] < 1.0
+            else 60
+        ),
+        total_coverage=len(all_reads),
+        ref_reads=len(ref_reads),
+        var_reads=len(alt_reads),
+    )
+    return genotype
+
+
 def SVcalls_from_SVcomposite(
     svComposite: SVcomposite,
     covtrees: dict[str, dict[str, IntervalTree]],
-    cn_tracks: dict[
-        str, dict[str, IntervalTree]
-    ],  # saplename -> chrname -> IntervalTree with copy number
+    cn_tracks: dict[str, dict[str, IntervalTree]],  # saplename -> chrname -> IntervalTree with copy number
     find_leftmost_reference_position: bool,
 ) -> list[SVcall]:
+    # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
+    #   have one chr, start, end on the reference
+    # inter-alignment fragment variants (interrupted locus), e.g translocations, break points
+    #   have multiple chr, start, end on the reference
+
+    # the proceedure is:
+    # 1) get the reference interval(s) for the svComposite
+    # 2) for each sample:
+    #    a) get all reads covering the reference interval(s) from the coverage tree
+    #    b) get alt reads from the svComposite
+    #    c) compute ref reads = all reads - alt reads
+    #    d) compute genotype likelihoods based on alt reads, total reads, and copy number
+    #    e) assign genotype with highest likelihood
+    # 3) create SVcall object with genotypes for all samples
+    
+    # the two cases (closed locus vs interrupted locus) are handled a little differently,
+    # as two or more SVcalls are generated for the interrupted locus case. Two for each connected break point.
+    # They are then linked via the mate ID field.
+    # for closed locus variants, only one SVcall is generated.
+    
+    # necessary functions:
+    # - get reads covering locus from covtree (region(chr, start, end), samplename, covtree) -> tuple[set(alt readIDs), set(ref readIDs)]
+    # - get gt and gt likelihood from alt reads, total reads, copy number -> Genotype
+    # - get copy number of sample in locus (region(chr, start, end), samplename, cn_tracks) -> int
+    # - genotype likelihood calculation (n_alt_reads, n_total_reads, copy_number) -> dict[genotype: likelihood]
+    
+    
+    
     # separate cases:
     # 1) insertion & deletion
-    result: list[SVcall] = []
-    all_alt_reads: dict[str, set[np.uint64]] = (
+    if not svComposite.sv_type in SUPPORTED_SV_TYPES:
+        log.warning(
+            f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} is not supported for SVcall generation. Supported types are: {', '.join(SUPPORTED_SV_TYPE_STRINGS)}"
+        )
+        return []
+    all_alt_reads: dict[str, set[int]] = (
         svComposite.get_alt_readnamehashes_per_sample()
     )  # {samplename: {readname, ...}}
 
-    if svComposite.sv_type in SUPPORTED_SV_TYPES:
-        chrname, start, end = get_svComposite_interval_on_reference(
+    if issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion) \
+            or issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion) \
+            or issubclass(svComposite.sv_type, SVpatterns.SVpatternInversion) \
+            or issubclass(svComposite.sv_type, SVpatterns.SVpatternSingleBreakend):
+        return [svcall_object_from_svcomposite(
+            svComposite=svComposite,
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+            find_leftmost_reference_position=find_leftmost_reference_position,
+            all_alt_reads=all_alt_reads)]
+    elif issubclass(svComposite.sv_type, SVpatterns.SVpatternComplex):
+        # other types that are represented as connected break ends will follow!
+        return svcall_objects_from_svcomposite(
+            svComposite=svComposite,
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+            all_alt_reads=all_alt_reads)
+    log.warning(
+        f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} in regions {svComposite.get_regions()} is not yet implemented for SVcall generation."
+    )
+    return []
+
+def svcall_object_from_svcomposite(
+        svComposite:SVcomposite,
+        covtrees:dict[str, dict[str, IntervalTree]],
+        cn_tracks:dict[str, dict[str, IntervalTree]],
+        find_leftmost_reference_position:bool,
+        all_alt_reads:dict[str, set[int]]) -> SVcall:
+    chrname, start, end = get_svComposite_interval_on_reference(
             svComposite=svComposite,
             find_leftmost_reference_position=find_leftmost_reference_position,
         )
-        svlen: int = abs(svComposite.get_size())
-        # Get the sv_type string from the class's get_sv_type() method
-        svtype: str = svComposite.sv_type.get_sv_type()
-        consensusIDs: list[str] = list({
+    svlen: int = abs(svComposite.get_size())
+        # Get read IDs supporting the SV. arguments: samplename, chrname, start, end, covtree
+    consensusIDs: list[str] = list({
             svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
         })
-        # TODO: add precise / imprecise flag: precise: all regions are near; imprecise: all regions are farther than X bp apart
-        # add genotypes: for each samplename collect supporting reads and max total coverage (from genotype measurements)
-        genotypes: dict[str, Genotype] = {}
-        # for samplename,group in groupby(svComposite.svPatterns, key= lambda x: x.samplename):
-        for samplename in all_alt_reads.keys():
-            if chrname not in covtrees.get(samplename, {}):
-                log.warning(
-                    f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree for sample {samplename}. Assigning 0/0 genotype."
-                )
-                genotypes[samplename] = create_wild_type_genotype(
-                    samplename=samplename, total_coverage=0
-                )
-                continue
-            all_reads: set[int] = {
-                int(it.data)
-                for it in covtrees[samplename][chrname][start - 500 : end + 500]
-            }
-            alt_reads: set[int] = all_reads.intersection(
-                all_alt_reads.get(samplename, set())
-            )
-            ref_reads: set[int] = all_reads.difference(alt_reads)
-
-            if len(alt_reads) == 0:
-                log.warning(
-                    f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
-                )
-                genotypes[samplename] = create_wild_type_genotype(
-                    samplename=samplename, total_coverage=len(all_reads)
-                )
-                continue
-
-            if len(all_reads) == 0:
-                log.warning(
-                    f"SVcalls_from_SVcomposite: No ref/alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
-                )
-                genotypes[samplename] = create_wild_type_genotype(
-                    samplename=samplename, total_coverage=0
-                )
-                continue
-
-            # Query copy number for this locus from CN tracks
-            copy_number = 2  # Default diploid - if no copy number track is available
-            if samplename in cn_tracks and chrname in cn_tracks[samplename]:
-                try:
-                    # Query overlapping intervals from the CN track IntervalTree
-                    overlapping_cn = cn_tracks[samplename][chrname][start:end]
-                    if overlapping_cn:
-                        # Take the most common CN in the overlapping intervals
-                        cn_values = [interval.data for interval in overlapping_cn]
-                        copy_number = (
-                            max(set(cn_values), key=cn_values.count) if cn_values else 2
-                        )
-                        log.debug(
-                            f"Copy number at {chrname}:{start}-{end} for {samplename}: CN={copy_number} (from {len(cn_values)} overlapping bins)"
-                        )
-                    else:
-                        log.debug(
-                            f"No CN data overlapping {chrname}:{start}-{end} for {samplename}, using default CN=2"
-                        )
-                except Exception as e:
-                    log.warning(
-                        f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
-                    )
-                    # default copy number remains
-            else:
-                log.debug(
-                    f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
-                )
-
-            # first compute the total gt for this locus and this sample (for all SVcomposites, that once overlapped)
-            gt_likelihoods: dict[str, float] = genotype_likelihood(
-                n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
-            )
-
-            gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
-            # if not gt in ('0/0', '0/1', '1/1'):
-            #     raise ValueError(f"Invalid genotype {gt} for sample {samplename}, in region: {chrname,start,end}, with {len(alt_reads)} alt reads and {len(all_reads)} total reads.")
-
-            genotypes[samplename] = Genotype(
+        
+        # 
+    genotypes: dict[str, Genotype] = {
+            samplename:genotype_of_sample(
                 samplename=samplename,
-                genotype=gt,
-                gt_likelihood=gt_likelihoods[gt],
-                genotype_quality=(
-                    int(-10 * np.log10(1.0 - gt_likelihoods[gt]))
-                    if gt_likelihoods[gt] < 1.0
-                    else 60
-                ),
-                total_coverage=len(all_reads),
-                ref_reads=len(ref_reads),
-                var_reads=len(alt_reads),
-            )
-        match svtype:
-            case "DEL":
-                end = start + svlen
-            case "INS":
-                end = start + 1
-            case _:
-                pass
+                chrname=chrname,
+                start=start,
+                end=end,
+                raw_alt_reads=all_alt_reads[samplename],
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+            ) for samplename in all_alt_reads.keys()
+        }
+        # start and end need to be adjusted based on sv_type and need to be determined for the whole sv composite   
+        
+    if issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion):
+        end = start + svlen
+    elif issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion):
+        end = start + 1
 
-        alt_seq: str | None = None
-        ref_seq: str | None = None
-        if any(
-            issubclass(svComposite.sv_type, t)
-            for t in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternInversion)
-        ):
-            alt_seq = svComposite.get_alt_sequence()
-            if len(alt_seq) <= 1:
-                raise ValueError(
-                    f"SVcalls_from_SVcomposite: alt_seq length is {len(alt_seq)} for svComposite {svComposite}.\nThe alt sequence of the best group is: {svComposite.svPatterns[0].get_sequence()}"
-                )
-        if issubclass(svComposite.sv_type, SVpatterns.SVpatternSingleBreakend):
-            alt_seq = svComposite._get_best_group()[0].get_sequence_clipped()
-        if any(
-            issubclass(svComposite.sv_type, t)
-            for t in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInversion)
-        ):
-            ref_seq = svComposite.get_ref_sequence()
+    alt_seq: bytes|None = pickle.dumps(svComposite.get_alt_sequence()) if svComposite.get_alt_sequence() else None
+        
+    ref_seq: bytes|None = pickle.dumps(svComposite.get_ref_sequence()) if svComposite.get_ref_sequence() else None
 
-        pass_altreads: bool = (
+        # quality filters
+    pass_altreads: bool = (
             max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
         )
-        pass_gq = True
-        passing: bool = pass_altreads and pass_gq
+    pass_gq = True
+    passing: bool = pass_altreads and pass_gq
 
         # call is not precise if it is in a repeat. Check for repeatIDs
-        precise: bool = not bool(
+    precise: bool = not bool(
             sum(
                 len(svPrimitive.repeatIDs)
                 for svPattern in svComposite.svPatterns
@@ -2043,36 +2135,45 @@ def SVcalls_from_SVcomposite(
             )
         )
 
-        result.append(
-            SVcall(
+    return SVcall(
                 genotypes=genotypes,
                 passing=passing,
                 chrname=chrname,
                 end=end,
                 start=start,
-                svtype=svtype,
+                svtype=svComposite.sv_type.get_sv_type(),
                 svlen=svlen,
                 pass_altreads=pass_altreads,
                 pass_gq=pass_gq,
                 precise=precise,
                 mateid="",
                 consensusIDs=consensusIDs,
-                ref_sequence=pickle.dumps(ref_seq) if ref_seq else None,
-                alt_sequence=pickle.dumps(alt_seq) if alt_seq else None,
+                ref_sequence=ref_seq,
+                alt_sequence=alt_seq,
             )
-        )
-    else:
-        log.warning(
-            f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} is not supported for SVcall generation. Supported types are: {', '.join(SUPPORTED_SV_TYPE_STRINGS)}"
-        )
-    # 3) inversion
-    # 4) complex
-    return result
+
+def svcall_objects_from_svcomposite(
+        svComposite:SVcomposite,
+        covtrees:dict[str, dict[str, IntervalTree]],
+        cn_tracks:dict[str, dict[str, IntervalTree]],
+        all_alt_reads:dict[str, set[int]]) -> list[SVcall]:
+    """Generate SVcall objects from a complex SVcomposite with multiple breakends.
+    The catch is that each breakend will generate its own SVcall object, and they will be linked via the mateid field.
+    """
+    consensusIDs : list[str] = list({svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns})
+    results : list[SVcall] = []
+    # genotypes are a bit more tricky now. Since there are multiple breakends, we need to get genotypes for each breakend.
+    for (samplename, consensusID), group in svComposite.get_all_groups().items():
+        if len(group) > 1 or len(group[0].SVprimitives) != 2 or not all(svp.sv_type in (3,4) for svp in group[0].SVprimitives):
+            raise NotImplementedError(
+                f"svcall_objects_from_svcomposite: Currently only single breakends per sample-consensusID are supported. Found {len(group)} breakends for sample {samplename}, consensusID {consensusID} in SVcomposite: {svComposite}"
+            )
+        # each svPattern represents a pair of BNDs.
+        
 
 
 # SVcall to breakends parsing
 # SVcall to ins/del parsing
-
 
 def get_svComposite_interval_on_reference(
     svComposite: SVcomposite, find_leftmost_reference_position: bool
@@ -3060,5 +3161,3 @@ def extract_test_svComposites(
 #     consensus_ids=[f"6.{i}" for i in range(10)],
 #     sv_types=["INS"],
 #     output_path=BASE_PATH / "test_vertically_merged_svComposites_from_group__many_ins.json.gz")
-
-# %%
