@@ -707,7 +707,11 @@ class SVpatternAdjacency(SVpattern):
     """A dictionary mapping SVprimitive indices to their sequence contexts (pickled byte strings)."""
     sequence_contexts_complexities: dict[int, bytes] | None = None
     """A dictionary mapping SVprimitive indices to their sequence complexities (pickled numpy arrays)."""
-    
+    inserted_sequence: bytes | None = None
+    """The inserted sequence at the adjacency (pickled byte string)."""
+    sequence_complexity: bytes | None = None
+    """Pickled numpy array of float32 representing the complexity of the inserted sequence."""
+
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
         if len(self.SVprimitives) != 2:
@@ -887,6 +891,54 @@ class SVpatternAdjacency(SVpattern):
         except Exception:
             return None
 
+    def get_sequence(self) -> str | None:
+        """Retrieve the inserted sequence by unpickling."""
+        if self.inserted_sequence is None:
+            return None
+        try:
+            return pickle.loads(self.inserted_sequence)
+        except Exception:
+            return None
+    
+    def get_sequence_complexity(self) -> np.ndarray | None:
+        """Retrieve the sequence complexity scores."""
+        if self.sequence_complexity is None:
+            return None
+        try:
+            return pickle.loads(self.sequence_complexity)
+        except Exception:
+            return None
+
+    def set_sequence(
+        self, sequence: str, sequence_complexity_max_length: int = 300
+    ) -> None:
+        """Set the inserted sequence and compute its complexity."""
+        self.inserted_sequence = pickle.dumps(sequence)
+        if len(sequence) <= sequence_complexity_max_length:
+            dna_iter = iter(sequence)
+            self.sequence_complexity = pickle.dumps(
+                complexity_local_track(
+                    dna_iter=dna_iter, w=11, K=[2, 3, 4, 5], padding=True
+                )
+            )
+        else:
+            # Create dummy placeholder with 1.0 values for long sequences
+            dummy_complexity = np.ones(len(sequence), dtype=np.float16)
+            self.sequence_complexity = pickle.dumps(dummy_complexity)
+    
+    def get_sequence_from_consensus(self, consensus: Consensus) -> str:
+        """Extract the sequence between the two breakends from the consensus."""
+        if consensus.consensus_padding is None:
+            raise ValueError("Consensus sequence is not set in the Consensus object")
+        core_sequence_start: int = consensus.consensus_padding.padding_size_left
+        s = self.SVprimitives[0].read_start - core_sequence_start
+        e = self.SVprimitives[1].read_end - core_sequence_start
+        seq = consensus.consensus_sequence[s:e]
+        if self.SVprimitives[0].aln_is_reverse:
+            seq = str(Seq(seq).reverse_complement())
+        return seq
+    
+
 # Use Union for better type hints
 SVpatternType = (
     SVpatternInsertion
@@ -895,7 +947,7 @@ SVpatternType = (
     | SVpatternInversion  # Balanced Inversion
     | SVpatternInversionDeletion  # Inverted Deletion
     | SVpatternInversionDuplication  # Inverted Duplication
-    | SVpatternAdjacency  # Adjacent SVs (2-relation READCLOSED or REFCLOSED)
+    | SVpatternAdjacency  # Adjacent SVs (2-relations)
 )
 
 # endregion
@@ -1396,8 +1448,8 @@ def parse_SVprimitives_to_SVpatterns(
 
 
 def break_up_CPX(SVprimitives:list[SVprimitive], unused_indices:set[int]) -> list[SVpatternType]:
-    """Break up a complex SVpattern into multiple complex patterns that have each two connected break end sv primitives or
-    into multiple 2-cpx and one or two single ended breaks.
+    """Break up a complex SVpattern into multiple SVpatternAdjacency patterns that have each two
+    connected break end sv primitives or into single ended breaks.
     The set of unused indices tells if two primitives are adjacent."""
     # the already SVprimitives are sorted by location on the read. Their order must not be changed.
     # if two sv primitives are of type 3 or 4 and have different alignmentIDs and are adjacent (indices differ by 1),

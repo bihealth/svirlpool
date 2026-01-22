@@ -641,10 +641,10 @@ def vertically_merged_svComposites_from_group(
         for i, svc in enumerate(group)
         if issubclass(svc.sv_type, SVpatterns.SVpatternSingleBreakend)
     }
-    cpx = {
+    adjacencies = {
         i: svc
         for i, svc in enumerate(group)
-        if issubclass(svc.sv_type, SVpatterns.SVpatternComplex)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternAdjacency)
     }
 
     used_indices = set().union(
@@ -652,7 +652,7 @@ def vertically_merged_svComposites_from_group(
         deletions.keys(),
         inversions.keys(),
         breakends.keys(),
-        cpx.keys(),
+        adjacencies.keys(),
     )
     others = [
         svc for i, svc in enumerate(group) if i not in used_indices
@@ -698,8 +698,8 @@ def vertically_merged_svComposites_from_group(
         verbose=verbose,
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
-    merged_cpx = merge_complexes(
-        complexes=list(cpx.values()),
+    merged_cpx = merge_adjacencies(
+        adjacencies=list(adjacencies.values()),
         near=near,
         min_kmer_overlap=min_kmer_overlap,
         verbose=verbose,
@@ -887,13 +887,6 @@ def can_merge_svComposites_inversions(
                 raise ValueError(
                     "can_merge_svComposites_inversions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                 )
-    if issubclass(a.sv_type, SVpatterns.SVpatternInversionTranslocation) != issubclass(
-        b.sv_type, SVpatterns.SVpatternInversionTranslocation
-    ):
-        log.debug(
-            f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are of different subclasses (InversionTranslocation vs Inversion)."
-        )
-        return False
 
     are_near: bool = a.overlaps_any(
         b, tolerance_radius=near
@@ -1301,7 +1294,7 @@ def _complexes_overlap(complex_a: SVcomposite, complex_b: SVcomposite, near: int
     return True  # All breakends overlap within tolerance
 
 
-def _complexes_kmer_similarity(
+def _adjacencies_kmer_similarity(
     complex_a: SVcomposite,
     complex_b: SVcomposite,
     min_kmer_overlap: float,
@@ -1310,15 +1303,15 @@ def _complexes_kmer_similarity(
     # each complex has exactly one sv pattern at this point
     if len(complex_a.svPatterns) != 1 or len(complex_b.svPatterns) != 1:
         raise ValueError(
-            f"_complexes_kmer_similarity: SVcomposites must contain exactly one SVpattern each to calculate k-mer similarity. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
+            f"_adjacencies_kmer_similarity: SVcomposites must contain exactly one SVpattern each to calculate k-mer similarity. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
         )
-    if not issubclass(complex_a.sv_type, SVpatterns.SVpatternComplex):
+    if not issubclass(complex_a.sv_type, SVpatterns.SVpatternAdjacency):
         raise ValueError(
-            f"_complexes_kmer_similarity: SVcomposite 'a' must be of type SVpatternComplex. Got {complex_a.sv_type}."
+            f"_adjacencies_kmer_similarity: SVcomposite 'a' must be of type SVpatternAdjacency. Got {complex_a.sv_type}."
         )
-    if not issubclass(complex_b.sv_type, SVpatterns.SVpatternComplex):
+    if not issubclass(complex_b.sv_type, SVpatterns.SVpatternAdjacency):
         raise ValueError(
-            f"_complexes_kmer_similarity: SVcomposite 'b' must be of type SVpatternComplex. Got {complex_b.sv_type}."
+            f"_adjacencies_kmer_similarity: SVcomposite 'b' must be of type SVpatternAdjacency. Got {complex_b.sv_type}."
         )
     # each sv pattern has saved sequence contexts (400 bp of consenus sequence, just like an inserrtion)
     # they are indexed by their sv primitive ID
@@ -1348,45 +1341,45 @@ def _complexes_kmer_similarity(
     return similarity >= min_kmer_overlap
     
 
-def merge_complexes(
-    complexes: list[SVcomposite],
+def merge_adjacencies(
+    adjacencies: list[SVcomposite],
     near: int,
     min_kmer_overlap: float,
     verbose: bool = False,
 ) -> list[SVcomposite]:
     """Merge complex SVcomposites that are spatially close in every underlying sv primitive (breakend), and if their kmer similarities are high enough."""
-    # any combination of complexes can be merged here, so every combination of complexes must be tested.
-    uf: UnionFind = UnionFind(range(len(complexes)))
-    # if two complexes match, connect them. Every connected component will be merged into one complex at the end.
-    for i in range(len(complexes)):
-        for j in range(i + 1, len(complexes)):
-            if _complexes_overlap(complex_a=complexes[i], complex_b=complexes[j], near=near):
-                if _complexes_kmer_similarity(
-                    complex_a=complexes[i],
-                    complex_b=complexes[j],
+    # any combination of adjacencies can be merged here, so every combination of adjacencies must be tested.
+    uf: UnionFind = UnionFind(range(len(adjacencies)))
+    # if two adjacencies match, connect them. Every connected component will be merged into one complex at the end.
+    for i in range(len(adjacencies)):
+        for j in range(i + 1, len(adjacencies)):
+            if _complexes_overlap(complex_a=adjacencies[i], complex_b=adjacencies[j], near=near):
+                if _adjacencies_kmer_similarity(
+                    complex_a=adjacencies[i],
+                    complex_b=adjacencies[j],
                     min_kmer_overlap=min_kmer_overlap,
                 ):
                     uf.union(i, j)
                     if verbose:
                         print(
-                            f"Merging complexes {i} and {j} based on overlap and k-mer similarity."
+                            f"Merging adjacencies {i} and {j} based on overlap and k-mer similarity."
                         )
                 else:
                     if verbose:
                         print(
-                            f"Not merging complexes {i} and {j}: k-mer similarity too low."
+                            f"Not merging adjacencies {i} and {j}: k-mer similarity too low."
                         )
             else:
                 if verbose:
                     print(
-                        f"Not merging complexes {i} and {j}: no overlap within tolerance."
+                        f"Not merging adjacencies {i} and {j}: no overlap within tolerance."
                     )
     result: list[SVcomposite] = []
     for cc in uf.get_connected_components(allow_singletons=True):
         result.append(
             SVcomposite.from_SVpatterns(
                 svPatterns=[
-                    svPattern for idx in cc for svPattern in complexes[idx].svPatterns
+                    svPattern for idx in cc for svPattern in adjacencies[idx].svPatterns
                 ]
             )
         )
@@ -1655,12 +1648,7 @@ def merge_svComposites(
     # however, it must be prevented that contradictory merges are made, e.g. A-B and B-C but A-C is not valid.
 
     for svComposite in svComposites:
-        if svComposite.sv_type in (
-            SVpatterns.SVpatternComplex,
-            SVpatterns.SVpatternTranslocation,
-            SVpatterns.SVpatternInvertedTranslocation,
-            SVpatterns.SVpatternInversionTranslocation,
-        ):
+        if issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
             cpx_groups.append(svComposite)
         else:
             chr_name = svComposite.ref_start[0]  # Get chromosome from ref_start tuple
@@ -2023,32 +2011,7 @@ def SVcalls_from_SVcomposite(
     #   have one chr, start, end on the reference
     # inter-alignment fragment variants (interrupted locus), e.g translocations, break points
     #   have multiple chr, start, end on the reference
-
-    # the proceedure is:
-    # 1) get the reference interval(s) for the svComposite
-    # 2) for each sample:
-    #    a) get all reads covering the reference interval(s) from the coverage tree
-    #    b) get alt reads from the svComposite
-    #    c) compute ref reads = all reads - alt reads
-    #    d) compute genotype likelihoods based on alt reads, total reads, and copy number
-    #    e) assign genotype with highest likelihood
-    # 3) create SVcall object with genotypes for all samples
     
-    # the two cases (closed locus vs interrupted locus) are handled a little differently,
-    # as two or more SVcalls are generated for the interrupted locus case. Two for each connected break point.
-    # They are then linked via the mate ID field.
-    # for closed locus variants, only one SVcall is generated.
-    
-    # necessary functions:
-    # - get reads covering locus from covtree (region(chr, start, end), samplename, covtree) -> tuple[set(alt readIDs), set(ref readIDs)]
-    # - get gt and gt likelihood from alt reads, total reads, copy number -> Genotype
-    # - get copy number of sample in locus (region(chr, start, end), samplename, cn_tracks) -> int
-    # - genotype likelihood calculation (n_alt_reads, n_total_reads, copy_number) -> dict[genotype: likelihood]
-    
-    
-    
-    # separate cases:
-    # 1) insertion & deletion
     if not svComposite.sv_type in SUPPORTED_SV_TYPES:
         log.warning(
             f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} is not supported for SVcall generation. Supported types are: {', '.join(SUPPORTED_SV_TYPE_STRINGS)}"
@@ -2068,17 +2031,17 @@ def SVcalls_from_SVcomposite(
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
             all_alt_reads=all_alt_reads)]
-    elif issubclass(svComposite.sv_type, SVpatterns.SVpatternComplex):
-        # other types that are represented as connected break ends will follow!
-        return svcall_objects_from_svcomposite(
+    elif issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
+        return svcall_objects_from_Adjacencies(
             svComposite=svComposite,
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             all_alt_reads=all_alt_reads)
-    log.warning(
-        f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} in regions {svComposite.get_regions()} is not yet implemented for SVcall generation."
-    )
-    return []
+    else:
+        log.warning(
+            f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} in regions {svComposite.get_regions()} is not yet implemented for SVcall generation."
+        )
+        return []
 
 def svcall_object_from_svcomposite(
         svComposite:SVcomposite,
@@ -2152,28 +2115,25 @@ def svcall_object_from_svcomposite(
                 alt_sequence=alt_seq,
             )
 
-def svcall_objects_from_svcomposite(
+def svcall_objects_from_Adjacencies(
         svComposite:SVcomposite,
         covtrees:dict[str, dict[str, IntervalTree]],
         cn_tracks:dict[str, dict[str, IntervalTree]],
         all_alt_reads:dict[str, set[int]]) -> list[SVcall]:
-    """Generate SVcall objects from a complex SVcomposite with multiple breakends.
-    The catch is that each breakend will generate its own SVcall object, and they will be linked via the mateid field.
+    """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
+    The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
     """
+    if not issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
+        raise ValueError(
+            f"svcall_objects_from_Adjacencies: svComposite of type {svComposite.sv_type.__name__} is not of type SVpatternAdjacency."
+        )
     consensusIDs : list[str] = list({svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns})
     results : list[SVcall] = []
     # genotypes are a bit more tricky now. Since there are multiple breakends, we need to get genotypes for each breakend.
     for (samplename, consensusID), group in svComposite.get_all_groups().items():
-        if len(group) > 1 or len(group[0].SVprimitives) != 2 or not all(svp.sv_type in (3,4) for svp in group[0].SVprimitives):
-            raise NotImplementedError(
-                f"svcall_objects_from_svcomposite: Currently only single breakends per sample-consensusID are supported. Found {len(group)} breakends for sample {samplename}, consensusID {consensusID} in SVcomposite: {svComposite}"
-            )
-        # each svPattern represents a pair of BNDs.
         
 
 
-# SVcall to breakends parsing
-# SVcall to ins/del parsing
 
 def get_svComposite_interval_on_reference(
     svComposite: SVcomposite, find_leftmost_reference_position: bool
@@ -2799,13 +2759,6 @@ def multisample_sv_calling(
             find_leftmost_reference_position=find_leftmost_reference_position,
         )
     ]
-    if verbose:
-        # check if there are SVcalls from the consensus with ID 15.0 or 15.1
-        for svCall in svCalls:
-            if "15.0" in svCall.consensusIDs or "15.1" in svCall.consensusIDs:
-                log.info(
-                    f"   ------> Found SVcall with consensusID {svCall.consensusIDs} and type {svCall.svtype} and location {svCall.chrname}:{svCall.start}-{svCall.end}"
-                )
 
     ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
         svComposites=merged,

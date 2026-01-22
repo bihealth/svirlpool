@@ -191,15 +191,17 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                         consensus=consensus
                     )
                 )
-            elif isinstance(processed_svp, SVpatterns.SVpatternComplex):
+            elif isinstance(processed_svp, SVpatterns.SVpatternAdjacency):
                 processed_svp.set_all_sequence_contexts(
                     processed_svp.get_sequence_contexts_from_consensus(consensus=consensus)
+                )
+                processed_svp.set_sequence(
+                    processed_svp.get_sequence_from_consensus(consensus=consensus)
                 )
             else:
                 log.warning(
                     f"SVpattern type {type(processed_svp)} is not supported. Skipping alt sequence assignment."
                 )
-            # TODO: add sequence of other (complex) SVpatterns
 
             # Add to output and mark as processed
             output_svPatterns.append(processed_svp)
@@ -275,7 +277,6 @@ def add_reference_sequence_to_svPatterns(
                             SVpatterns.SVpatternInversion,
                             SVpatterns.SVpatternInversionDuplication,
                             SVpatterns.SVpatternInversionDeletion,
-                            SVpatterns.SVpatternInversionTranslocation,
                         ):
                             x.set_deleted_sequence(
                                 sequence=str(record.seq), write_complexity=False
