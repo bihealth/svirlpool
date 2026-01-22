@@ -48,9 +48,13 @@ SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
 # Add a sorted list constant for consistent ordering and help text
 SUPPORTED_SV_TYPE_STRINGS_LIST: list[str] = sorted(SUPPORTED_SV_TYPE_STRINGS)
 
-SUPPORTED_SV_TYPE_STRINGS_INVERSE: dict[str, type[SVpatterns.SVpatternType]] = {
-    pattern_type.get_sv_type(): pattern_type for pattern_type in SUPPORTED_SV_TYPES
-}
+# Map SV type strings to lists of pattern types (handles multiple types for "BND")
+SUPPORTED_SV_TYPE_STRINGS_INVERSE: dict[str, list[type[SVpatterns.SVpatternType]]] = {}
+for pattern_type in SUPPORTED_SV_TYPES:
+    sv_type_str = pattern_type.get_sv_type()
+    if sv_type_str not in SUPPORTED_SV_TYPE_STRINGS_INVERSE:
+        SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv_type_str] = []
+    SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv_type_str].append(pattern_type)
 
 # %% FUNCTIONS
 
@@ -1845,18 +1849,26 @@ class SVcall:
         ref_seq = pickle.loads(self.ref_sequence) if self.ref_sequence else ""
         alt_seq = pickle.loads(self.alt_sequence) if self.alt_sequence else ""
 
-        use_symbolic = (
-            len(ref_seq) > symbolic_threshold or len(alt_seq) > symbolic_threshold
-        )
-
-        if use_symbolic:
-            # Use symbolic allele notation
-            ref_str = refbase  # Just the anchor base
-            alt_str = f"<{self.svtype}>"
+        # Special handling for BND (breakend) records
+        if self.svtype == "BND":
+            # For BND records, alt_seq contains the pre-formatted ALT field
+            # Replace the placeholder "N" with the actual reference base
+            ref_str = refbase
+            alt_str = alt_seq.replace("N", refbase) if isinstance(alt_seq, str) else refbase
         else:
-            # Use explicit sequences for small variants
-            ref_str = refbase + ref_seq
-            alt_str = refbase + alt_seq
+            # Normal handling for other SV types
+            use_symbolic = (
+                len(ref_seq) > symbolic_threshold or len(alt_seq) > symbolic_threshold
+            )
+
+            if use_symbolic:
+                # Use symbolic allele notation
+                ref_str = refbase  # Just the anchor base
+                alt_str = f"<{self.svtype}>"
+            else:
+                # Use explicit sequences for small variants
+                ref_str = refbase + ref_seq
+                alt_str = refbase + alt_seq
 
         return "\t".join([
             str(self.chrname),
@@ -2006,6 +2018,7 @@ def SVcalls_from_SVcomposite(
     covtrees: dict[str, dict[str, IntervalTree]],
     cn_tracks: dict[str, dict[str, IntervalTree]],  # saplename -> chrname -> IntervalTree with copy number
     find_leftmost_reference_position: bool,
+    symbolic_threshold: int,
 ) -> list[SVcall]:
     # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
     #   have one chr, start, end on the reference
@@ -2036,7 +2049,8 @@ def SVcalls_from_SVcomposite(
             svComposite=svComposite,
             covtrees=covtrees,
             cn_tracks=cn_tracks,
-            all_alt_reads=all_alt_reads)
+            all_alt_reads=all_alt_reads,
+            symbolic_threshold=symbolic_threshold)
     else:
         log.warning(
             f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} in regions {svComposite.get_regions()} is not yet implemented for SVcall generation."
@@ -2115,11 +2129,99 @@ def svcall_object_from_svcomposite(
                 alt_sequence=alt_seq,
             )
 
+
+def format_bnd_alt_field(
+    ref_base: str,
+    mate_chr: str,
+    mate_pos: int,
+    sv_type: int,
+    aln_is_reverse: bool,
+    inserted_sequence: str = "",
+    use_symbolic: bool = False,
+    sequence_id: str | None = None,
+    insertion_start: int = 1,
+    insertion_end: int | None = None
+) -> str:
+    """
+    Format the ALT field for a BND (breakend) record according to VCF specification.
+    
+    Args:
+        ref_base: The reference base at this breakend position (REF field, typically 'N' or actual base)
+        mate_chr: Chromosome of the mate breakend
+        mate_pos: Position of the mate breakend (1-based for VCF output)
+        sv_type: SV type of this breakend (3=BNDL/left, 4=BNDR/right)
+        aln_is_reverse: Whether the alignment is on the reverse strand
+        inserted_sequence: Optional inserted sequence between the breakends (ignored if use_symbolic=True)
+        use_symbolic: If True, use symbolic notation for large insertions with sequence_id
+        sequence_id: ID of the inserted sequence (e.g., "ctg1") when using symbolic notation
+        insertion_start: Start position in the symbolic sequence (1-based, default=1)
+        insertion_end: End position in the symbolic sequence (1-based); if None, uses full length
+        
+    Returns:
+        Formatted ALT field string according to VCF BND specification
+        
+    The four cases are:
+    - t[p[  : piece extending to the right of p is joined after t
+    - t]p]  : reverse comp piece extending left of p is joined after t
+    - ]p]t  : piece extending to the left of p is joined before t
+    - [p[t  : reverse comp piece extending right of p is joined before t
+    
+    Where:
+    - t = ref_base + inserted_sequence (replacement string) or ref_base for symbolic
+    - p = mate_chr:mate_pos (mate position) or <sequence_id>:pos for symbolic insertions
+    - sv_type: 3 = BNDL (left break), 4 = BNDR (right break)
+        
+    For large insertions (use_symbolic=True), uses symbolic notation like:
+    - C[<ctg1>:1[  (reference to start of contig)
+    - ]<ctg1>:329]A  (reference to end of contig)
+    """
+    # Prepare the replacement string t
+    if use_symbolic:
+        # For symbolic notation, t is just the ref base (insertion is referenced separately)
+        t = ref_base
+        # For symbolic insertions, p points to the contig
+        if sequence_id is None:
+            raise ValueError("sequence_id must be provided when use_symbolic=True")
+        # Determine which end of the insertion to reference based on the breakend
+        # First breakend points to start of insertion, second points to end
+        p = f"<{sequence_id}>:{insertion_start if sv_type == 4 else (insertion_end or len(inserted_sequence))}"
+    else:
+        # For explicit sequence, t includes ref base + insertion
+        t = ref_base + inserted_sequence
+        # Regular mate position
+        p = f"{mate_chr}:{mate_pos}"
+    
+    # Determine the ALT format based on sv_type and orientation
+    # sv_type 3 = BNDL (left breakend), sv_type 4 = BNDR (right breakend)
+    
+    if sv_type == 4:  # BNDR (right breakend)
+        if not aln_is_reverse:
+            # Right break, forward strand: t[p[ 
+            # Piece extending to the right of p is joined after t
+            return f"{t}[{p}["
+        else:
+            # Right break, reverse strand: t]p]
+            # Reverse comp piece extending left of p is joined after t
+            return f"{t}]{p}]"
+    elif sv_type == 3:  # BNDL (left breakend)
+        if not aln_is_reverse:
+            # Left break, forward strand: ]p]t
+            # Piece extending to the left of p is joined before t
+            return f"]{p}]{t}"
+        else:
+            # Left break, reverse strand: [p[t
+            # Reverse comp piece extending right of p is joined before t
+            return f"[{p}[{t}"
+    else:
+        raise ValueError(f"Invalid sv_type for BND: {sv_type}. Expected 3 (BNDL) or 4 (BNDR)")
+
+
 def svcall_objects_from_Adjacencies(
         svComposite:SVcomposite,
         covtrees:dict[str, dict[str, IntervalTree]],
         cn_tracks:dict[str, dict[str, IntervalTree]],
-        all_alt_reads:dict[str, set[int]]) -> list[SVcall]:
+        all_alt_reads:dict[str, set[int]],
+        symbolic_threshold:int) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
     """
@@ -2127,10 +2229,186 @@ def svcall_objects_from_Adjacencies(
         raise ValueError(
             f"svcall_objects_from_Adjacencies: svComposite of type {svComposite.sv_type.__name__} is not of type SVpatternAdjacency."
         )
-    consensusIDs : list[str] = list({svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns})
-    results : list[SVcall] = []
-    # genotypes are a bit more tricky now. Since there are multiple breakends, we need to get genotypes for each breakend.
-    for (samplename, consensusID), group in svComposite.get_all_groups().items():
+    
+    # Collect consensusIDs from all SVpatterns in the composite
+    consensusIDs: list[str] = list({svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns})
+    
+    # Get the representative SVpattern (with highest support)
+    representative_pattern = svComposite.get_representative_SVpattern()
+    
+    # Verify it's an Adjacency pattern (should always be true due to earlier check)
+    if not isinstance(representative_pattern, SVpatterns.SVpatternAdjacency):
+        raise ValueError(
+            f"Representative pattern is not SVpatternAdjacency, got {type(representative_pattern).__name__}"
+        )
+    
+    # Adjacency patterns must have exactly 2 SVprimitives (the two break ends)
+    if len(representative_pattern.SVprimitives) != 2:
+        raise ValueError(
+            f"SVpatternAdjacency must have exactly 2 SVprimitives, got {len(representative_pattern.SVprimitives)}"
+        )
+    
+    # Extract the two break ends' reference positions
+    svprimitive_0 = representative_pattern.SVprimitives[0]
+    svprimitive_1 = representative_pattern.SVprimitives[1]
+    
+    # Break end 0 location
+    chr0 = svprimitive_0.chr
+    start0 = svprimitive_0.ref_start
+    end0 = start0 + 1  # Break ends are essentially point locations, so end = start + 1
+    
+    # Break end 1 location
+    chr1 = svprimitive_1.chr
+    start1 = svprimitive_1.ref_start
+    end1 = start1 + 1
+    
+    # Get the inserted sequence between the two break ends
+    inserted_sequence = representative_pattern.get_sequence()
+    if inserted_sequence is None:
+        inserted_sequence = ""
+    
+    # svlen is the length of the inserted sequence (or 1 if none)
+    svlen: int = len(inserted_sequence) if inserted_sequence else 1
+    
+    # ref_seq is not important for adjacencies
+    ref_seq: bytes | None = None
+    
+    # Determine if we should use symbolic notation for large insertions
+    # Using the symbolic_threshold parameter passed from command-line arguments
+    use_symbolic = len(inserted_sequence) > symbolic_threshold
+    
+    # Generate a sequence ID for symbolic notation if needed
+    sequence_id: str | None = None
+    if use_symbolic:
+        # Create a unique sequence ID based on the SVcomposite
+        sequence_id = f"ctg_{representative_pattern.samplename}_{representative_pattern.consensusID}_{svprimitive_0.svID}_{svprimitive_1.svID}"
+    
+    # Format the ALT field for each breakend according to VCF BND specification
+    # Note: We use "N" as placeholder for ref_base since actual base will be retrieved in to_vcf_line
+    # Breakend 0 points to breakend 1 (or to start of insertion contig)
+    alt_str_0 = format_bnd_alt_field(
+        ref_base="N",
+        mate_chr=chr1,
+        mate_pos=start1 + 1,  # VCF is 1-based, convert from 0-based
+        sv_type=svprimitive_0.sv_type,
+        aln_is_reverse=svprimitive_0.aln_is_reverse,
+        inserted_sequence=inserted_sequence,
+        use_symbolic=use_symbolic,
+        sequence_id=sequence_id,
+        insertion_start=1,
+        insertion_end=len(inserted_sequence) if use_symbolic else None
+    )
+    
+    # Breakend 1 points to breakend 0 (or to end of insertion contig)
+    alt_str_1 = format_bnd_alt_field(
+        ref_base="N",
+        mate_chr=chr0,
+        mate_pos=start0 + 1,  # VCF is 1-based, convert from 0-based
+        sv_type=svprimitive_1.sv_type,
+        aln_is_reverse=svprimitive_1.aln_is_reverse,
+        inserted_sequence=inserted_sequence,
+        use_symbolic=use_symbolic,
+        sequence_id=sequence_id,
+        insertion_start=1,
+        insertion_end=len(inserted_sequence) if use_symbolic else None
+    )
+    
+    # Store the formatted ALT strings as pickled bytes
+    alt_seq_0: bytes = pickle.dumps(alt_str_0)
+    alt_seq_1: bytes = pickle.dumps(alt_str_1)
+    
+    # Generate genotypes for all samples
+    # For break end 0
+    genotypes_0: dict[str, Genotype] = {
+        samplename: genotype_of_sample(
+            samplename=samplename,
+            chrname=chr0,
+            start=start0,
+            end=end0,
+            raw_alt_reads=all_alt_reads[samplename],
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+        ) for samplename in all_alt_reads.keys()
+    }
+    
+    # For break end 1
+    genotypes_1: dict[str, Genotype] = {
+        samplename: genotype_of_sample(
+            samplename=samplename,
+            chrname=chr1,
+            start=start1,
+            end=end1,
+            raw_alt_reads=all_alt_reads[samplename],
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+        ) for samplename in all_alt_reads.keys()
+    }
+    
+    # Quality filters (same logic as svcall_object_from_svcomposite)
+    # We use the maximum of both break ends for pass_altreads
+    max_var_reads_0 = max(genotypes_0.items(), key=lambda x: x[1].var_reads)[1].var_reads
+    max_var_reads_1 = max(genotypes_1.items(), key=lambda x: x[1].var_reads)[1].var_reads
+    pass_altreads: bool = max(max_var_reads_0, max_var_reads_1) >= 3
+    
+    pass_gq = True
+    passing: bool = pass_altreads and pass_gq
+    
+    # Check if call is precise (not in a repeat)
+    precise: bool = not bool(
+        sum(
+            len(svPrimitive.repeatIDs)
+            for svPattern in svComposite.svPatterns
+            for svPrimitive in svPattern.SVprimitives
+        )
+    )
+    
+    # Generate unique mateid base from representative pattern
+    # Format: samplename.consensusID.svID_0.svID_1
+    mateid_base = f"{representative_pattern.samplename}.{representative_pattern.consensusID}.{svprimitive_0.svID}.{svprimitive_1.svID}"
+    
+    # Create mateid for each break end (they reference each other)
+    mateid_0 = f"{mateid_base}.0"
+    mateid_1 = f"{mateid_base}.1"
+    
+    # Create SVcall for break end 0
+    svcall_0 = SVcall(
+        genotypes=genotypes_0,
+        passing=passing,
+        chrname=chr0,
+        start=start0,
+        end=end0,
+        svtype="BND",
+        svlen=svlen,
+        pass_altreads=pass_altreads,
+        pass_gq=pass_gq,
+        precise=precise,
+        mateid=mateid_1,  # Points to the mate (break end 1)
+        consensusIDs=consensusIDs,
+        ref_sequence=ref_seq,
+        alt_sequence=alt_seq_0,  # BND-formatted ALT field for breakend 0
+        sequence_id=sequence_id,  # Set if using symbolic notation for large insertions
+    )
+    
+    # Create SVcall for break end 1
+    svcall_1 = SVcall(
+        genotypes=genotypes_1,
+        passing=passing,
+        chrname=chr1,
+        start=start1,
+        end=end1,
+        svtype="BND",
+        svlen=svlen,
+        pass_altreads=pass_altreads,
+        pass_gq=pass_gq,
+        precise=precise,
+        mateid=mateid_0,  # Points to the mate (break end 0)
+        consensusIDs=consensusIDs,
+        ref_sequence=ref_seq,
+        alt_sequence=alt_seq_1,  # BND-formatted ALT field for breakend 1
+        sequence_id=sequence_id,  # Set if using symbolic notation for large insertions
+    )
+    
+    return [svcall_0, svcall_1]
         
 
 
@@ -2687,11 +2965,11 @@ def multisample_sv_calling(
         )
 
     # Convert string sv_types to SVpattern types
-    sv_types_set: set[type[SVpatterns.SVpatternType]] = {
-        SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv]
-        for sv in sv_types
-        if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE
-    }
+    sv_types_set: set[type[SVpatterns.SVpatternType]] = set()
+    for sv in sv_types:
+        if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE:
+            # Add all pattern types that map to this SV type string (e.g., "BND" -> [SVpatternSingleBreakend, SVpatternAdjacency])
+            sv_types_set.update(SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv])
     # debug - check what types are in sv_types_set
     if verbose:
         log.info(
@@ -2757,6 +3035,7 @@ def multisample_sv_calling(
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
+            symbolic_threshold=symbolic_threshold,
         )
     ]
 
@@ -3063,11 +3342,11 @@ def extract_test_svComposites(
     # Optional filter by SV types
     if sv_types is not None:
         # Convert string sv_types to pattern type set for filtering
-        sv_types_set = {
-            SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv]
-            for sv in sv_types
-            if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE
-        }
+        sv_types_set = set()
+        for sv in sv_types:
+            if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE:
+                # Add all pattern types that map to this SV type string
+                sv_types_set.update(SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv])
         filtered_svComposites = [
             svComposite
             for svComposite in filtered_svComposites
