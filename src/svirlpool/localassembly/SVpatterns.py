@@ -1054,7 +1054,7 @@ def two_relations_of_group(
 # some insertions, e.g. of Mobile Elements, can be aligned to a different locus
 # the generalization is a "hop" where a middle aigned segment between two adjacent segments is translocated.
 def four_relations_of_group(
-    group: list[SVprimitive], distance_tolerance: int = 5
+    group: list[SVprimitive], distance_tolerance: int = 5, max_gap_size: int = 500_000
 ) -> dict[tuple[int, int, int, int], set[FOURRELATIONS]]:
     if len(group) < 4:
         return {}
@@ -1087,10 +1087,10 @@ def four_relations_of_group(
             interval_ad = Interval(
                 min(a.ref_start, d.ref_start), max(a.ref_end, d.ref_end)
             )
-            if a.chr != b.chr:
+            if len({a.chr, b.chr, c.chr, d.chr}) > 1:
                 tags.add(FOURRELATIONS.HOP)
                 log.debug(
-                    f"HOP detected on different chromosomes: a.chr={a.chr}, b.chr={b.chr}"
+                    f"HOP detected on different chromosomes: a.chr={a.chr}, b.chr={b.chr}, c.chr={c.chr}, d.chr={d.chr}"
                 )
             elif not interval_ad.overlaps(
                 min(b.ref_start, c.ref_end), max(b.ref_end, c.ref_start)
@@ -1098,6 +1098,14 @@ def four_relations_of_group(
                 tags.add(FOURRELATIONS.HOP)
                 log.debug(
                     f"HOP detected on intervals: interval_ad={interval_ad}, min(b.ref_start, c.ref_end)={min(b.ref_start, c.ref_end)}, max(b.ref_end, c.ref_start)={max(b.ref_end, c.ref_start)}"
+                )
+            # HOP is also appiled if a,b,c,d are on the same chr, but max(a,b,c,d) - min(a,b,c,d) > max_gap_size (max SV size check)
+            elif max(a.ref_start, b.ref_start, c.ref_start, d.ref_start) - min(
+                a.ref_start, b.ref_start, c.ref_start, d.ref_start
+            ) > max_gap_size:
+                tags.add(FOURRELATIONS.HOP)
+                log.debug(
+                    f"HOP detected on same chromosome but large distance (>{max_gap_size}bp): a.ref_start={a.ref_start}, b.ref_start={b.ref_start}, c.ref_start={c.ref_start}, d.ref_start={d.ref_start}"
                 )
         # INVERSION - reverse aln is equal between breakends a,d and b,c but not between a,b and c,d
         if (
@@ -1127,7 +1135,7 @@ def possible_inversions_from_BNDs(
     # an inversion is present if there exists a 4-inv
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), x in fourrelations.items():
-        if FOURRELATIONS.INVERSION in x:
+        if FOURRELATIONS.INVERSION in x and not FOURRELATIONS.HOP in x:
             # create a SVcomplex from the group
             results.append((a, b, c, d))
     return results
@@ -1151,7 +1159,7 @@ def possible_inversions_deletions_from_BNDs(
 
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), relations in fourrelations.items():
-        if FOURRELATIONS.INVERSION not in relations:
+        if FOURRELATIONS.INVERSION not in relations or FOURRELATIONS.HOP in relations:
             continue
 
         svp_a, svp_b, svp_c, svp_d = svps[a], svps[b], svps[c], svps[d]
@@ -1189,9 +1197,7 @@ def possible_inversions_duplications_from_BNDs(
 
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), relations in fourrelations.items():
-        if FOURRELATIONS.INVERSION not in relations:
-            continue
-        if FOURRELATIONS.HOP in relations:
+        if FOURRELATIONS.INVERSION not in relations or FOURRELATIONS.HOP in relations:
             continue
 
         svp_a, svp_b, svp_c, svp_d = svps[a], svps[b], svps[c], svps[d]
@@ -1206,29 +1212,6 @@ def possible_inversions_duplications_from_BNDs(
 
         # Check if interval (b,c) is longer than (a,d) by more than margin
         if interval_bc_size > interval_ad_size + margin:
-            results.append((a, b, c, d))
-
-    return results
-
-
-def possible_inversions_translocations_from_BNDs(
-    svps: list[SVprimitive],
-    fourrelations: dict[tuple[int, int, int, int], set[FOURRELATIONS]],
-) -> list[tuple[int, int, int, int]]:
-    """Calls inverted translocations from a group of SVprimitives. The returned list of 4-tuples contains the indices of the SVprimitives that can form an inverted translocation.
-
-    An inverted translocation is an inversion where there is a HOP (the middle segment is translocated).
-    """
-    if len(svps) < 4:
-        return []
-    if not all(sv.sv_type == 3 or sv.sv_type == 4 for sv in svps):
-        raise ValueError(
-            "All SVprimitives must be of type BND to call inverted translocations"
-        )
-
-    results: list[tuple[int, int, int, int]] = []
-    for (a, b, c, d), relations in fourrelations.items():
-        if FOURRELATIONS.INVERSION in relations and FOURRELATIONS.HOP in relations:
             results.append((a, b, c, d))
 
     return results
@@ -1329,12 +1312,11 @@ def possible_single_ended_breakends_from_BNDs(
 
 # endregion
 
-
 def parse_SVprimitives_to_SVpatterns(
     SVprimitives: list[SVprimitive],
-    max_del_size: int = 100_000,
+    max_del_size: int = 500_000,
     log_level_override: int | None = None,
-    break_up_complex_into_pairs:bool=True,
+    max_fourrelations_gap_size: int = 500_000,
 ) -> list[SVpatternType]:
     """
     Parses Sv patterns from the SVprimitives of one consensus. All SVprimitives must have the same consensusID.
@@ -1380,7 +1362,7 @@ def parse_SVprimitives_to_SVpatterns(
 
     # 4-relations based parsing for inversions and complex SVs
     if len(breakends) == 4:
-        fourrelations = four_relations_of_group(group=breakends)
+        fourrelations = four_relations_of_group(group=breakends, max_gap_size=max_fourrelations_gap_size)
         log.debug(f"Four-relations: {fourrelations}")
 
         checks = [
@@ -1741,7 +1723,6 @@ def write_svPatterns_to_db(
     database: Path,
     svPatterns_file: Path | str,
     timeout: float = 10.0,
-    batch_size: int = 1000,
 ):
     """Write SVpatterns to database from file in batches to avoid memory issues.
 
@@ -1749,14 +1730,18 @@ def write_svPatterns_to_db(
         database: Path to the SQLite database
         svPatterns_file: Path to a file with serialized SVpatterns (one JSON per line)
         timeout: SQLite connection timeout
-        batch_size: Number of records to write per batch (default: 1000)
+        batch_size: Number of records to write per batch (deprecated, size-based batching is used instead)
     """
 
     svPatterns_file = Path(svPatterns_file)
     if not svPatterns_file.exists():
         raise FileNotFoundError(f"SVpatterns file not found: {svPatterns_file}")
 
-    query = "INSERT INTO svPatterns (svPatternID, consensusID, crID, svPattern) VALUES (?, ?, ?, ?)"
+    # SQLite max insert size is 1 GB, use 500 MB threshold for safety
+    MAX_CACHE_SIZE_BYTES = 500_000_000  # 500 MB
+    MAX_SINGLE_PATTERN_SIZE_BYTES = MAX_CACHE_SIZE_BYTES  # 500 MB
+
+    query = "INSERT OR IGNORE INTO svPatterns (svPatternID, consensusID, crID, svPattern) VALUES (?, ?, ?, ?)"
 
     with sqlite3.connect(
         "file:" + str(database) + "?mode=rwc", uri=True, timeout=timeout
@@ -1764,6 +1749,7 @@ def write_svPatterns_to_db(
         c = conn.cursor()
         cache = []
         pattern_counter = 0
+        total_cache_size = 0  # Track cache size in bytes
 
         with open(svPatterns_file, "r") as f:
             for line_num, line in enumerate(f, 1):
@@ -1782,41 +1768,63 @@ def write_svPatterns_to_db(
                         consensusID = svPattern.SVprimitives[0].consensusID
                         crID = int(consensusID.split(".")[0])
                         svPatternID = (
-                            f"{svPattern.get_sv_type()}.{consensusID}.{pattern_counter}"
+                            f"{pattern_counter}-{svPattern.get_sv_type()}-{consensusID}"
                         )
                     else:
                         log.warning(
                             f"SVpattern at line {line_num} has no primitives, skipping"
                         )
                         continue
-
+                                    
+                    # Serialize and check individual pattern size
+                    pickled_pattern = pickle.dumps(converter.unstructure(svPattern))
+                    svPattern_size = len(pickled_pattern)
+                    
+                    if svPattern_size > MAX_SINGLE_PATTERN_SIZE_BYTES:
+                        log.warning(f"SVpattern {svPatternID} is very large ({float(svPattern_size) / 1_000_000.0:.2f} MB) and therefore needs to be skipped.")
+                        continue  # Skip overly large patterns
+                    
                     cache.append((
                         svPatternID,
                         consensusID,
                         crID,
-                        pickle.dumps(converter.unstructure(svPattern)),
+                        pickled_pattern,
                     ))
+                    
+                    # Update running cache size
+                    total_cache_size += svPattern_size
                     pattern_counter += 1
 
-                    # Write batch when cache reaches batch_size
-                    if len(cache) >= batch_size:
-                        c.executemany(query, cache)
-                        conn.commit()
-                        log.debug(f"Wrote batch of {len(cache)} SVpatterns to database")
-                        cache.clear()
+                    # Write batch when cache exceeds size threshold
+                    if total_cache_size >= MAX_CACHE_SIZE_BYTES:
+                        log.info(f"Writing batch of {len(cache)} SVpatterns to database (total size: {float(total_cache_size) / 1_000_000.0:.2f} MB)")
+                        
+                        try:
+                            c.executemany(query, cache)
+                            conn.commit()
+                            log.info(f"Wrote batch of {len(cache)} SVpatterns to database with size {total_cache_size / 1_000_000.0:.2f} MB")
+                        except sqlite3.Error as e:
+                            log.error(f"Failed to write batch ending at line {line_num}: {e}")
+                            log.error(f"Total batch size: {total_cache_size / 1_000_000.0:.2f} MB")
+                            raise
+                        finally:
+                            log.info("Clearing cache after batch write")
+                            cache.clear()
+                            total_cache_size = 0  # Reset cache size counter
 
                 except json.JSONDecodeError as e:
-                    log.warning(f"Failed to parse JSON at line {line_num}: {e}")
-                    continue
+                    raise ValueError(f"Failed to parse JSON at line {line_num}: {e}")
                 except Exception as e:
-                    log.warning(f"Failed to process SVpattern at line {line_num}: {e}")
-                    continue
+                    raise ValueError(f"Failed to process SVpattern with ID {svPatternID} at line {line_num}: {e}")
 
         # Write remaining records
-        if cache:
+        if len(cache) > 0:
+            log.info(f"Writing final batch of {len(cache)} SVpatterns (total size: {float(total_cache_size) / 1_000_000.0:.2f} MB)")
             c.executemany(query, cache)
             conn.commit()
-            log.debug(f"Wrote final batch of {len(cache)} SVpatterns to database")
+            log.info(f"Wrote final batch of {len(cache)} SVpatterns to database")
+            cache.clear()
+            total_cache_size = 0
 
         c.close()
 

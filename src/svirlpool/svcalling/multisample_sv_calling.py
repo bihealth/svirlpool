@@ -2420,6 +2420,8 @@ def get_svComposite_interval_on_reference(
         raise ValueError(
             f"get_svComposite_indel_interval called with svComposite that is neither {', '.join(t.__name__ for t in SUPPORTED_SV_TYPES)}: {svComposite}"
         )
+    # measure time. If the execution of this function takes longer than 2 seconds, print the input svComposite so it can be debugged.
+    time_start = datetime.now()
     weighted_regions: list[tuple[tuple[str, int, int], int]] = []
     for svPattern in svComposite.svPatterns:
         if svPattern.get_sv_type() not in SUPPORTED_SV_TYPE_STRINGS:
@@ -2432,8 +2434,16 @@ def get_svComposite_interval_on_reference(
                 svprimitive.ref_start for svprimitive in svPattern.SVprimitives
             )
         else:
-            weight = len(svPattern.get_supporting_reads() * svPattern.get_size())
+            weight = len(svPattern.get_supporting_reads()) * svPattern.get_size()
         weighted_regions.append((region, weight))
+    
+    time_end = datetime.now()
+    time_diff = (time_end - time_start).total_seconds()
+    if time_diff > 2:
+        log.warning(
+            f"get_svComposite_interval_on_reference took {time_diff} seconds for svComposite: {svComposite}"
+        )
+    
     # pick the winning region
     if find_leftmost_reference_position:
         return min(
@@ -2648,57 +2658,192 @@ def reference_bases_by_merged_svComposites(
     svComposites: list[SVcomposite],
     reference: Path,
     find_leftmost_reference_position: bool,
+    tmp_dir_path: Path | str | None = None,
 ) -> dict[str, str]:
-    # Collect all positions that need reference bases
-
-    positions = []
-    for svComposite in svComposites:
-        chrname, start, end = get_svComposite_interval_on_reference(
-            svComposite=svComposite,
-            find_leftmost_reference_position=find_leftmost_reference_position,
-        )
-        positions.append((chrname, start))
-
-    unique_positions = list(dict.fromkeys(positions))
-    if not unique_positions:
-        return {}
+    """
+    Retrieve reference bases for SVcomposite positions using streaming to avoid memory issues.
+    """
+    log.info(f"Collecting positions from {len(svComposites)} SVcomposites...")
+    # print how much memory scComposites take
+    from sys import getsizeof
+    log.info(f"Size of svComposites in memory: {getsizeof(svComposites)} bytes")
+    
+    dict_reference_bases: dict[str, str] = {}
+    
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".bed", delete=False
-    ) as tmp_regions:
-        for chrname, start in unique_positions:
-            print(f"{chrname}:{start}-{start}", file=tmp_regions)
-        tmp_regions_path = tmp_regions.name
-    try:
-        cmd_faidx = f"samtools faidx --region-file {tmp_regions_path} {str(reference)}"
-        result = subprocess.run(
-            split(cmd_faidx), capture_output=True, text=True, check=True
-        )
-
-        dict_reference_bases = {}
-        lines = result.stdout.strip().split("\n")
-        i = 0
-        while i < len(lines):
-            if lines[i].startswith(">"):
-                # Parse header line like ">chr1:123-124"
-                header = lines[i][1:]  # Remove '>'
-                if ":" in header and "-" in header:
-                    chrom_pos = header.split("-")[0]  # Get "chr1:123" part
-                    if i + 1 < len(lines) and not lines[i + 1].startswith(">"):
-                        base = lines[i + 1].upper()
-                        dict_reference_bases[chrom_pos] = base
-                        i += 2
-                    else:
-                        i += 1
-                else:
-                    i += 1
-            else:
-                i += 1
-
-    finally:
-        # Clean up temporary file
-        Path(tmp_regions_path).unlink()
-
+        mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
+    ) as ref_bases_file:
+        
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
+        ) as tmp_regions:
+            for i,svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
+                chrname, start, end = get_svComposite_interval_on_reference(
+                    svComposite=svComposite,
+                    find_leftmost_reference_position=find_leftmost_reference_position)
+                print(f"{chrname}\t{start}\t{start+1}", file=tmp_regions)
+            # then sort and uniq the bed file
+            cmd_sort = f"bedtools sort -g {str(reference)}.fai -i {tmp_regions.name}"
+            cmd_uniq = f"uniq"
+            log.info("Sorting and deduplicating positions with bedtools and uniq...")
+            # open another file handle for the unique regions
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
+            ) as tmp_sorted_uniq_regions:
+                process_sort = subprocess.Popen(
+                    split(cmd_sort),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                process_uniq = subprocess.Popen(
+                    split(cmd_uniq),
+                    stdin=process_sort.stdout,
+                    stdout=tmp_sorted_uniq_regions,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                process_sort.stdout.close()  # Allow process_sort to receive a SIGPIPE if process_uniq exits.
+                _, stderr_sort = process_sort.communicate()
+                if process_sort.returncode != 0:
+                    log.error(f"bedtools sort failed with return code {process_sort.returncode}")
+                    log.error(f"stderr: {stderr_sort}")
+                    raise subprocess.CalledProcessError(process_sort.returncode, cmd_sort, stderr=stderr_sort)
+                _, stderr_uniq = process_uniq.communicate()
+                if process_uniq.returncode != 0:
+                    log.error(f"uniq failed with return code {process_uniq.returncode}")
+                    log.error(f"stderr: {stderr_uniq}")
+                    raise subprocess.CalledProcessError(process_uniq.returncode, cmd_uniq, stderr=stderr_uniq)
+                
+                # now use samtools faidx to write the reference bases to a file
+                cmd_faidx = f"samtools faidx --region-file {tmp_sorted_uniq_regions.name} {str(reference)}"
+                log.info("Retrieving reference bases with samtools faidx...")
+                process_faidx = subprocess.Popen(
+                    split(cmd_faidx),
+                    stdout=ref_bases_file,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                _, stderr_faidx = process_faidx.communicate()
+                if process_faidx.returncode != 0:
+                    log.error(f"samtools faidx failed with return code {process_faidx.returncode}")
+                    log.error(f"stderr: {stderr_faidx}")
+                    raise subprocess.CalledProcessError(process_faidx.returncode, cmd_faidx, stderr=stderr_faidx)
+                # not parse the ref_bases_file to fill dict_reference_bases
+        log.info("Parsing retrieved reference bases...")
+        with open(ref_bases_file.name, "r") as f:
+            current_header = None
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith(">"):
+                    # Parse header line like ">chr1:123-124"
+                    current_header = line[1:]  # Remove '>'
+                elif current_header:
+                    # This is the sequence line
+                    if ":" in current_header and "-" in current_header:
+                        chrom_pos = current_header.split("-")[0]  # Get "chr1:123" part
+                        base = line.upper()
+                        if len(base) == 1:
+                            dict_reference_bases[chrom_pos] = base
+                        else:
+                            log.warning(f"Expected single base at {chrom_pos}, got '{base}'")
+                    current_header = None  # Reset for next entry
+    log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
     return dict_reference_bases
+
+
+    # positions = []
+    # for i,svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
+    #     chrname, start, end = get_svComposite_interval_on_reference(
+    #         svComposite=svComposite,
+    #         find_leftmost_reference_position=find_leftmost_reference_position,
+    #     )
+    #     positions.append((chrname, start))
+    #     if i % 1000 == 0:
+    #         # report size of positions in bytes
+    #         log.info(f"Collected {len(positions)} positions, size in memory: {getsizeof(positions)} bytes")
+
+
+    # log.info(f"Collected {len(positions)} positions, deduplicating...")
+    # # Use dict.fromkeys for deduplication without creating intermediate sets
+    # unique_positions = list(dict.fromkeys(positions))
+    # positions.clear()  # Free memory immediately
+    
+    # log.info(f"Processing {len(unique_positions)} unique positions")
+    
+    # if not unique_positions:
+    #     return {}
+
+    # dict_reference_bases: dict[str, str] = {}
+    
+    # with tempfile.NamedTemporaryFile(
+    #     mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
+    # ) as tmp_regions:
+    #     log.info("Writing positions to temp BED file...")
+    #     for chrname, start in unique_positions:
+    #         print(f"{chrname}\t{start}\t{start+1}", file=tmp_regions)
+    #     tmp_regions.flush()
+        
+    #     # Clear this list as we don't need it anymore
+    #     unique_positions.clear()
+        
+    #     cmd_faidx = f"samtools faidx --region-file {tmp_regions.name} {str(reference)}"
+    #     log.info("Retrieving reference bases with samtools faidx (streaming)...")
+        
+    #     # Stream the output instead of loading it all into memory
+    #     process = subprocess.Popen(
+    #         split(cmd_faidx),
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.PIPE,
+    #         text=True,
+    #         bufsize=1  # Line buffered
+    #     )
+        
+    #     if process.stdout is None:
+    #         raise RuntimeError("Failed to open samtools faidx stdout pipe.")
+        
+    #     current_header = None
+    #     line_count = 0
+        
+    #     for line in process.stdout:
+    #         line_count += 1
+    #         if line_count % 100000 == 0:
+    #             log.info(f"Processed {line_count} lines, collected {len(dict_reference_bases)} bases")
+            
+    #         line = line.strip()
+    #         if not line:
+    #             continue
+                
+    #         if line.startswith(">"):
+    #             # Parse header line like ">chr1:123-124"
+    #             current_header = line[1:]  # Remove '>'
+    #         elif current_header:
+    #             # This is the sequence line
+    #             if ":" in current_header and "-" in current_header:
+    #                 chrom_pos = current_header.split("-")[0]  # Get "chr1:123" part
+    #                 base = line.upper()
+                    
+    #                 if len(base) == 1:
+    #                     dict_reference_bases[chrom_pos] = base
+    #                 else:
+    #                     log.warning(f"Expected single base at {chrom_pos}, got '{base}'")
+                
+    #             current_header = None  # Reset for next entry
+        
+    #     # Wait for process to complete
+    #     stderr_output = process.stderr.read()
+    #     return_code = process.wait()
+        
+    #     if return_code != 0:
+    #         log.error(f"samtools faidx failed with return code {return_code}")
+    #         log.error(f"stderr: {stderr_output}")
+    #         raise subprocess.CalledProcessError(return_code, cmd_faidx, stderr=stderr_output)
+        
+    #     log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
+    
+    # return dict_reference_bases
 
 
 def write_sequences_to_fasta(
@@ -3027,6 +3172,8 @@ def multisample_sv_calling(
         save_svComposites_to_json(
             data=merged, output_path=Path(tmp_dir_path) / "merged_svComposites.json.gz"
         )
+    data.clear()  # free memory
+    log.info(f"Generating SVcalls from {len(merged)} merged SVcomposites...")
     svCalls: list[SVcall] = [
         svcall
         for svComposite in merged
@@ -3038,12 +3185,17 @@ def multisample_sv_calling(
             symbolic_threshold=symbolic_threshold,
         )
     ]
+    cn_tracks.clear()  # free memory
+    log.info(f"Generated {len(svCalls)} SVcalls from {len(merged)} merged SVcomposites. Now adding ref bases..")
 
     ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
         svComposites=merged,
         reference=reference,
         find_leftmost_reference_position=find_leftmost_reference_position,
+        tmp_dir_path=tmp_dir_path
     )
+    
+    log.info("Writing SVcalls to VCF file...")
     write_svCalls_to_vcf(
         svCalls=svCalls,
         output=output,

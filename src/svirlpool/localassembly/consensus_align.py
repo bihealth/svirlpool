@@ -46,6 +46,7 @@ class SVPatternProcessingParams:
     max_del_size: int
     distance_scale: float
     falloff: float
+    max_fourrelations_gap_size: int
     batchsize: int = 100
 
 
@@ -74,7 +75,7 @@ def trf_to_interval_tree(input_trf: Path) -> dict[str, IntervalTree]:
 
 
 def svPrimitives_to_svPatterns(
-    SVprimitives: list[SVprimitives.SVprimitive], max_del_size: int
+    SVprimitives: list[SVprimitives.SVprimitive], max_del_size: int, max_fourrelations_gap_size: int = 500_000
 ) -> list[SVpatterns.SVpatternType]:
     """
     Converts a list of SVprimitives to a list of SVpatterns.
@@ -113,6 +114,7 @@ def svPrimitives_to_svPatterns(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
                 SVprimitives=group,
                 max_del_size=max_del_size,
+                max_fourrelations_gap_size=max_fourrelations_gap_size,
             )
         )
 
@@ -1726,7 +1728,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                 f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences"
             )
             svPatterns = svPrimitives_to_svPatterns(
-                SVprimitives=svPrimitives, max_del_size=params.max_del_size
+                SVprimitives=svPrimitives, max_del_size=params.max_del_size, max_fourrelations_gap_size=params.max_fourrelations_gap_size
             )
             svp_types = {svp.get_sv_type() for svp in svPatterns}
             log.warning(
@@ -1794,8 +1796,10 @@ def svPatterns_from_consensus_sequences(
     max_del_size: int,
     distance_scale: float,
     falloff: float,
+    max_fourrelations_gap_size: int = 500_000,
     tmp_dir_path: Path | str | None = None,
     dont_merge_horizontally: bool = False,
+    batchsize: int = 100,
 ) -> None:
     # write all consensus sequences to a fasta file and align to the target reference
     # write all alignments to a file
@@ -1913,7 +1917,7 @@ def svPatterns_from_consensus_sequences(
             consensus_json_index_partitioned=consensus_json_index_partitioned,
             consensus_json_paths=consensus_json_paths,
             threads=threads,
-            batch_size=100,
+            batch_size=batchsize,
         )
         # now we need to find the intersecting trf intervals for each core interval on reference
         # Find TRF overlaps for all core intervals in parallel using bedtools
@@ -1967,6 +1971,7 @@ def svPatterns_from_consensus_sequences(
                     max_del_size=max_del_size,
                     distance_scale=distance_scale,
                     falloff=falloff,
+                    max_fourrelations_gap_size=max_fourrelations_gap_size,
                     batchsize=100,
                 )
             )
@@ -1999,10 +2004,6 @@ def svPatterns_from_consensus_sequences(
                     continue
                 with open(svp_path, "r") as infile:
                     shutil.copyfileobj(infile, outfile)
-                    if (
-                        partition_idx < threads - 1
-                    ):  # Don't add extra newline after last file
-                        outfile.write("\n")
 
         log.info(f"Concatenated {threads} SV pattern partition files")
 
@@ -2070,8 +2071,14 @@ def get_parser():
     parser.add_argument(
         "--max-del-size",
         type=int,
-        default=100_000,
-        help="Maximum size of deletions to consider for SVpattern generation (default: 100000). They are treated as translocations otherwise. Warning: larger deletions are often spurious and can lead to memory issues.",
+        default=500_000,
+        help="Maximum size of deletions to consider for SVpattern generation (default: 500000). They are treated as translocations otherwise. Warning: larger deletions are often spurious and can lead to memory issues.",
+    )
+    parser.add_argument(
+        "--max-fourrelations-gap-size",
+        type=int,
+        default=500_000,
+        help="Maximum gap size for four-relations analysis in SVpattern generation (default: 500000). Controls detection of complex SV patterns like inversions.",
     )
     parser.add_argument(
         "--distance-scale",
@@ -2160,6 +2167,7 @@ def main():
         max_del_size=args.max_del_size,
         distance_scale=args.distance_scale,
         falloff=args.falloff,
+        max_fourrelations_gap_size=args.max_fourrelations_gap_size,
         tmp_dir_path=args.tmp_dir_path,
         dont_merge_horizontally=args.dont_merge_horizontally,
     )
