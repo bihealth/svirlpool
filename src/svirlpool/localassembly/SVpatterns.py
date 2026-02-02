@@ -702,6 +702,7 @@ class SVpatternInversionDuplication(SVpatternInversion):
 @attrs.define
 class SVpatternAdjacency(SVpattern):
     """A pattern that defines an adjacency defined by two connected break ends."""
+
     CONTEXT_SIZE: int = 200
     sequence_contexts: dict[int, bytes] | None = None
     """A dictionary mapping SVprimitive indices to their sequence contexts (pickled byte strings)."""
@@ -718,7 +719,7 @@ class SVpatternAdjacency(SVpattern):
             raise ValueError(
                 f"SVpatternAdjacency must contain exactly two SVprimitives, got {len(self.SVprimitives)}"
             )
-    
+
     @classmethod
     def get_sv_type(cls) -> str:
         return "BND"
@@ -734,9 +735,19 @@ class SVpatternAdjacency(SVpattern):
         """Gets all reference regions from all SVprimitives."""
         if len(self.SVprimitives) != 2:
             raise ValueError("Adjacency must have exactly two SVprimitives.")
-        return [(self.SVprimitives[0].chr, self.SVprimitives[0].ref_start, self.SVprimitives[0].ref_end),
-                (self.SVprimitives[1].chr, self.SVprimitives[1].ref_start, self.SVprimitives[1].ref_end)]
-    
+        return [
+            (
+                self.SVprimitives[0].chr,
+                self.SVprimitives[0].ref_start,
+                self.SVprimitives[0].ref_end,
+            ),
+            (
+                self.SVprimitives[1].chr,
+                self.SVprimitives[1].ref_start,
+                self.SVprimitives[1].ref_end,
+            ),
+        ]
+
     def set_sequence_context(
         self,
         svp_index: int,
@@ -744,7 +755,7 @@ class SVpatternAdjacency(SVpattern):
         sequence_complexity_max_length: int = 300,
     ) -> None:
         """Set the sequence context and compute its complexity for a specific SVprimitive.
-        
+
         Args:
             svp_index: Index of the SVprimitive (must be 0 or 1)
             sequence: The sequence context to set
@@ -752,7 +763,7 @@ class SVpatternAdjacency(SVpattern):
         """
         if svp_index not in (0, 1):
             raise ValueError(f"svp_index must be 0 or 1, got {svp_index}")
-        
+
         if self.sequence_contexts is None:
             self.sequence_contexts = {}
         if self.sequence_contexts_complexities is None:
@@ -769,7 +780,9 @@ class SVpatternAdjacency(SVpattern):
         else:
             # Create dummy placeholder with 1.0 values for long sequences
             dummy_complexity = np.ones(len(sequence), dtype=np.float16)
-            self.sequence_contexts_complexities[svp_index] = pickle.dumps(dummy_complexity)
+            self.sequence_contexts_complexities[svp_index] = pickle.dumps(
+                dummy_complexity
+            )
 
     def set_all_sequence_contexts(
         self,
@@ -777,19 +790,21 @@ class SVpatternAdjacency(SVpattern):
         sequence_complexity_max_length: int = CONTEXT_SIZE,
     ) -> None:
         """Set the sequence contexts and compute their complexities for both SVprimitives.
-        
+
         Args:
             contexts: Dictionary mapping indices (0 and 1) to sequence contexts
             sequence_complexity_max_length: Maximum length for complexity computation
         """
         if not contexts:
             return
-        
+
         # Validate that we have contexts for indices 0 and 1 only
         invalid_indices = set(contexts.keys()) - {0, 1}
         if invalid_indices:
-            raise ValueError(f"contexts dict contains invalid indices: {invalid_indices}. Only 0 and 1 are allowed.")
-        
+            raise ValueError(
+                f"contexts dict contains invalid indices: {invalid_indices}. Only 0 and 1 are allowed."
+            )
+
         for svp_index in (0, 1):
             if svp_index in contexts:
                 self.set_sequence_context(
@@ -800,46 +815,50 @@ class SVpatternAdjacency(SVpattern):
 
     def get_sequence_context(self, svp_index: int) -> str | None:
         """Retrieve the sequence context for a specific SVprimitive by unpickling.
-        
+
         Args:
             svp_index: Index of the SVprimitive (must be 0 or 1)
-            
+
         Returns:
             The sequence context string, or None if not set
         """
         if svp_index not in (0, 1):
             raise ValueError(f"svp_index must be 0 or 1, got {svp_index}")
-        
+
         if self.sequence_contexts is None or svp_index not in self.sequence_contexts:
             return None
         try:
             return pickle.loads(self.sequence_contexts[svp_index])
         except Exception:
             return None
-    
+
     def get_all_sequence_contexts(self) -> dict[int, str]:
         """Retrieve both sequence contexts by unpickling.
-        
+
         Returns:
             Dictionary mapping indices (0, 1) to sequence context strings.
             Missing or unpickleable contexts are set to None.
         """
         if self.sequence_contexts is None:
             return {}
-        
+
         contexts = {}
         # Process both indices explicitly (0 and 1)
         for svp_index in (0, 1):
             if svp_index in self.sequence_contexts:
                 try:
-                    contexts[svp_index] = pickle.loads(self.sequence_contexts[svp_index])
+                    contexts[svp_index] = pickle.loads(
+                        self.sequence_contexts[svp_index]
+                    )
                 except Exception:
                     contexts[svp_index] = None
         return contexts
 
-    def get_sequence_contexts_from_consensus(self, consensus: Consensus) -> dict[int, str]:
+    def get_sequence_contexts_from_consensus(
+        self, consensus: Consensus
+    ) -> dict[int, str]:
         """Extract context regions around both breakpoints (±CONTEXT_SIZE bp).
-        
+
         Returns:
             Dictionary with keys 0 and 1 mapping to sequence contexts for each SVprimitive
         """
@@ -852,7 +871,7 @@ class SVpatternAdjacency(SVpattern):
 
         # Process both SVprimitives (indices 0 and 1)
         svp_0, svp_1 = self.SVprimitives[0], self.SVprimitives[1]
-        
+
         for idx, svp in [(0, svp_0), (1, svp_1)]:
             # Convert read coordinates to consensus coordinates
             read_start_on_consensus = svp.read_start - core_sequence_start
@@ -874,17 +893,20 @@ class SVpatternAdjacency(SVpattern):
 
     def get_sequence_context_complexity(self, svp_index: int) -> np.ndarray | None:
         """Retrieve the sequence context complexity for a specific SVprimitive by unpickling.
-        
+
         Args:
             svp_index: Index of the SVprimitive (must be 0 or 1)
-            
+
         Returns:
             Numpy array of complexity scores, or None if not set
         """
         if svp_index not in (0, 1):
             raise ValueError(f"svp_index must be 0 or 1, got {svp_index}")
-        
-        if self.sequence_contexts_complexities is None or svp_index not in self.sequence_contexts_complexities:
+
+        if (
+            self.sequence_contexts_complexities is None
+            or svp_index not in self.sequence_contexts_complexities
+        ):
             return None
         try:
             return pickle.loads(self.sequence_contexts_complexities[svp_index])
@@ -899,7 +921,7 @@ class SVpatternAdjacency(SVpattern):
             return pickle.loads(self.inserted_sequence)
         except Exception:
             return None
-    
+
     def get_sequence_complexity(self) -> np.ndarray | None:
         """Retrieve the sequence complexity scores."""
         if self.sequence_complexity is None:
@@ -925,7 +947,7 @@ class SVpatternAdjacency(SVpattern):
             # Create dummy placeholder with 1.0 values for long sequences
             dummy_complexity = np.ones(len(sequence), dtype=np.float16)
             self.sequence_complexity = pickle.dumps(dummy_complexity)
-    
+
     def get_sequence_from_consensus(self, consensus: Consensus) -> str:
         """Extract the sequence between the two breakends from the consensus."""
         if consensus.consensus_padding is None:
@@ -937,7 +959,7 @@ class SVpatternAdjacency(SVpattern):
         if self.SVprimitives[0].aln_is_reverse:
             seq = str(Seq(seq).reverse_complement())
         return seq
-    
+
 
 # Use Union for better type hints
 SVpatternType = (
@@ -1100,9 +1122,11 @@ def four_relations_of_group(
                     f"HOP detected on intervals: interval_ad={interval_ad}, min(b.ref_start, c.ref_end)={min(b.ref_start, c.ref_end)}, max(b.ref_end, c.ref_start)={max(b.ref_end, c.ref_start)}"
                 )
             # HOP is also appiled if a,b,c,d are on the same chr, but max(a,b,c,d) - min(a,b,c,d) > max_gap_size (max SV size check)
-            elif max(a.ref_start, b.ref_start, c.ref_start, d.ref_start) - min(
-                a.ref_start, b.ref_start, c.ref_start, d.ref_start
-            ) > max_gap_size:
+            elif (
+                max(a.ref_start, b.ref_start, c.ref_start, d.ref_start)
+                - min(a.ref_start, b.ref_start, c.ref_start, d.ref_start)
+                > max_gap_size
+            ):
                 tags.add(FOURRELATIONS.HOP)
                 log.debug(
                     f"HOP detected on same chromosome but large distance (>{max_gap_size}bp): a.ref_start={a.ref_start}, b.ref_start={b.ref_start}, c.ref_start={c.ref_start}, d.ref_start={d.ref_start}"
@@ -1135,7 +1159,7 @@ def possible_inversions_from_BNDs(
     # an inversion is present if there exists a 4-inv
     results: list[tuple[int, int, int, int]] = []
     for (a, b, c, d), x in fourrelations.items():
-        if FOURRELATIONS.INVERSION in x and not FOURRELATIONS.HOP in x:
+        if FOURRELATIONS.INVERSION in x and FOURRELATIONS.HOP not in x:
             # create a SVcomplex from the group
             results.append((a, b, c, d))
     return results
@@ -1312,6 +1336,7 @@ def possible_single_ended_breakends_from_BNDs(
 
 # endregion
 
+
 def parse_SVprimitives_to_SVpatterns(
     SVprimitives: list[SVprimitive],
     max_del_size: int = 500_000,
@@ -1362,7 +1387,9 @@ def parse_SVprimitives_to_SVpatterns(
 
     # 4-relations based parsing for inversions and complex SVs
     if len(breakends) == 4:
-        fourrelations = four_relations_of_group(group=breakends, max_gap_size=max_fourrelations_gap_size)
+        fourrelations = four_relations_of_group(
+            group=breakends, max_gap_size=max_fourrelations_gap_size
+        )
         log.debug(f"Four-relations: {fourrelations}")
 
         checks = [
@@ -1424,12 +1451,16 @@ def parse_SVprimitives_to_SVpatterns(
     # parse all leftover breakends to single ended BNDs or Adjacency BNDs
     unused_indices = set(range(len(breakends))) - used_indices
     if unused_indices:
-        result.extend(break_up_CPX(SVprimitives=breakends, unused_indices=unused_indices))
+        result.extend(
+            break_up_CPX(SVprimitives=breakends, unused_indices=unused_indices)
+        )
 
     return result
 
 
-def break_up_CPX(SVprimitives:list[SVprimitive], unused_indices:set[int]) -> list[SVpatternType]:
+def break_up_CPX(
+    SVprimitives: list[SVprimitive], unused_indices: set[int]
+) -> list[SVpatternType]:
     """Break up a complex SVpattern into multiple SVpatternAdjacency patterns that have each two
     connected break end sv primitives or into single ended breaks.
     The set of unused indices tells if two primitives are adjacent."""
@@ -1439,45 +1470,50 @@ def break_up_CPX(SVprimitives:list[SVprimitive], unused_indices:set[int]) -> lis
     # if they share the same alignmentID, the are on the same alignment fragment and not a novel adjacency.
     # if they cannot be paried with other breakends, they are single-ended breakends
     # the first and the last breakend can be single break ends
-    if not all (svp.sv_type == 3 or svp.sv_type == 4 for svp in SVprimitives):
-        raise ValueError("All SVprimitives must be of type BND to break up complex SVpatterns")
-        
+    if not all(svp.sv_type == 3 or svp.sv_type == 4 for svp in SVprimitives):
+        raise ValueError(
+            "All SVprimitives must be of type BND to break up complex SVpatterns"
+        )
+
     if not unused_indices:
         return []
-    
+
     result: list[SVpatternType] = []
     sorted_indices = sorted(unused_indices)
     paired_indices: set[int] = set()
-    
+
     # Iterate through consecutive pairs of unused indices
     for i in range(len(sorted_indices) - 1):
         idx_a = sorted_indices[i]
         idx_b = sorted_indices[i + 1]
-        
+
         # Skip if already paired
         if idx_a in paired_indices or idx_b in paired_indices:
             continue
-        
+
         svp_a = SVprimitives[idx_a]
         svp_b = SVprimitives[idx_b]
-        
+
         # Check if they form a novel adjacency:
         # 1. Both must be breakends (type 3 or 4)
         # 2. Must be consecutive indices (differ by 1)
         # 3. Must have different alignmentIDs
         if (abs(idx_b - idx_a) == 1) and svp_a.alignmentID != svp_b.alignmentID:
-            
             # Create a 2-breakend adjacency pattern
             result.append(SVpatternAdjacency(SVprimitives=[svp_a, svp_b]))
             paired_indices.update([idx_a, idx_b])
-            log.debug(f"Paired breakends at indices {idx_a}, {idx_b} into SVpatternAdjacency")
-    
+            log.debug(
+                f"Paired breakends at indices {idx_a}, {idx_b} into SVpatternAdjacency"
+            )
+
     # Handle unpaired breakends - create single breakends
     unpaired_indices = set(sorted_indices) - paired_indices
     for idx in sorted(unpaired_indices):
         result.append(SVpatternSingleBreakend(SVprimitives=[SVprimitives[idx]]))
-        log.debug(f"Created SVpatternSingleBreakend for unpaired breakend at index {idx}")
-    
+        log.debug(
+            f"Created SVpatternSingleBreakend for unpaired breakend at index {idx}"
+        )
+
     return result
 
 
@@ -1710,7 +1746,7 @@ def svpattern_name_to_class(class_name):
     """Convert a class name string back to the SVpattern class."""
     if class_name is None:
         return None
-    
+
     # Map class names to actual class objects
     class_map = {
         "SVpatternInsertion": SVpatternInsertion,
@@ -1721,10 +1757,10 @@ def svpattern_name_to_class(class_name):
         "SVpatternInversionDeletion": SVpatternInversionDeletion,
         "SVpatternInversionDuplication": SVpatternInversionDuplication,
     }
-    
+
     if class_name not in class_map:
         raise ValueError(f"Unknown SVpattern class name: {class_name}")
-    
+
     return class_map[class_name]
 
 
@@ -1805,37 +1841,47 @@ def write_svPatterns_to_db(
                             f"SVpattern at line {line_num} has no primitives, skipping"
                         )
                         continue
-                                    
+
                     # Serialize and check individual pattern size
                     pickled_pattern = pickle.dumps(converter.unstructure(svPattern))
                     svPattern_size = len(pickled_pattern)
-                    
+
                     if svPattern_size > MAX_SINGLE_PATTERN_SIZE_BYTES:
-                        log.warning(f"SVpattern {svPatternID} is very large ({float(svPattern_size) / 1_000_000.0:.2f} MB) and therefore needs to be skipped.")
+                        log.warning(
+                            f"SVpattern {svPatternID} is very large ({float(svPattern_size) / 1_000_000.0:.2f} MB) and therefore needs to be skipped."
+                        )
                         continue  # Skip overly large patterns
-                    
+
                     cache.append((
                         svPatternID,
                         consensusID,
                         crID,
                         pickled_pattern,
                     ))
-                    
+
                     # Update running cache size
                     total_cache_size += svPattern_size
                     pattern_counter += 1
 
                     # Write batch when cache exceeds size threshold
                     if total_cache_size >= MAX_CACHE_SIZE_BYTES:
-                        log.info(f"Writing batch of {len(cache)} SVpatterns to database (total size: {float(total_cache_size) / 1_000_000.0:.2f} MB)")
-                        
+                        log.info(
+                            f"Writing batch of {len(cache)} SVpatterns to database (total size: {float(total_cache_size) / 1_000_000.0:.2f} MB)"
+                        )
+
                         try:
                             c.executemany(query, cache)
                             conn.commit()
-                            log.info(f"Wrote batch of {len(cache)} SVpatterns to database with size {total_cache_size / 1_000_000.0:.2f} MB")
+                            log.info(
+                                f"Wrote batch of {len(cache)} SVpatterns to database with size {total_cache_size / 1_000_000.0:.2f} MB"
+                            )
                         except sqlite3.Error as e:
-                            log.error(f"Failed to write batch ending at line {line_num}: {e}")
-                            log.error(f"Total batch size: {total_cache_size / 1_000_000.0:.2f} MB")
+                            log.error(
+                                f"Failed to write batch ending at line {line_num}: {e}"
+                            )
+                            log.error(
+                                f"Total batch size: {total_cache_size / 1_000_000.0:.2f} MB"
+                            )
                             raise
                         finally:
                             log.info("Clearing cache after batch write")
@@ -1845,11 +1891,15 @@ def write_svPatterns_to_db(
                 except json.JSONDecodeError as e:
                     raise ValueError(f"Failed to parse JSON at line {line_num}: {e}")
                 except Exception as e:
-                    raise ValueError(f"Failed to process SVpattern with ID {svPatternID} at line {line_num}: {e}")
+                    raise ValueError(
+                        f"Failed to process SVpattern with ID {svPatternID} at line {line_num}: {e}"
+                    )
 
         # Write remaining records
         if len(cache) > 0:
-            log.info(f"Writing final batch of {len(cache)} SVpatterns (total size: {float(total_cache_size) / 1_000_000.0:.2f} MB)")
+            log.info(
+                f"Writing final batch of {len(cache)} SVpatterns (total size: {float(total_cache_size) / 1_000_000.0:.2f} MB)"
+            )
             c.executemany(query, cache)
             conn.commit()
             log.info(f"Wrote final batch of {len(cache)} SVpatterns to database")

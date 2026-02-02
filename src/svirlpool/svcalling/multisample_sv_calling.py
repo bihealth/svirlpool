@@ -218,7 +218,7 @@ def svPatterns_to_horizontally_merged_svComposites(
     svPatterns: list[SVpatterns.SVpatternType],
     sv_types: set[type[SVpatterns.SVpatternType]],
 ) -> list[SVcomposite]:
-    
+
     result: list[SVcomposite] = []
     if len(svPatterns) == 0:
         log.warning(f"No SVpatterns found in {svPatterns}. Returning empty list.")
@@ -228,10 +228,21 @@ def svPatterns_to_horizontally_merged_svComposites(
     _svPatterns = [svp for svp in svPatterns if type(svp) in sv_types]
     unsupported = [svp for svp in svPatterns if type(svp) not in sv_types]
     if unsupported:
-        log.warning(f"Skipping {len(unsupported)} unsupported SVpatterns during horizontal merging: {[type(svp).__name__ for svp in unsupported]}")
+        log.warning(
+            f"Skipping {len(unsupported)} unsupported SVpatterns during horizontal merging: {[type(svp).__name__ for svp in unsupported]}"
+        )
         unsupported.clear()
-    indels = [svp for svp in _svPatterns if type(svp) in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)]
-    others = [svp for svp in _svPatterns if type(svp) not in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)]
+    indels = [
+        svp
+        for svp in _svPatterns
+        if type(svp) in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)
+    ]
+    others = [
+        svp
+        for svp in _svPatterns
+        if type(svp)
+        not in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)
+    ]
     _svPatterns.clear()
 
     # convert other svPatterns directly to svComposites
@@ -241,12 +252,10 @@ def svPatterns_to_horizontally_merged_svComposites(
     # sort svPatterns by consensusID and read_start
     indels = sorted(indels, key=lambda x: (x.consensusID, x.read_start))
 
-    groups = groupby(
-        indels, key=lambda x: x.consensusID
-    )
+    groups = groupby(indels, key=lambda x: x.consensusID)
 
     # loop svPatterns of each group and connect them if they share at least one repeatID
-    for (_consensusID, group) in groups:
+    for _consensusID, group in groups:
         group = list(group)
         if len(group) == 1:
             result.append(SVcomposite.from_SVpatterns(group))
@@ -1271,21 +1280,27 @@ def merge_breakends(
     return result
 
 
-def _complexes_overlap(complex_a: SVcomposite, complex_b: SVcomposite, near: int) -> bool:
+def _complexes_overlap(
+    complex_a: SVcomposite, complex_b: SVcomposite, near: int
+) -> bool:
     """Check if two complex SVcomposites overlap in all their breakends within a given tolerance.
     It is assumed that each sv complex is composed of exactly one sv pattern at this point."""
     if len(complex_a.svPatterns) != 1 or len(complex_b.svPatterns) != 1:
         raise ValueError(
             f"_complexes_overlap: SVcomposites must contain exactly one SVpattern each to check for overlap. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
         )
-    
-    primitives_a = sorted(complex_a.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start))
-    primitives_b = sorted(complex_b.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start))
+
+    primitives_a = sorted(
+        complex_a.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start)
+    )
+    primitives_b = sorted(
+        complex_b.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start)
+    )
 
     if len(primitives_a) != len(primitives_b):
         return False  # Different number of breakends, cannot overlap
 
-    for prim_a, prim_b in zip(primitives_a, primitives_b):
+    for prim_a, prim_b in zip(primitives_a, primitives_b, strict=True):
         if prim_a.chr != prim_b.chr:
             return False  # Different chromosomes, cannot overlap
         start_a, end_a = sorted((prim_a.ref_start, prim_a.ref_end))
@@ -1322,28 +1337,28 @@ def _adjacencies_kmer_similarity(
     # this is not necessarily in the same order as the sv primitves sorted by reference chr, start_pos.
     # so it is necessary to keep track of the indexes.
     # sort sv primitives by chr, start_pos to get a consistent order. keep track of their old ID, so they can be mapped back to the sequences.
-    
+
     # generate tuples of (original sv primtive index, sv primitive, sequence context)
     data_a = sorted(
         [
             (idx, sv_prim, complex_a.svPatterns[0].get_sequence_context(svp_index=idx))
             for idx, sv_prim in enumerate(complex_a.svPatterns[0].SVprimitives)
-        ],        key=lambda x: (x[1].chr, x[1].ref_start),
+        ],
+        key=lambda x: (x[1].chr, x[1].ref_start),
     )
     data_b = sorted(
         [
             (idx, sv_prim, complex_b.svPatterns[0].get_sequence_context(svp_index=idx))
             for idx, sv_prim in enumerate(complex_b.svPatterns[0].SVprimitives)
-        ],        key=lambda x: (x[1].chr, x[1].ref_start),
+        ],
+        key=lambda x: (x[1].chr, x[1].ref_start),
     )
     # now calculate kmer similarity for each group
     group_a = [seq for _, _, seq in data_a]
     group_b = [seq for _, _, seq in data_b]
-    similarity: float = kmer_similarity_of_groups(
-        group_a=group_a, group_b=group_b
-    )
+    similarity: float = kmer_similarity_of_groups(group_a=group_a, group_b=group_b)
     return similarity >= min_kmer_overlap
-    
+
 
 def merge_adjacencies(
     adjacencies: list[SVcomposite],
@@ -1357,7 +1372,9 @@ def merge_adjacencies(
     # if two adjacencies match, connect them. Every connected component will be merged into one complex at the end.
     for i in range(len(adjacencies)):
         for j in range(i + 1, len(adjacencies)):
-            if _complexes_overlap(complex_a=adjacencies[i], complex_b=adjacencies[j], near=near):
+            if _complexes_overlap(
+                complex_a=adjacencies[i], complex_b=adjacencies[j], near=near
+            ):
                 if _adjacencies_kmer_similarity(
                     complex_a=adjacencies[i],
                     complex_b=adjacencies[j],
@@ -1389,6 +1406,7 @@ def merge_adjacencies(
         )
 
     return result
+
 
 # %%
 
@@ -1458,6 +1476,7 @@ def generate_svComposites_from_dbs(
 
     return svComposites
 
+
 def merge_svComposites_across_chromosomes(
     svComposites: list[SVcomposite],
     apriori_size_difference_fraction_tolerance: float,
@@ -1471,11 +1490,13 @@ def merge_svComposites_across_chromosomes(
     This function processes all chromosomes sequentially.
     """
     log.debug(f"Processing {len(svComposites)} SVcomposites across chromosomes")
-    
+
     # build overlap trees for all chromosomes
     overlap_trees: dict[str, IntervalTree] = defaultdict(IntervalTree)
     for idx, svComposite in enumerate(svComposites):
-        for svprimitive in svComposite.svPatterns[0].SVprimitives: # assuming there is only one sv pattern per sv composite at this point
+        for svprimitive in (
+            svComposite.svPatterns[0].SVprimitives
+        ):  # assuming there is only one sv pattern per sv composite at this point
             chr = svprimitive.chr
             start = svprimitive.ref_start
             end = svprimitive.ref_end
@@ -1487,9 +1508,9 @@ def merge_svComposites_across_chromosomes(
             if start < 0:
                 start = 0
             overlap_trees[chr].addi(start, end, {idx})
-    log.debug(f"Merging overlap trees for all chromosomes")
+    log.debug("Merging overlap trees for all chromosomes")
     uf = UnionFind(range(len(svComposites)))
-    
+
     for _chr_name, tree in overlap_trees.items():
         tree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
 
@@ -1500,12 +1521,14 @@ def merge_svComposites_across_chromosomes(
                 for i in range(len(indices)):
                     for j in range(i + 1, len(indices)):
                         uf.union_by_name(indices[i], indices[j])
-    
+
     # vertical merging
     connected_components = uf.get_connected_components(allow_singletons=True)
     merged_svComposites = []
-    log.debug(f"Vertically merging {len(connected_components)} groups across chromosomes")
-    for cc in tqdm(connected_components, desc=f"All Chromosomes"):
+    log.debug(
+        f"Vertically merging {len(connected_components)} groups across chromosomes"
+    )
+    for cc in tqdm(connected_components, desc="All Chromosomes"):
         if verbose:
             log.info(f"Merging group with {len(cc)} svComposites: {cc}")
         svComposite_group = [svComposites[idx] for idx in cc]
@@ -1531,8 +1554,7 @@ def merge_svComposites_across_chromosomes(
         f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across chromosomes"
     )
     return merged_svComposites
-    
-        
+
 
 def merge_svComposites_for_chromosome(
     chr_name: str,
@@ -1621,6 +1643,7 @@ def merge_svComposites_for_chromosome(
         f"Chromosome {chr_name}: Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)}"
     )
     return merged_svComposites
+
 
 def merge_svComposites(
     svComposites: list[SVcomposite],
@@ -1717,14 +1740,16 @@ def merge_svComposites(
 
     # cpx_groups can jump across chromosomes, so they cannot be parallelized by chromosome.
     # they are merged here sequentially.
-    merged_svComposites.extend(merge_svComposites_across_chromosomes(
-        svComposites=cpx_groups,
-        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-        max_cohens_d=max_cohens_d,
-        near=near,
-        min_kmer_overlap=min_kmer_overlap,
-        verbose=verbose,
-    ))
+    merged_svComposites.extend(
+        merge_svComposites_across_chromosomes(
+            svComposites=cpx_groups,
+            apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+            max_cohens_d=max_cohens_d,
+            near=near,
+            min_kmer_overlap=min_kmer_overlap,
+            verbose=verbose,
+        )
+    )
 
     log.info(
         f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across all chromosomes."
@@ -1853,7 +1878,9 @@ class SVcall:
             # For BND records, alt_seq contains the pre-formatted ALT field
             # Replace the placeholder "N" with the actual reference base
             ref_str = refbase
-            alt_str = alt_seq.replace("N", refbase) if isinstance(alt_seq, str) else refbase
+            alt_str = (
+                alt_seq.replace("N", refbase) if isinstance(alt_seq, str) else refbase
+            )
         else:
             # Normal handling for other SV types
             use_symbolic = (
@@ -1889,22 +1916,21 @@ def get_ref_reads_from_covtrees(
     start: int,
     end: int,
     covtrees: dict[str, dict[str, IntervalTree]],
-    min_radius:int=1,
+    min_radius: int = 1,
 ) -> set[int]:
     if end < start:
         raise ValueError(
             f"get_ref_reads_from_covtrees: end {end} is less than start {start} for sample {samplename} at {chrname}:{start}-{end}."
         )
     min_radius = abs(min_radius)
-    if end-start < min_radius * 2:
+    if end - start < min_radius * 2:
         difference = min_radius * 2 - (end - start)
         start -= floor(difference * 0.5)
         end += ceil(difference * 0.5)
         if start < 0:
             start = 0
     all_reads: set[int] = {
-        int(it.data)
-        for it in covtrees[samplename][chrname][start:end]
+        int(it.data) for it in covtrees[samplename][chrname][start:end]
     }
     return all_reads
 
@@ -1917,16 +1943,14 @@ def genotype_of_sample(
     raw_alt_reads: set[int],
     covtrees: dict[str, dict[str, IntervalTree]],
     cn_tracks: dict[str, dict[str, IntervalTree]],
-    min_radius:int = 1,
+    min_radius: int = 1,
 ) -> Genotype:
-    genotype:Genotype
+    genotype: Genotype
     if chrname not in covtrees.get(samplename, {}):
         log.warning(
             f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree for sample {samplename}. Assigning 0/0 genotype."
         )
-        genotype = create_wild_type_genotype(
-            samplename=samplename, total_coverage=0
-        )
+        genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
         return genotype
     all_reads: set[int] = get_ref_reads_from_covtrees(
         samplename=samplename,
@@ -1953,13 +1977,11 @@ def genotype_of_sample(
         log.warning(
             f"SVcalls_from_SVcomposite: No ref/alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
         )
-        genotype = create_wild_type_genotype(
-            samplename=samplename, total_coverage=0
-        )
+        genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
         return genotype
 
     # Query copy number for this locus from CN tracks
-    copy_number : int = 2  # Default diploid - if no copy number track is available
+    copy_number: int = 2  # Default diploid - if no copy number track is available
     if samplename in cn_tracks and chrname in cn_tracks[samplename]:
         try:
             # Query overlapping intervals from the CN track IntervalTree
@@ -2015,7 +2037,9 @@ def genotype_of_sample(
 def SVcalls_from_SVcomposite(
     svComposite: SVcomposite,
     covtrees: dict[str, dict[str, IntervalTree]],
-    cn_tracks: dict[str, dict[str, IntervalTree]],  # saplename -> chrname -> IntervalTree with copy number
+    cn_tracks: dict[
+        str, dict[str, IntervalTree]
+    ],  # saplename -> chrname -> IntervalTree with copy number
     find_leftmost_reference_position: bool,
     symbolic_threshold: int,
 ) -> list[SVcall]:
@@ -2023,8 +2047,8 @@ def SVcalls_from_SVcomposite(
     #   have one chr, start, end on the reference
     # inter-alignment fragment variants (interrupted locus), e.g translocations, break points
     #   have multiple chr, start, end on the reference
-    
-    if not svComposite.sv_type in SUPPORTED_SV_TYPES:
+
+    if svComposite.sv_type not in SUPPORTED_SV_TYPES:
         log.warning(
             f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} is not supported for SVcall generation. Supported types are: {', '.join(SUPPORTED_SV_TYPE_STRINGS)}"
         )
@@ -2033,100 +2057,117 @@ def SVcalls_from_SVcomposite(
         svComposite.get_alt_readnamehashes_per_sample()
     )  # {samplename: {readname, ...}}
 
-    if issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion) \
-            or issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion) \
-            or issubclass(svComposite.sv_type, SVpatterns.SVpatternInversion) \
-            or issubclass(svComposite.sv_type, SVpatterns.SVpatternSingleBreakend):
-        return [svcall_object_from_svcomposite(
-            svComposite=svComposite,
-            covtrees=covtrees,
-            cn_tracks=cn_tracks,
-            find_leftmost_reference_position=find_leftmost_reference_position,
-            all_alt_reads=all_alt_reads)]
+    if (
+        issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion)
+        or issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion)
+        or issubclass(svComposite.sv_type, SVpatterns.SVpatternInversion)
+        or issubclass(svComposite.sv_type, SVpatterns.SVpatternSingleBreakend)
+    ):
+        return [
+            svcall_object_from_svcomposite(
+                svComposite=svComposite,
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+                find_leftmost_reference_position=find_leftmost_reference_position,
+                all_alt_reads=all_alt_reads,
+            )
+        ]
     elif issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
         return svcall_objects_from_Adjacencies(
             svComposite=svComposite,
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             all_alt_reads=all_alt_reads,
-            symbolic_threshold=symbolic_threshold)
+            symbolic_threshold=symbolic_threshold,
+        )
     else:
         log.warning(
             f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} in regions {svComposite.get_regions()} is not yet implemented for SVcall generation."
         )
         return []
 
+
 def svcall_object_from_svcomposite(
-        svComposite:SVcomposite,
-        covtrees:dict[str, dict[str, IntervalTree]],
-        cn_tracks:dict[str, dict[str, IntervalTree]],
-        find_leftmost_reference_position:bool,
-        all_alt_reads:dict[str, set[int]]) -> SVcall:
+    svComposite: SVcomposite,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    find_leftmost_reference_position: bool,
+    all_alt_reads: dict[str, set[int]],
+) -> SVcall:
     chrname, start, end = get_svComposite_interval_on_reference(
-            svComposite=svComposite,
-            find_leftmost_reference_position=find_leftmost_reference_position,
-        )
+        svComposite=svComposite,
+        find_leftmost_reference_position=find_leftmost_reference_position,
+    )
     svlen: int = abs(svComposite.get_size())
-        # Get read IDs supporting the SV. arguments: samplename, chrname, start, end, covtree
+    # Get read IDs supporting the SV. arguments: samplename, chrname, start, end, covtree
     consensusIDs: list[str] = list({
-            svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
-        })
-        
-        # 
+        svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
+    })
+
+    #
     genotypes: dict[str, Genotype] = {
-            samplename:genotype_of_sample(
-                samplename=samplename,
-                chrname=chrname,
-                start=start,
-                end=end,
-                raw_alt_reads=all_alt_reads[samplename],
-                covtrees=covtrees,
-                cn_tracks=cn_tracks,
-            ) for samplename in all_alt_reads.keys()
-        }
-        # start and end need to be adjusted based on sv_type and need to be determined for the whole sv composite   
-        
+        samplename: genotype_of_sample(
+            samplename=samplename,
+            chrname=chrname,
+            start=start,
+            end=end,
+            raw_alt_reads=all_alt_reads[samplename],
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+        )
+        for samplename in all_alt_reads.keys()
+    }
+    # start and end need to be adjusted based on sv_type and need to be determined for the whole sv composite
+
     if issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion):
         end = start + svlen
     elif issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion):
         end = start + 1
 
-    alt_seq: bytes|None = pickle.dumps(svComposite.get_alt_sequence()) if svComposite.get_alt_sequence() else None
-        
-    ref_seq: bytes|None = pickle.dumps(svComposite.get_ref_sequence()) if svComposite.get_ref_sequence() else None
+    alt_seq: bytes | None = (
+        pickle.dumps(svComposite.get_alt_sequence())
+        if svComposite.get_alt_sequence()
+        else None
+    )
 
-        # quality filters
+    ref_seq: bytes | None = (
+        pickle.dumps(svComposite.get_ref_sequence())
+        if svComposite.get_ref_sequence()
+        else None
+    )
+
+    # quality filters
     pass_altreads: bool = (
-            max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
-        )
+        max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
+    )
     pass_gq = True
     passing: bool = pass_altreads and pass_gq
 
-        # call is not precise if it is in a repeat. Check for repeatIDs
+    # call is not precise if it is in a repeat. Check for repeatIDs
     precise: bool = not bool(
-            sum(
-                len(svPrimitive.repeatIDs)
-                for svPattern in svComposite.svPatterns
-                for svPrimitive in svPattern.SVprimitives
-            )
+        sum(
+            len(svPrimitive.repeatIDs)
+            for svPattern in svComposite.svPatterns
+            for svPrimitive in svPattern.SVprimitives
         )
+    )
 
     return SVcall(
-                genotypes=genotypes,
-                passing=passing,
-                chrname=chrname,
-                end=end,
-                start=start,
-                svtype=svComposite.sv_type.get_sv_type(),
-                svlen=svlen,
-                pass_altreads=pass_altreads,
-                pass_gq=pass_gq,
-                precise=precise,
-                mateid="",
-                consensusIDs=consensusIDs,
-                ref_sequence=ref_seq,
-                alt_sequence=alt_seq,
-            )
+        genotypes=genotypes,
+        passing=passing,
+        chrname=chrname,
+        end=end,
+        start=start,
+        svtype=svComposite.sv_type.get_sv_type(),
+        svlen=svlen,
+        pass_altreads=pass_altreads,
+        pass_gq=pass_gq,
+        precise=precise,
+        mateid="",
+        consensusIDs=consensusIDs,
+        ref_sequence=ref_seq,
+        alt_sequence=alt_seq,
+    )
 
 
 def format_bnd_alt_field(
@@ -2139,11 +2180,11 @@ def format_bnd_alt_field(
     use_symbolic: bool = False,
     sequence_id: str | None = None,
     insertion_start: int = 1,
-    insertion_end: int | None = None
+    insertion_end: int | None = None,
 ) -> str:
     """
     Format the ALT field for a BND (breakend) record according to VCF specification.
-    
+
     Args:
         ref_base: The reference base at this breakend position (REF field, typically 'N' or actual base)
         mate_chr: Chromosome of the mate breakend
@@ -2155,21 +2196,21 @@ def format_bnd_alt_field(
         sequence_id: ID of the inserted sequence (e.g., "ctg1") when using symbolic notation
         insertion_start: Start position in the symbolic sequence (1-based, default=1)
         insertion_end: End position in the symbolic sequence (1-based); if None, uses full length
-        
+
     Returns:
         Formatted ALT field string according to VCF BND specification
-        
+
     The four cases are:
     - t[p[  : piece extending to the right of p is joined after t
     - t]p]  : reverse comp piece extending left of p is joined after t
     - ]p]t  : piece extending to the left of p is joined before t
     - [p[t  : reverse comp piece extending right of p is joined before t
-    
+
     Where:
     - t = ref_base + inserted_sequence (replacement string) or ref_base for symbolic
     - p = mate_chr:mate_pos (mate position) or <sequence_id>:pos for symbolic insertions
     - sv_type: 3 = BNDL (left break), 4 = BNDR (right break)
-        
+
     For large insertions (use_symbolic=True), uses symbolic notation like:
     - C[<ctg1>:1[  (reference to start of contig)
     - ]<ctg1>:329]A  (reference to end of contig)
@@ -2189,13 +2230,13 @@ def format_bnd_alt_field(
         t = ref_base + inserted_sequence
         # Regular mate position
         p = f"{mate_chr}:{mate_pos}"
-    
+
     # Determine the ALT format based on sv_type and orientation
     # sv_type 3 = BNDL (left breakend), sv_type 4 = BNDR (right breakend)
-    
+
     if sv_type == 4:  # BNDR (right breakend)
         if not aln_is_reverse:
-            # Right break, forward strand: t[p[ 
+            # Right break, forward strand: t[p[
             # Piece extending to the right of p is joined after t
             return f"{t}[{p}["
         else:
@@ -2212,15 +2253,18 @@ def format_bnd_alt_field(
             # Reverse comp piece extending right of p is joined before t
             return f"[{p}[{t}"
     else:
-        raise ValueError(f"Invalid sv_type for BND: {sv_type}. Expected 3 (BNDL) or 4 (BNDR)")
+        raise ValueError(
+            f"Invalid sv_type for BND: {sv_type}. Expected 3 (BNDL) or 4 (BNDR)"
+        )
 
 
 def svcall_objects_from_Adjacencies(
-        svComposite:SVcomposite,
-        covtrees:dict[str, dict[str, IntervalTree]],
-        cn_tracks:dict[str, dict[str, IntervalTree]],
-        all_alt_reads:dict[str, set[int]],
-        symbolic_threshold:int) -> list[SVcall]:
+    svComposite: SVcomposite,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    all_alt_reads: dict[str, set[int]],
+    symbolic_threshold: int,
+) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
     """
@@ -2228,60 +2272,62 @@ def svcall_objects_from_Adjacencies(
         raise ValueError(
             f"svcall_objects_from_Adjacencies: svComposite of type {svComposite.sv_type.__name__} is not of type SVpatternAdjacency."
         )
-    
+
     # Collect consensusIDs from all SVpatterns in the composite
-    consensusIDs: list[str] = list({svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns})
-    
+    consensusIDs: list[str] = list({
+        svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
+    })
+
     # Get the representative SVpattern (with highest support)
     representative_pattern = svComposite.get_representative_SVpattern()
-    
+
     # Verify it's an Adjacency pattern (should always be true due to earlier check)
     if not isinstance(representative_pattern, SVpatterns.SVpatternAdjacency):
         raise ValueError(
             f"Representative pattern is not SVpatternAdjacency, got {type(representative_pattern).__name__}"
         )
-    
+
     # Adjacency patterns must have exactly 2 SVprimitives (the two break ends)
     if len(representative_pattern.SVprimitives) != 2:
         raise ValueError(
             f"SVpatternAdjacency must have exactly 2 SVprimitives, got {len(representative_pattern.SVprimitives)}"
         )
-    
+
     # Extract the two break ends' reference positions
     svprimitive_0 = representative_pattern.SVprimitives[0]
     svprimitive_1 = representative_pattern.SVprimitives[1]
-    
+
     # Break end 0 location
     chr0 = svprimitive_0.chr
     start0 = svprimitive_0.ref_start
     end0 = start0 + 1  # Break ends are essentially point locations, so end = start + 1
-    
+
     # Break end 1 location
     chr1 = svprimitive_1.chr
     start1 = svprimitive_1.ref_start
     end1 = start1 + 1
-    
+
     # Get the inserted sequence between the two break ends
     inserted_sequence = representative_pattern.get_sequence()
     if inserted_sequence is None:
         inserted_sequence = ""
-    
+
     # svlen is the length of the inserted sequence (or 1 if none)
     svlen: int = len(inserted_sequence) if inserted_sequence else 1
-    
+
     # ref_seq is not important for adjacencies
     ref_seq: bytes | None = None
-    
+
     # Determine if we should use symbolic notation for large insertions
     # Using the symbolic_threshold parameter passed from command-line arguments
     use_symbolic = len(inserted_sequence) > symbolic_threshold
-    
+
     # Generate a sequence ID for symbolic notation if needed
     sequence_id: str | None = None
     if use_symbolic:
         # Create a unique sequence ID based on the SVcomposite
         sequence_id = f"ctg_{representative_pattern.samplename}_{representative_pattern.consensusID}_{svprimitive_0.svID}_{svprimitive_1.svID}"
-    
+
     # Format the ALT field for each breakend according to VCF BND specification
     # Note: We use "N" as placeholder for ref_base since actual base will be retrieved in to_vcf_line
     # Breakend 0 points to breakend 1 (or to start of insertion contig)
@@ -2295,9 +2341,9 @@ def svcall_objects_from_Adjacencies(
         use_symbolic=use_symbolic,
         sequence_id=sequence_id,
         insertion_start=1,
-        insertion_end=len(inserted_sequence) if use_symbolic else None
+        insertion_end=len(inserted_sequence) if use_symbolic else None,
     )
-    
+
     # Breakend 1 points to breakend 0 (or to end of insertion contig)
     alt_str_1 = format_bnd_alt_field(
         ref_base="N",
@@ -2309,13 +2355,13 @@ def svcall_objects_from_Adjacencies(
         use_symbolic=use_symbolic,
         sequence_id=sequence_id,
         insertion_start=1,
-        insertion_end=len(inserted_sequence) if use_symbolic else None
+        insertion_end=len(inserted_sequence) if use_symbolic else None,
     )
-    
+
     # Store the formatted ALT strings as pickled bytes
     alt_seq_0: bytes = pickle.dumps(alt_str_0)
     alt_seq_1: bytes = pickle.dumps(alt_str_1)
-    
+
     # Generate genotypes for all samples
     # For break end 0
     genotypes_0: dict[str, Genotype] = {
@@ -2327,9 +2373,10 @@ def svcall_objects_from_Adjacencies(
             raw_alt_reads=all_alt_reads[samplename],
             covtrees=covtrees,
             cn_tracks=cn_tracks,
-        ) for samplename in all_alt_reads.keys()
+        )
+        for samplename in all_alt_reads.keys()
     }
-    
+
     # For break end 1
     genotypes_1: dict[str, Genotype] = {
         samplename: genotype_of_sample(
@@ -2340,18 +2387,23 @@ def svcall_objects_from_Adjacencies(
             raw_alt_reads=all_alt_reads[samplename],
             covtrees=covtrees,
             cn_tracks=cn_tracks,
-        ) for samplename in all_alt_reads.keys()
+        )
+        for samplename in all_alt_reads.keys()
     }
-    
+
     # Quality filters (same logic as svcall_object_from_svcomposite)
     # We use the maximum of both break ends for pass_altreads
-    max_var_reads_0 = max(genotypes_0.items(), key=lambda x: x[1].var_reads)[1].var_reads
-    max_var_reads_1 = max(genotypes_1.items(), key=lambda x: x[1].var_reads)[1].var_reads
+    max_var_reads_0 = max(genotypes_0.items(), key=lambda x: x[1].var_reads)[
+        1
+    ].var_reads
+    max_var_reads_1 = max(genotypes_1.items(), key=lambda x: x[1].var_reads)[
+        1
+    ].var_reads
     pass_altreads: bool = max(max_var_reads_0, max_var_reads_1) >= 3
-    
+
     pass_gq = True
     passing: bool = pass_altreads and pass_gq
-    
+
     # Check if call is precise (not in a repeat)
     precise: bool = not bool(
         sum(
@@ -2360,15 +2412,15 @@ def svcall_objects_from_Adjacencies(
             for svPrimitive in svPattern.SVprimitives
         )
     )
-    
+
     # Generate unique mateid base from representative pattern
     # Format: samplename.consensusID.svID_0.svID_1
     mateid_base = f"{representative_pattern.samplename}.{representative_pattern.consensusID}.{svprimitive_0.svID}.{svprimitive_1.svID}"
-    
+
     # Create mateid for each break end (they reference each other)
     mateid_0 = f"{mateid_base}.0"
     mateid_1 = f"{mateid_base}.1"
-    
+
     # Create SVcall for break end 0
     svcall_0 = SVcall(
         genotypes=genotypes_0,
@@ -2387,7 +2439,7 @@ def svcall_objects_from_Adjacencies(
         alt_sequence=alt_seq_0,  # BND-formatted ALT field for breakend 0
         sequence_id=sequence_id,  # Set if using symbolic notation for large insertions
     )
-    
+
     # Create SVcall for break end 1
     svcall_1 = SVcall(
         genotypes=genotypes_1,
@@ -2406,10 +2458,8 @@ def svcall_objects_from_Adjacencies(
         alt_sequence=alt_seq_1,  # BND-formatted ALT field for breakend 1
         sequence_id=sequence_id,  # Set if using symbolic notation for large insertions
     )
-    
-    return [svcall_0, svcall_1]
-        
 
+    return [svcall_0, svcall_1]
 
 
 def get_svComposite_interval_on_reference(
@@ -2435,14 +2485,14 @@ def get_svComposite_interval_on_reference(
         else:
             weight = len(svPattern.get_supporting_reads()) * svPattern.get_size()
         weighted_regions.append((region, weight))
-    
+
     time_end = datetime.now()
     time_diff = (time_end - time_start).total_seconds()
     if time_diff > 2:
         log.warning(
             f"get_svComposite_interval_on_reference took {time_diff} seconds for svComposite: {svComposite}"
         )
-    
+
     # pick the winning region
     if find_leftmost_reference_position:
         return min(
@@ -2665,11 +2715,14 @@ def reference_bases_by_merged_svComposites(
     log.info(f"Collecting positions from {len(svComposites)} SVcomposites...")
     # print how much memory scComposites take
     from sys import getsizeof
+
     log.info(f"Size of svComposites in memory: {getsizeof(svComposites)} bytes")
-    
+
     dict_reference_bases: dict[str, str] = {}
-    
-    with tempfile.TemporaryDirectory(dir=tmp_dir_path, delete= True if tmp_dir_path is None else False) as temp_dir_str:
+
+    with tempfile.TemporaryDirectory(
+        dir=tmp_dir_path, delete=True if tmp_dir_path is None else False
+    ) as temp_dir_str:
         temp_dir = Path(temp_dir_str)
         tmp_regions_path = temp_dir / "regions.txt"
         ref_bases_path = temp_dir / "ref_bases.txt"
@@ -2677,13 +2730,14 @@ def reference_bases_by_merged_svComposites(
         # 1. Collect unique positions and write to regions file formatted for samtools
         #    Use a set to avoid duplicates without invoking 'uniq' command
         positions = set()
-        for i, svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
+        for svComposite in tqdm(svComposites, desc="Collecting positions"):
             chrname, start, end = get_svComposite_interval_on_reference(
                 svComposite=svComposite,
-                find_leftmost_reference_position=find_leftmost_reference_position)
+                find_leftmost_reference_position=find_leftmost_reference_position,
+            )
             # Store 0-based start
             positions.add((str(chrname), int(start)))
-        
+
         # Sort positions by chromosome and then position
         sorted_positions = sorted(positions)
 
@@ -2693,25 +2747,26 @@ def reference_bases_by_merged_svComposites(
                 # region start is the same as region end for a single base: chr:pos-pos
                 pos_1 = start_0 + 1
                 f.write(f"{chrname}:{pos_1}-{pos_1}\n")
-        
+
         # 2. Retrieve reference bases with samtools
         cmd_faidx = f"samtools faidx --region-file {tmp_regions_path} {str(reference)}"
         log.info("Retrieving reference bases with samtools faidx...")
-        
+
         with open(ref_bases_path, "w") as f_out:
             process_faidx = subprocess.Popen(
-                split(cmd_faidx),
-                stdout=f_out,
-                stderr=subprocess.PIPE,
-                text=True
+                split(cmd_faidx), stdout=f_out, stderr=subprocess.PIPE, text=True
             )
             _, stderr_faidx = process_faidx.communicate()
             if process_faidx.returncode != 0:
-                log.error(f"samtools faidx failed with return code {process_faidx.returncode}")
+                log.error(
+                    f"samtools faidx failed with return code {process_faidx.returncode}"
+                )
                 log.error(f"cmd_faidx: {cmd_faidx}")
                 log.error(f"stderr: {stderr_faidx}")
-                raise subprocess.CalledProcessError(process_faidx.returncode, cmd_faidx, stderr=stderr_faidx)
-        
+                raise subprocess.CalledProcessError(
+                    process_faidx.returncode, cmd_faidx, stderr=stderr_faidx
+                )
+
         # 3. Parse the results
         log.info("Parsing retrieved reference bases...")
         with open(ref_bases_path, "r") as f:
@@ -2726,26 +2781,31 @@ def reference_bases_by_merged_svComposites(
                 elif current_header:
                     # This is the sequence line
                     if ":" in current_header and "-" in current_header:
-                        chrom_pos_str = current_header.split("-")[0]  # Get "chr1:123" part
+                        chrom_pos_str = current_header.split("-")[
+                            0
+                        ]  # Get "chr1:123" part
                         try:
                             # Convert 1-based header coordinate back to 0-based key
                             r_chr, r_start_str = chrom_pos_str.rsplit(":", 1)
                             r_start_1 = int(r_start_str)
                             # Key format: chr:start (0-based)
                             key = f"{r_chr}:{r_start_1 - 1}"
-                            
+
                             base = line.upper()
                             if len(base) == 1:
                                 dict_reference_bases[key] = base
                             else:
-                                log.warning(f"Expected single base at {chrom_pos_str}, got '{base}'")
+                                log.warning(
+                                    f"Expected single base at {chrom_pos_str}, got '{base}'"
+                                )
                         except ValueError:
-                            log.warning(f"Failed to parse header or key: {current_header}")
-                            
+                            log.warning(
+                                f"Failed to parse header or key: {current_header}"
+                            )
+
                     current_header = None  # Reset for next entry
     log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
     return dict_reference_bases
-
 
     # positions = []
     # for i,svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
@@ -2758,19 +2818,18 @@ def reference_bases_by_merged_svComposites(
     #         # report size of positions in bytes
     #         log.info(f"Collected {len(positions)} positions, size in memory: {getsizeof(positions)} bytes")
 
-
     # log.info(f"Collected {len(positions)} positions, deduplicating...")
     # # Use dict.fromkeys for deduplication without creating intermediate sets
     # unique_positions = list(dict.fromkeys(positions))
     # positions.clear()  # Free memory immediately
-    
+
     # log.info(f"Processing {len(unique_positions)} unique positions")
-    
+
     # if not unique_positions:
     #     return {}
 
     # dict_reference_bases: dict[str, str] = {}
-    
+
     # with tempfile.NamedTemporaryFile(
     #     mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
     # ) as tmp_regions:
@@ -2778,13 +2837,13 @@ def reference_bases_by_merged_svComposites(
     #     for chrname, start in unique_positions:
     #         print(f"{chrname}\t{start}\t{start+1}", file=tmp_regions)
     #     tmp_regions.flush()
-        
+
     #     # Clear this list as we don't need it anymore
     #     unique_positions.clear()
-        
+
     #     cmd_faidx = f"samtools faidx --region-file {tmp_regions.name} {str(reference)}"
     #     log.info("Retrieving reference bases with samtools faidx (streaming)...")
-        
+
     #     # Stream the output instead of loading it all into memory
     #     process = subprocess.Popen(
     #         split(cmd_faidx),
@@ -2793,22 +2852,22 @@ def reference_bases_by_merged_svComposites(
     #         text=True,
     #         bufsize=1  # Line buffered
     #     )
-        
+
     #     if process.stdout is None:
     #         raise RuntimeError("Failed to open samtools faidx stdout pipe.")
-        
+
     #     current_header = None
     #     line_count = 0
-        
+
     #     for line in process.stdout:
     #         line_count += 1
     #         if line_count % 100000 == 0:
     #             log.info(f"Processed {line_count} lines, collected {len(dict_reference_bases)} bases")
-            
+
     #         line = line.strip()
     #         if not line:
     #             continue
-                
+
     #         if line.startswith(">"):
     #             # Parse header line like ">chr1:123-124"
     #             current_header = line[1:]  # Remove '>'
@@ -2817,25 +2876,25 @@ def reference_bases_by_merged_svComposites(
     #             if ":" in current_header and "-" in current_header:
     #                 chrom_pos = current_header.split("-")[0]  # Get "chr1:123" part
     #                 base = line.upper()
-                    
+
     #                 if len(base) == 1:
     #                     dict_reference_bases[chrom_pos] = base
     #                 else:
     #                     log.warning(f"Expected single base at {chrom_pos}, got '{base}'")
-                
+
     #             current_header = None  # Reset for next entry
-        
+
     #     # Wait for process to complete
     #     stderr_output = process.stderr.read()
     #     return_code = process.wait()
-        
+
     #     if return_code != 0:
     #         log.error(f"samtools faidx failed with return code {return_code}")
     #         log.error(f"stderr: {stderr_output}")
     #         raise subprocess.CalledProcessError(return_code, cmd_faidx, stderr=stderr_output)
-        
+
     #     log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
-    
+
     # return dict_reference_bases
 
 
@@ -2958,8 +3017,7 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import \
-        load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(
@@ -3079,7 +3137,7 @@ def multisample_sv_calling(
         raise FileNotFoundError(
             f"The following input files do not exist: {', '.join(missing_files)}"
         )
-    
+
     # Create covtrees - either real or dummy uniform coverage
     if skip_covtrees:
         log.info("Skipping covtree computation, using uniform coverage of 30")
@@ -3145,6 +3203,7 @@ def multisample_sv_calling(
         )
         # just save as pickle
         import pickle
+
         with open(Path(tmp_dir_path) / "all_svComposites.pkl", "wb") as f:
             pickle.dump(data, f)
 
@@ -3176,17 +3235,21 @@ def multisample_sv_calling(
             filtered_merged.append(svComposite)
         else:
             dropped_composites.append(svComposite)
-    
+
     if dropped_composites:
         log.info(f"Filtering by minimum SV size (>= {min_sv_size})")
-        log.info(f"Dropped {len(dropped_composites)} SVcomposites below size threshold of {min_sv_size}:")
+        log.info(
+            f"Dropped {len(dropped_composites)} SVcomposites below size threshold of {min_sv_size}:"
+        )
         for svComposite in dropped_composites:
             # Get consensusIDs from all SVpatterns
             consensus_ids = [svp.consensusID for svp in svComposite.svPatterns]
             sv_type = svComposite.sv_type.get_sv_type()
             sv_size = abs(svComposite.get_size())
-            log.debug(f"  - Dropped: consensusIDs={consensus_ids}, sv_type={sv_type}, size={sv_size}")
-    
+            log.debug(
+                f"  - Dropped: consensusIDs={consensus_ids}, sv_type={sv_type}, size={sv_size}"
+            )
+
     merged = filtered_merged
 
     # if tmp dir is provided, dump all merged svComposites to a compressed json file
@@ -3211,17 +3274,19 @@ def multisample_sv_calling(
         save_svCalls_to_json(
             data=svCalls, output_path=Path(tmp_dir_path) / "svCalls.json.gz"
         )
-    
+
     cn_tracks.clear()  # free memory
-    log.info(f"Generated {len(svCalls)} SVcalls from {len(merged)} merged SVcomposites. Now adding ref bases..")
+    log.info(
+        f"Generated {len(svCalls)} SVcalls from {len(merged)} merged SVcomposites. Now adding ref bases.."
+    )
 
     ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
         svComposites=merged,
         reference=reference,
         find_leftmost_reference_position=find_leftmost_reference_position,
-        tmp_dir_path=tmp_dir_path
+        tmp_dir_path=tmp_dir_path,
     )
-    
+
     # save covtrees and ref_bases_dict to tmp dir if provided
     if tmp_dir_path is not None:
         import pickle
@@ -3230,8 +3295,7 @@ def multisample_sv_calling(
             pickle.dump(covtrees, f)
         with open(Path(tmp_dir_path) / "ref_bases_dict.pkl", "wb") as f:
             pickle.dump(ref_bases_dict, f)
-    
-    
+
     log.info("Writing SVcalls to VCF file...")
     write_svCalls_to_vcf(
         svCalls=svCalls,
@@ -3499,10 +3563,7 @@ def load_svComposites_from_json(input_path: Path | str) -> list[SVcomposite]:
             )
 
         # Deserialize SVcomposites
-        svcomposites = [
-            SVcomposite.from_unstructured(item)
-            for item in serialized_data
-        ]
+        svcomposites = [SVcomposite.from_unstructured(item) for item in serialized_data]
 
         return svcomposites
 

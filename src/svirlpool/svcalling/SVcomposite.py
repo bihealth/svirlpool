@@ -251,12 +251,16 @@ class SVcomposite:
         return max(best_group, key=lambda svp: len(svp.get_supporting_reads()))
 
     def get_alt_sequence(self) -> str | None:
-        if not any(issubclass(self.sv_type, t) for t in (
+        if not any(
+            issubclass(self.sv_type, t)
+            for t in (
                 SVpatterns.SVpatternSingleBreakend,
                 SVpatterns.SVpatternInsertion,
-                SVpatterns.SVpatternInversion)):
+                SVpatterns.SVpatternInversion,
+            )
+        ):
             return None
-        
+
         best_group = self._get_best_group()
 
         if isinstance(best_group[0], SVpatterns.SVpatternSingleBreakend):
@@ -288,7 +292,7 @@ class SVcomposite:
             for t in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInversion)
         ):
             return None
-        
+
         best_group = self._get_best_group()
 
         # Concatenate reference sequences from the best group

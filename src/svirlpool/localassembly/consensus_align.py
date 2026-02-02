@@ -75,7 +75,9 @@ def trf_to_interval_tree(input_trf: Path) -> dict[str, IntervalTree]:
 
 
 def svPrimitives_to_svPatterns(
-    SVprimitives: list[SVprimitives.SVprimitive], max_del_size: int, max_fourrelations_gap_size: int = 500_000
+    SVprimitives: list[SVprimitives.SVprimitive],
+    max_del_size: int,
+    max_fourrelations_gap_size: int = 500_000,
 ) -> list[SVpatterns.SVpatternType]:
     """
     Converts a list of SVprimitives to a list of SVpatterns.
@@ -195,7 +197,9 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 )
             elif isinstance(processed_svp, SVpatterns.SVpatternAdjacency):
                 processed_svp.set_all_sequence_contexts(
-                    processed_svp.get_sequence_contexts_from_consensus(consensus=consensus)
+                    processed_svp.get_sequence_contexts_from_consensus(
+                        consensus=consensus
+                    )
                 )
                 processed_svp.set_sequence(
                     processed_svp.get_sequence_from_consensus(consensus=consensus)
@@ -1728,7 +1732,9 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                 f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences"
             )
             svPatterns = svPrimitives_to_svPatterns(
-                SVprimitives=svPrimitives, max_del_size=params.max_del_size, max_fourrelations_gap_size=params.max_fourrelations_gap_size
+                SVprimitives=svPrimitives,
+                max_del_size=params.max_del_size,
+                max_fourrelations_gap_size=params.max_fourrelations_gap_size,
             )
             svp_types = {svp.get_sv_type() for svp in svPatterns}
             log.warning(
