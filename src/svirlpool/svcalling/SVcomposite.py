@@ -24,15 +24,17 @@ class SVcomposite:
     def unstructure(self):
         """Unstructure the SVcomposite for serialization."""
         d = SVpatterns.converter.unstructure(self)
+        # Manually convert sv_type class to string name
         if "sv_type" in d and isinstance(d["sv_type"], type):
-            d["sv_type"] = d["sv_type"].__name__
+            d["sv_type"] = SVpatterns.svpattern_class_to_name(d["sv_type"])
         return d
 
     @classmethod
     def from_unstructured(cls, data: dict) -> SVcomposite:
         """Create SVcomposite from unstructured data."""
+        # Manually convert sv_type string name back to class
         if "sv_type" in data and isinstance(data["sv_type"], str):
-            data["sv_type"] = getattr(SVpatterns, data["sv_type"])
+            data["sv_type"] = SVpatterns.svpattern_name_to_class(data["sv_type"])
         return SVpatterns.converter.structure(data, cls)
 
     def to_json(self) -> str:

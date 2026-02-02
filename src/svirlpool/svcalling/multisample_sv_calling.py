@@ -1428,7 +1428,6 @@ def generate_svComposites_from_dbs(
         #             f"generate_svComposites_from_dbs:: {svp.consensusID} - {svp.get_sv_type()}"
         #         )
         # note: 7.0, 7.1, 7.2 are here
-        # DEBUG END
 
         # count the type of each svPattern
         # then print the counts
@@ -2670,85 +2669,79 @@ def reference_bases_by_merged_svComposites(
     
     dict_reference_bases: dict[str, str] = {}
     
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
-    ) as ref_bases_file:
+    with tempfile.TemporaryDirectory(dir=tmp_dir_path, delete= True if tmp_dir_path is None else False) as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        tmp_regions_path = temp_dir / "regions.txt"
+        ref_bases_path = temp_dir / "ref_bases.txt"
+
+        # 1. Collect unique positions and write to regions file formatted for samtools
+        #    Use a set to avoid duplicates without invoking 'uniq' command
+        positions = set()
+        for i, svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
+            chrname, start, end = get_svComposite_interval_on_reference(
+                svComposite=svComposite,
+                find_leftmost_reference_position=find_leftmost_reference_position)
+            # Store 0-based start
+            positions.add((str(chrname), int(start)))
         
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
-        ) as tmp_regions:
-            for i,svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
-                chrname, start, end = get_svComposite_interval_on_reference(
-                    svComposite=svComposite,
-                    find_leftmost_reference_position=find_leftmost_reference_position)
-                print(f"{chrname}\t{start}\t{start+1}", file=tmp_regions)
-            # then sort and uniq the bed file
-            cmd_sort = f"bedtools sort -g {str(reference)}.fai -i {tmp_regions.name}"
-            cmd_uniq = f"uniq"
-            log.info("Sorting and deduplicating positions with bedtools and uniq...")
-            # open another file handle for the unique regions
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
-            ) as tmp_sorted_uniq_regions:
-                process_sort = subprocess.Popen(
-                    split(cmd_sort),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                process_uniq = subprocess.Popen(
-                    split(cmd_uniq),
-                    stdin=process_sort.stdout,
-                    stdout=tmp_sorted_uniq_regions,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                process_sort.stdout.close()  # Allow process_sort to receive a SIGPIPE if process_uniq exits.
-                _, stderr_sort = process_sort.communicate()
-                if process_sort.returncode != 0:
-                    log.error(f"bedtools sort failed with return code {process_sort.returncode}")
-                    log.error(f"stderr: {stderr_sort}")
-                    raise subprocess.CalledProcessError(process_sort.returncode, cmd_sort, stderr=stderr_sort)
-                _, stderr_uniq = process_uniq.communicate()
-                if process_uniq.returncode != 0:
-                    log.error(f"uniq failed with return code {process_uniq.returncode}")
-                    log.error(f"stderr: {stderr_uniq}")
-                    raise subprocess.CalledProcessError(process_uniq.returncode, cmd_uniq, stderr=stderr_uniq)
-                
-                # now use samtools faidx to write the reference bases to a file
-                cmd_faidx = f"samtools faidx --region-file {tmp_sorted_uniq_regions.name} {str(reference)}"
-                log.info("Retrieving reference bases with samtools faidx...")
-                process_faidx = subprocess.Popen(
-                    split(cmd_faidx),
-                    stdout=ref_bases_file,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                _, stderr_faidx = process_faidx.communicate()
-                if process_faidx.returncode != 0:
-                    log.error(f"samtools faidx failed with return code {process_faidx.returncode}")
-                    log.error(f"stderr: {stderr_faidx}")
-                    raise subprocess.CalledProcessError(process_faidx.returncode, cmd_faidx, stderr=stderr_faidx)
-                # not parse the ref_bases_file to fill dict_reference_bases
+        # Sort positions by chromosome and then position
+        sorted_positions = sorted(positions)
+
+        with open(tmp_regions_path, "w") as f:
+            for chrname, start_0 in sorted_positions:
+                # Format: chr:start-end (1-based inclusive)
+                # region start is the same as region end for a single base: chr:pos-pos
+                pos_1 = start_0 + 1
+                f.write(f"{chrname}:{pos_1}-{pos_1}\n")
+        
+        # 2. Retrieve reference bases with samtools
+        cmd_faidx = f"samtools faidx --region-file {tmp_regions_path} {str(reference)}"
+        log.info("Retrieving reference bases with samtools faidx...")
+        
+        with open(ref_bases_path, "w") as f_out:
+            process_faidx = subprocess.Popen(
+                split(cmd_faidx),
+                stdout=f_out,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            _, stderr_faidx = process_faidx.communicate()
+            if process_faidx.returncode != 0:
+                log.error(f"samtools faidx failed with return code {process_faidx.returncode}")
+                log.error(f"cmd_faidx: {cmd_faidx}")
+                log.error(f"stderr: {stderr_faidx}")
+                raise subprocess.CalledProcessError(process_faidx.returncode, cmd_faidx, stderr=stderr_faidx)
+        
+        # 3. Parse the results
         log.info("Parsing retrieved reference bases...")
-        with open(ref_bases_file.name, "r") as f:
+        with open(ref_bases_path, "r") as f:
             current_header = None
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 if line.startswith(">"):
-                    # Parse header line like ">chr1:123-124"
+                    # Parse header line like ">chr1:123-123"
                     current_header = line[1:]  # Remove '>'
                 elif current_header:
                     # This is the sequence line
                     if ":" in current_header and "-" in current_header:
-                        chrom_pos = current_header.split("-")[0]  # Get "chr1:123" part
-                        base = line.upper()
-                        if len(base) == 1:
-                            dict_reference_bases[chrom_pos] = base
-                        else:
-                            log.warning(f"Expected single base at {chrom_pos}, got '{base}'")
+                        chrom_pos_str = current_header.split("-")[0]  # Get "chr1:123" part
+                        try:
+                            # Convert 1-based header coordinate back to 0-based key
+                            r_chr, r_start_str = chrom_pos_str.rsplit(":", 1)
+                            r_start_1 = int(r_start_str)
+                            # Key format: chr:start (0-based)
+                            key = f"{r_chr}:{r_start_1 - 1}"
+                            
+                            base = line.upper()
+                            if len(base) == 1:
+                                dict_reference_bases[key] = base
+                            else:
+                                log.warning(f"Expected single base at {chrom_pos_str}, got '{base}'")
+                        except ValueError:
+                            log.warning(f"Failed to parse header or key: {current_header}")
+                            
                     current_header = None  # Reset for next entry
     log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
     return dict_reference_bases
@@ -3077,6 +3070,16 @@ def multisample_sv_calling(
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
 
+    # check if reference exists
+    if not Path(reference).exists():
+        raise FileNotFoundError(f"Reference file {reference} does not exist.")
+    # check if the input files exist
+    if not all(Path(path).exists() for path in input):
+        missing_files = [str(path) for path in input if not Path(path).exists()]
+        raise FileNotFoundError(
+            f"The following input files do not exist: {', '.join(missing_files)}"
+        )
+    
     # Create covtrees - either real or dummy uniform coverage
     if skip_covtrees:
         log.info("Skipping covtree computation, using uniform coverage of 30")
@@ -3140,6 +3143,10 @@ def multisample_sv_calling(
         save_svComposites_to_json(
             data=data, output_path=Path(tmp_dir_path) / "all_svComposites.json.gz"
         )
+        # just save as pickle
+        import pickle
+        with open(Path(tmp_dir_path) / "all_svComposites.pkl", "wb") as f:
+            pickle.dump(data, f)
 
     # --- vertical merging of svComposites across samples and consensus sequences --- #
     merged: list[SVcomposite] = merge_svComposites(
@@ -3161,11 +3168,26 @@ def multisample_sv_calling(
             svtype_counts_merged[svtype] += 1
         log.info(f"SVcomposite counts by type after merging: {svtype_counts_merged}")
 
-    merged = [
-        svComposite
-        for svComposite in merged
-        if abs(svComposite.get_size()) >= min_sv_size
-    ]
+    # Filter by minimum SV size and report what was dropped
+    dropped_composites = []
+    filtered_merged = []
+    for svComposite in merged:
+        if abs(svComposite.get_size()) >= min_sv_size:
+            filtered_merged.append(svComposite)
+        else:
+            dropped_composites.append(svComposite)
+    
+    if dropped_composites:
+        log.info(f"Filtering by minimum SV size (>= {min_sv_size})")
+        log.info(f"Dropped {len(dropped_composites)} SVcomposites below size threshold of {min_sv_size}:")
+        for svComposite in dropped_composites:
+            # Get consensusIDs from all SVpatterns
+            consensus_ids = [svp.consensusID for svp in svComposite.svPatterns]
+            sv_type = svComposite.sv_type.get_sv_type()
+            sv_size = abs(svComposite.get_size())
+            log.debug(f"  - Dropped: consensusIDs={consensus_ids}, sv_type={sv_type}, size={sv_size}")
+    
+    merged = filtered_merged
 
     # if tmp dir is provided, dump all merged svComposites to a compressed json file
     if tmp_dir_path is not None:
@@ -3185,6 +3207,11 @@ def multisample_sv_calling(
             symbolic_threshold=symbolic_threshold,
         )
     ]
+    if tmp_dir_path is not None:
+        save_svCalls_to_json(
+            data=svCalls, output_path=Path(tmp_dir_path) / "svCalls.json.gz"
+        )
+    
     cn_tracks.clear()  # free memory
     log.info(f"Generated {len(svCalls)} SVcalls from {len(merged)} merged SVcomposites. Now adding ref bases..")
 
@@ -3194,6 +3221,16 @@ def multisample_sv_calling(
         find_leftmost_reference_position=find_leftmost_reference_position,
         tmp_dir_path=tmp_dir_path
     )
+    
+    # save covtrees and ref_bases_dict to tmp dir if provided
+    if tmp_dir_path is not None:
+        import pickle
+
+        with open(Path(tmp_dir_path) / "covtrees.pkl", "wb") as f:
+            pickle.dump(covtrees, f)
+        with open(Path(tmp_dir_path) / "ref_bases_dict.pkl", "wb") as f:
+            pickle.dump(ref_bases_dict, f)
+    
     
     log.info("Writing SVcalls to VCF file...")
     write_svCalls_to_vcf(
@@ -3463,7 +3500,7 @@ def load_svComposites_from_json(input_path: Path | str) -> list[SVcomposite]:
 
         # Deserialize SVcomposites
         svcomposites = [
-            SVpatterns.converter.structure(item, SVcomposite)
+            SVcomposite.from_unstructured(item)
             for item in serialized_data
         ]
 
@@ -3474,6 +3511,59 @@ def load_svComposites_from_json(input_path: Path | str) -> list[SVcomposite]:
         raise
     except Exception as e:
         log.error(f"Error loading SVcomposites from {input_path}: {e}")
+        raise
+
+
+def save_svCalls_to_json(data: list[SVcall], output_path: Path | str) -> None:
+    """
+    Save SVcalls to a compressed pickle file.
+
+    Args:
+        data: List of SVcalls to serialize
+        output_path: Path to output pickle file
+
+    Returns:
+        None
+    """
+    output_path = Path(output_path)
+
+    # Create parent directory if it doesn't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save the data
+    with open(output_path, "wb") as f:
+        pickle.dump(data, f)
+
+    log.info(f"Saved {len(data)} SVcalls to {output_path}")
+
+
+def load_svCalls_from_json(input_path: Path | str) -> list[SVcall]:
+    """
+    Load SVcalls from a pickle file.
+
+    Args:
+        input_path: Path to input pickle file
+
+    Returns:
+        List of SVcalls
+    """
+    input_path = Path(input_path)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    try:
+        with open(input_path, "rb") as f:
+            svCalls = pickle.load(f)
+
+        log.info(f"Loaded {len(svCalls)} SVcalls from {input_path}")
+        return svCalls
+
+    except pickle.UnpicklingError as e:
+        log.error(f"Failed to unpickle SVcalls from {input_path}: {e}")
+        raise
+    except Exception as e:
+        log.error(f"Error loading SVcalls from {input_path}: {e}")
         raise
 
 

@@ -1698,6 +1698,36 @@ def structure_svpattern(data, _):
 converter.register_structure_hook(SVpatternType, structure_svpattern)
 
 
+# Helper functions for SVpattern class name mapping (used by SVcomposite)
+def svpattern_class_to_name(cls_obj):
+    """Convert a SVpattern class to its name string."""
+    if cls_obj is None:
+        return None
+    return cls_obj.__name__
+
+
+def svpattern_name_to_class(class_name):
+    """Convert a class name string back to the SVpattern class."""
+    if class_name is None:
+        return None
+    
+    # Map class names to actual class objects
+    class_map = {
+        "SVpatternInsertion": SVpatternInsertion,
+        "SVpatternDeletion": SVpatternDeletion,
+        "SVpatternInversion": SVpatternInversion,
+        "SVpatternSingleBreakend": SVpatternSingleBreakend,
+        "SVpatternAdjacency": SVpatternAdjacency,
+        "SVpatternInversionDeletion": SVpatternInversionDeletion,
+        "SVpatternInversionDuplication": SVpatternInversionDuplication,
+    }
+    
+    if class_name not in class_map:
+        raise ValueError(f"Unknown SVpattern class name: {class_name}")
+    
+    return class_map[class_name]
+
+
 # ======== DATABASE FUNCTIONS ======== #
 
 
