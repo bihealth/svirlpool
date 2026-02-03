@@ -6,8 +6,6 @@ environments:
     - url: https://conda.anaconda.org/bioconda/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_libgcc_mutex-0.1-conda_forge.tar.bz2
@@ -225,8 +223,6 @@ environments:
     - url: https://conda.anaconda.org/bioconda/
     indexes:
     - https://pypi.org/simple
-    options:
-      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_libgcc_mutex-0.1-conda_forge.tar.bz2
@@ -3938,8 +3934,8 @@ packages:
   - cython ; extra == 'tests'
 - pypi: ./
   name: svirlpool
-  version: 0.0.0
-  sha256: eede0e55560dc215a7dad08a2f236a433911ffabd6d05646e5574d614a7ba620
+  version: 0.1.0
+  sha256: 6cc1fb3dde8dfa7c996f38194a34601f5a147f6195e31536e2a0c95a292b7b8c
   requires_dist:
   - numpy>=2.3.4,<3
   - pandas>=2.3.3,<3
@@ -3963,6 +3959,7 @@ packages:
   - snakemake>=9.13.4,<10
   - xxhash>=0.8.3
   requires_python: '>=3.12'
+  editable: true
 - pypi: https://files.pythonhosted.org/packages/de/70/cf880c3b95a6034ef673e74b369941b42315c01f1554a5637a4f8b911009/syrupy-5.1.0-py3-none-any.whl
   name: syrupy
   version: 5.1.0
