@@ -196,6 +196,7 @@ Ensure all three version files are updated consistently:
 - [Conventional Commits](https://www.conventionalcommits.org/)
 - [Semantic Versioning](https://semver.org/)
 - [GitHub Releases Documentation](https://docs.github.com/en/repositories/releasing-projects-on-github)
+- [Example Release Script](utils/release-example.sh) - Reference only, do not run directly
 
 ## Questions or Issues?
 
