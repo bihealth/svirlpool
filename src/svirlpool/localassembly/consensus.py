@@ -1246,11 +1246,11 @@ def consensus_while_clustering(
             tmp_all_reads = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
                 prefix="all_reads.",
-                suffix=".fastq",
+                suffix=".fasta",
                 delete=False if tmp_dir_path else True,
             )
             with open(tmp_all_reads.name, "w") as f:
-                SeqIO.write(pool.values(), f, "fastq")
+                SeqIO.write(pool.values(), f, "fasta")
             # 2) align all reads to each other with minimap2
             tmp_all_vs_all_sam = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
@@ -1995,7 +1995,7 @@ def score_ras_from_alignments(
     rafs_scores_dict = {}
     for ras, score in zip(rass, rass_scores, strict=True):
         if ras.read_name in rafs_scores_dict:
-            if rafs_scores_dict[ras.read_name] < score:
+            if rafs_scores_dict[ras.read_name] > score:
                 rafs_scores_dict[ras.read_name] = score
         else:
             rafs_scores_dict[ras.read_name] = float(score)
@@ -2052,7 +2052,6 @@ def create_padding_for_consensus(
     padding = _create_padding_object(
         cons=consensus_object,
         read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_sizes_per_read=padding_sizes_per_read,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
@@ -2088,7 +2087,7 @@ def _get_all_read_padding_intervals(
                 min(data[cutread.name][0], cutread_description_dict["start"]),
                 max(data[cutread.name][1], cutread_description_dict["end"]),
             )
-    result: dict[str, tuple[int, int, int, int]] = {}
+    result: dict[str, tuple[int, int, int, int, bool]] = {}
     # now add the read length to each entry
     for readname, (start, end) in data.items():
         if readname in read_records:
@@ -2104,7 +2103,7 @@ def _get_all_read_padding_intervals(
 
 
 def _get_padding_sizes_per_read(
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
 ) -> dict[str, tuple[int, int]]:
     """Generates a dict[readname, (left padding size, right padding size)] for all reads in the consensus object."""
     """A padding is the sequence that overshoots the cutread alignment on the left and right side (in the orientation of the consensus)."""
@@ -2133,7 +2132,7 @@ def _get_padding_read_names_of_consensus(
 
 
 def _get_read_padding_intervals(
-    read_paddings_for_consensus: dict[str, tuple[int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_read_names_of_consensus: tuple[str, str],
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Returns the left and right intervals on the two padding reads, ignorant toward clipped bases."""
@@ -2151,8 +2150,7 @@ def _get_read_padding_intervals(
 
 def _create_padding_object(
     cons: consensus_class.Consensus,
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int]],
-    padding_sizes_per_read: dict[str, tuple[int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
@@ -2181,11 +2179,11 @@ def _create_padding_object(
         sequence=str(padded_consensus_sequence),
         readname_left=padding_reads[0],
         readname_right=padding_reads[1],
-        padding_size_left=padding_sizes_per_read[padding_reads[0]][0],
-        padding_size_right=padding_sizes_per_read[padding_reads[1]][1],
+        padding_size_left=len(left_padding),
+        padding_size_right=len(right_padding),
         consensus_interval_on_sequence_with_padding=(
-            padding_sizes_per_read[padding_reads[0]][0],
-            padding_sizes_per_read[padding_reads[0]][0] + len(cons.consensus_sequence),
+            len(left_padding),
+            len(padded_consensus_sequence) - len(right_padding),
         ),
     )
     return new_padding
@@ -2339,6 +2337,9 @@ def process_consensus_container(
     regions_for_cn_query = [
         (cr.chr, cr.referenceStart, cr.referenceEnd) for cr in crs_dict.values()
     ]
+    if verbose:
+        for cr in crs_dict.values():
+            print(f"CR region on ref: {cr.chr}:{cr.referenceStart}-{cr.referenceEnd}")
     max_copy_number = copynumber_tracks.query_copynumber_from_regions(
         bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
     )
@@ -2359,8 +2360,8 @@ def process_consensus_container(
         for crID, readnames in dict_unused_read_names.items():
             for readname in readnames:
                 # get the read sequence from the alignment file
-                with pysam.AlignmentFile(path_alignments, "rb") as samfile:
-                    read_seqRecord = samfile.fetch(readname=readname)
+                with pysam.AlignmentFile(str(path_alignments), "rb") as samfile:
+                    read_seqRecord = samfile.fetch(contig=readname)
                     for read in read_seqRecord:
                         read_sequence_object = datatypes.SequenceObject(
                             id=read.query_name,
@@ -2384,9 +2385,13 @@ def process_consensus_container(
         dict_alignments=alns,
         buffer_clipped_length=buffer_clipped_length,
     )
+    if verbose:
+        print(f"dict_all_intervals: {dict_all_intervals}")
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
+    if verbose:
+        print(f"max_intervals: {max_intervals}")
     read_records: dict[str, SeqRecord] = get_full_read_sequences_of_alignments(
         dict_alignments=alns, path_alignments=path_alignments
     )
@@ -2643,6 +2648,17 @@ def crs_containers_to_consensus(
                 f"crID {crID} has {len(unused_reads)} unused reads: {[seqobj.id for seqobj in unused_reads]}"
             )
 
+    if verbose and tmp_dir_path is not None:
+        # write all consensus padded sequences to a fasta file in the tmp dir
+        fasta_path = (
+            Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
+        )
+        log.info(f"Writing padded consensus sequences to {fasta_path}.")
+        with open(fasta_path, "w") as f:
+            for consensusID, consensus in result.consensus_dicts.items():
+                if consensus.consensus_padding is not None:
+                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
+
     log.info(f"Writing result to {output}.")
     with open(output, "w") as f:
         print(json.dumps(result.unstructure()), file=f)
@@ -2731,8 +2747,8 @@ def get_consensus_parser(
         "--buffer-clipped-sequence",
         type=int,
         required=False,
-        default=5000,
-        help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read.",
+        default=500,
+        help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read. This should never be larger than --min-cr-size in the 'svirlpool run' command.",
     )
     parser.add_argument(
         "--timeout",

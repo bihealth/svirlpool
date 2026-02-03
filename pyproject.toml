@@ -40,9 +40,10 @@ dev = [
     "coverage>=7.6.12",
     "freezegun>=1.5.1",
     "hatch>=1.14.0",
+    "jupyter>=1.1.0",
     "pyright>=1.1.394",
     "pytest>=8.3.4",
-    "pytest-coverage>=0.0",
+    "pytest-cov>=7.0.0",
     "pytest-sugar>=1.0.0",
     "pytest-mock>=3.14.0",
     "ruff>=0.14.1",
@@ -166,6 +167,7 @@ bcftools = "~=1.20"
 samtools = "~=1.20"
 seqtk = "~=1.4"
 sortedcontainers = ">=2.4.0,<3"
+packaging = "<26.0"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }

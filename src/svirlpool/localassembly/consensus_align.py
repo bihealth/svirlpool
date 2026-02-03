@@ -46,6 +46,7 @@ class SVPatternProcessingParams:
     max_del_size: int
     distance_scale: float
     falloff: float
+    max_fourrelations_gap_size: int
     batchsize: int = 100
 
 
@@ -74,16 +75,32 @@ def trf_to_interval_tree(input_trf: Path) -> dict[str, IntervalTree]:
 
 
 def svPrimitives_to_svPatterns(
-    SVprimitives: list[SVprimitives.SVprimitive], max_del_size: int
+    SVprimitives: list[SVprimitives.SVprimitive],
+    max_del_size: int,
+    max_fourrelations_gap_size: int = 500_000,
 ) -> list[SVpatterns.SVpatternType]:
     """
     Converts a list of SVprimitives to a list of SVpatterns.
     This is done by parsing the SVprimitives and creating SVpatterns from them.
+    IMPORTANT: SVprimitives are in the order of their alignment position on the consensus sequence.
     """
+
+    # # DEBUG START
+    # # if the consensusID of one of the SVprimitives is 15.0 then save the parameters to json to debug and test
+    # if any(svp.consensusID == "15.0" for svp in SVprimitives):
+    #     import json
+    #     from gzip import open as gzip_open
+    #     data = {
+    #         "SVprimitives": [svp.unstructure() for svp in SVprimitives],
+    #         "max_del_size": max_del_size,
+    #     }
+    #     with gzip_open("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/svPrimitives_to_svPatterns.INV15.json.gz", "wt") as debug_f:
+    #         json.dump(data, debug_f, indent=4)
+    # # DEBUG END
+
     if len(SVprimitives) == 0:
         log.warning("No SVprimitives provided. Returning empty list of SVpatterns.")
         return []
-    _current_consensusID = SVprimitives[0].consensusID  # FIXME: unused?
 
     # Group SVprimitives by consensusID
     grouped_svprimitives = {}
@@ -97,7 +114,9 @@ def svPrimitives_to_svPatterns(
     for _consensusID, group in grouped_svprimitives.items():
         svpatterns.extend(
             SVpatterns.parse_SVprimitives_to_SVpatterns(
-                SVprimitives=group, max_del_size=max_del_size
+                SVprimitives=group,
+                max_del_size=max_del_size,
+                max_fourrelations_gap_size=max_fourrelations_gap_size,
             )
         )
 
@@ -157,21 +176,38 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
                 )
 
             # Set sequences based on SVpattern type
-            if isinstance(processed_svp, SVpatterns.SVpatternInsertion):
+            if isinstance(processed_svp, SVpatterns.SVpatternInsertion) or isinstance(
+                processed_svp, SVpatterns.SVpatternInversion
+            ):
                 processed_svp.set_sequence(
-                    processed_svp.get_sequence_from_consensus(consensus=consensus)
-                )
-            elif isinstance(processed_svp, SVpatterns.SVpatternInversion):
-                processed_svp.set_inserted_sequence(
                     processed_svp.get_sequence_from_consensus(consensus=consensus)
                 )
             elif isinstance(processed_svp, SVpatterns.SVpatternDeletion):
                 continue  # silent skip, as deletions dont have an alt sequence
+            elif isinstance(processed_svp, SVpatterns.SVpatternSingleBreakend):
+                processed_svp.set_clipped_sequence(
+                    sequence=processed_svp.get_clipped_sequence_from_consensus(
+                        consensus=consensus
+                    ),
+                )
+                processed_svp.set_context_sequence(
+                    processed_svp.get_context_sequence_from_consensus(
+                        consensus=consensus
+                    )
+                )
+            elif isinstance(processed_svp, SVpatterns.SVpatternAdjacency):
+                processed_svp.set_all_sequence_contexts(
+                    processed_svp.get_sequence_contexts_from_consensus(
+                        consensus=consensus
+                    )
+                )
+                processed_svp.set_sequence(
+                    processed_svp.get_sequence_from_consensus(consensus=consensus)
+                )
             else:
                 log.warning(
                     f"SVpattern type {type(processed_svp)} is not supported. Skipping alt sequence assignment."
                 )
-            # TODO: add sequence of other (complex) SVpatterns
 
             # Add to output and mark as processed
             output_svPatterns.append(processed_svp)
@@ -241,10 +277,20 @@ def add_reference_sequence_to_svPatterns(
                 if region_key in regions:
                     for svp in regions[region_key]:
                         x = deepcopy(svp)
-                        if x.get_sv_type() == "DEL":
+                        if type(x) is SVpatterns.SVpatternDeletion:
                             x.set_sequence(str(record.seq))
-                        elif x.get_sv_type() == "INV":
-                            x.set_deleted_sequence(str(record.seq))
+                        elif type(x) in (
+                            SVpatterns.SVpatternInversion,
+                            SVpatterns.SVpatternInversionDuplication,
+                            SVpatterns.SVpatternInversionDeletion,
+                        ):
+                            x.set_deleted_sequence(
+                                sequence=str(record.seq), write_complexity=False
+                            )
+                        else:
+                            raise ValueError(
+                                f"SVpattern type {type(x)} not supported for reference sequence assignment. This should not happen. Please check the input data."
+                            )
                         output.append(x)  # append the modified copy
                         svp = None  # remove reference to original to free memory
                     regions[region_key].clear()
@@ -653,7 +699,7 @@ def write_partitioned_alignments(
             )
 
             # Convert pysam alignment to datatypes.Alignment
-            annotations = {"qstart": qstart, "qend": qend}
+            annotations = {"qstart": qstart, "qend": qend, "qmid": (qstart + qend) // 2}
             alignment = datatypes.Alignment.from_pysam(
                 aln=pysam_aln, samplename=samplename, annotations=annotations
             )
@@ -847,6 +893,26 @@ def _process_alignment_file_for_core_intervals(
 
             # Sort alignments by (qstart, qend) to ensure consistent ordering
             alignments_list.sort(key=lambda x: (x[0], x[1]))
+
+            # DEBUG START
+            # files: INV.1.aln.json.gz  INV.1.consensus.json.gz  INV.2.aln.json.gz  INV.2.consensus.json.gz
+            # to save _process_alignment_file_for_core_intervals debug data:
+            # if consensus_obj.ID == "15.0":
+            #     cons = consensus_obj.unstructure()
+            #     consensus_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.consensus.json"
+            #     with open(consensus_path, "w") as debug_f:
+            #         json.dump(cons, debug_f, indent=4)
+            #     aln_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.alignments.json"
+            #     # and save the alignments
+            #     with open(aln_path, "w") as debug_f:
+            #         aln_list = {"alignments": [
+            #             alignment.unstructure() for (_qstart, _qend, alignment) in alignments_list
+            #         ]}
+            #         json.dump(aln_list, debug_f, indent=4)
+            #     # and gzip them
+            #     subprocess.check_call(shlex.split(f"gzip -f {consensus_path}"))
+            #     subprocess.check_call(shlex.split(f"gzip -f {aln_path}"))
+            # DEBUG END
 
             # Process each alignment with its index
             for aln_idx, (_qstart, _qend, alignment) in enumerate(alignments_list):
@@ -1523,7 +1589,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
     import sys
 
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format=f"[Worker {params.partition_index}] %(levelname)s - %(message)s",
         stream=sys.stderr,
         force=True,
@@ -1561,13 +1627,17 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     index_partition=params.alignments_index_partition,
                     alignments_path=params.padded_alignments_path,
                 )
+
                 # sort alignments by alignment.annotations.qstart
                 for aln in alignments:
                     if aln.annotations is None or "qstart" not in aln.annotations:
                         raise ValueError(
                             f"Alignment for consensus {consensusID} missing 'qstart' in annotations!"
                         )
-                alignments.sort(key=lambda aln: aln.annotations["qstart"])
+                alignments.sort(
+                    key=lambda aln: aln.annotations["qmid"]
+                )  # alignments need to be sorted by mid point of query sequence
+                # to have all break ends in the right order for sv pattern generation
 
                 # Get the core intervals for this consensus and create lookup by alignment index
                 core_intervals_with_idx = params.core_intervals_on_reference.get(
@@ -1578,11 +1648,31 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     for aln_idx, ref_name, core_start, core_end in core_intervals_with_idx
                 }
 
-                for alignment_idx, alignment in enumerate(alignments):
+                # # DEBUG START
+                # if consensus_obj.ID == "15.0":
+                #     cons = consensus_obj.unstructure()
+                #     consensus_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.consensus.json.gz"
+                #     from gzip import open as gzip_open
+                #     with gzip_open(consensus_path, "wt") as debug_f:
+                #         json.dump(cons, debug_f, indent=4)
+                #     # write structured alignments to a json file
+                #     aln_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.alignments.json.gz"
+                #     # and save the alignments
+                #     with gzip_open(aln_path, "wt") as debug_f:
+                #         aln_list = {"alignments": [
+                #             alignment.unstructure() for alignment in alignments
+                #         ]}
+                #         json.dump(aln_list, debug_f, indent=4)
+                # # DEBUG END
+
+                for alignment_idx, alignment in enumerate(
+                    alignments
+                ):  # alignment_idx order on consensus sequence!
                     # Match by alignment index
+
                     if alignment_idx not in core_interval_by_idx:
-                        log.warning(
-                            f"No core interval found for alignment {alignment_idx} of {consensusID}"
+                        log.debug(
+                            f"No core interval found for alignment {alignment_idx} of {consensusID}. Intervals available: {core_intervals_with_idx}"
                         )
                         continue
 
@@ -1608,11 +1698,21 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         reference_name=alignment.reference_name,
                         min_bnd_size=params.min_bnd_size,
                         min_signal_size=params.min_signal_size,
-                    )
+                    )  # sorted in order of consensus sequence
 
                     log.debug(
                         f"Consensus {consensusID} alignment {alignment_idx}: Found {len(mergedSVs)} merged SV signals"
                     )
+                    # # DEBUG START
+                    # if consensusID == "15.0":
+                    #     # save the merged SVs to a json file for debugging
+                    #     svs_path = "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.15.mergedSVs.json.gz"
+                    #     from gzip import open as gzip_open
+                    #     with gzip_open(svs_path, "wt") as debug_f:
+                    #         svs_list = [sv.unstructure() for sv in mergedSVs]
+                    #         json.dump(svs_list, debug_f, indent=4)
+                    # # DEBUG END
+
                     # now SV signals are parsed for this alignment
                     svPrimitives.extend(
                         SVprimitives.generate_SVprimitives(
@@ -1628,14 +1728,13 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                         f"Consensus {consensusID} alignment {alignment_idx}: Generated {len(svPrimitives)} SV primitives so far"
                     )
                 # now the sv patterns can be created from the svPrimitives
-            svPrimitives = sorted(
-                svPrimitives, key=lambda svp: (svp.consensusID, svp.read_start)
-            )
             log.debug(
                 f"Batch {i}: Total {len(svPrimitives)} SV primitives from {len(consensusIDs_batch)} consensus sequences"
             )
             svPatterns = svPrimitives_to_svPatterns(
-                SVprimitives=svPrimitives, max_del_size=params.max_del_size
+                SVprimitives=svPrimitives,
+                max_del_size=params.max_del_size,
+                max_fourrelations_gap_size=params.max_fourrelations_gap_size,
             )
             svp_types = {svp.get_sv_type() for svp in svPatterns}
             log.warning(
@@ -1703,8 +1802,10 @@ def svPatterns_from_consensus_sequences(
     max_del_size: int,
     distance_scale: float,
     falloff: float,
+    max_fourrelations_gap_size: int = 500_000,
     tmp_dir_path: Path | str | None = None,
     dont_merge_horizontally: bool = False,
+    batchsize: int = 100,
 ) -> None:
     # write all consensus sequences to a fasta file and align to the target reference
     # write all alignments to a file
@@ -1761,6 +1862,17 @@ def svPatterns_from_consensus_sequences(
             f"Indexed {total_padded_seqs} padded sequences across {len(padded_sequences_index_partitioned)} partitions."
         )
 
+        # util.align_reads_with_last(
+        #     reference=input_reference,
+        #     bamout=output_consensus_to_reference_alignments,
+        #     reads=[
+        #         str(padded_sequences_paths[i])
+        #         for i in range(len(padded_sequences_paths))
+        #     ],
+        #     aln_args="-uRY4",
+        #     threads=threads,
+        # )
+
         util.align_reads_with_minimap(
             reference=input_reference,
             bamout=output_consensus_to_reference_alignments,
@@ -1770,7 +1882,7 @@ def svPatterns_from_consensus_sequences(
             ],
             tech="map-ont",
             threads=threads,
-            aln_args=" --secondary=no ",
+            aln_args=" --secondary=no",
         )
 
         # Parse alignments and write partitioned datatypes.Alignment objects to TSV files
@@ -1811,9 +1923,8 @@ def svPatterns_from_consensus_sequences(
             consensus_json_index_partitioned=consensus_json_index_partitioned,
             consensus_json_paths=consensus_json_paths,
             threads=threads,
-            batch_size=100,
+            batch_size=batchsize,
         )
-        log.debug(core_intervals_on_reference_partitioned)
         # now we need to find the intersecting trf intervals for each core interval on reference
         # Find TRF overlaps for all core intervals in parallel using bedtools
         trf_overlaps_on_reference_partitioned: dict[
@@ -1866,6 +1977,7 @@ def svPatterns_from_consensus_sequences(
                     max_del_size=max_del_size,
                     distance_scale=distance_scale,
                     falloff=falloff,
+                    max_fourrelations_gap_size=max_fourrelations_gap_size,
                     batchsize=100,
                 )
             )
@@ -1898,10 +2010,6 @@ def svPatterns_from_consensus_sequences(
                     continue
                 with open(svp_path, "r") as infile:
                     shutil.copyfileobj(infile, outfile)
-                    if (
-                        partition_idx < threads - 1
-                    ):  # Don't add extra newline after last file
-                        outfile.write("\n")
 
         log.info(f"Concatenated {threads} SV pattern partition files")
 
@@ -1963,14 +2071,20 @@ def get_parser():
     parser.add_argument(
         "--min-bnd-size",
         type=int,
-        default=200,
-        help="Minimum size of BND signal to consider (default: 200).",
+        default=50,
+        help="Minimum size of BND signal to consider (default: 50).",
     )
     parser.add_argument(
         "--max-del-size",
         type=int,
-        default=100_000,
-        help="Maximum size of deletions to consider for SVpattern generation (default: 100000). They are treated as translocations otherwise. Warning: larger deletions are often spurious and can lead to memory issues.",
+        default=500_000,
+        help="Maximum size of deletions to consider for SVpattern generation (default: 500000). They are treated as translocations otherwise. Warning: larger deletions are often spurious and can lead to memory issues.",
+    )
+    parser.add_argument(
+        "--max-fourrelations-gap-size",
+        type=int,
+        default=500_000,
+        help="Maximum gap size for four-relations analysis in SVpattern generation (default: 500000). Controls detection of complex SV patterns like inversions.",
     )
     parser.add_argument(
         "--distance-scale",
@@ -2059,6 +2173,7 @@ def main():
         max_del_size=args.max_del_size,
         distance_scale=args.distance_scale,
         falloff=args.falloff,
+        max_fourrelations_gap_size=args.max_fourrelations_gap_size,
         tmp_dir_path=args.tmp_dir_path,
         dont_merge_horizontally=args.dont_merge_horizontally,
     )
