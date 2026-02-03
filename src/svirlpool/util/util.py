@@ -229,32 +229,123 @@ def align_reads_with_minimap(
             log_handle.close()
 
 
-# def align_reads_with_minimap(
-#         reference:Path,
-#         reads:str,
-#         bamout:str,
-#         tech:str="map-ont",
-#         threads:int=3,
-#         aln_args:str="",
-#         logfile:Path|None=None) -> None:
-#     cmd_align_ = f"minimap2 -a -x {tech} -t {threads} {aln_args} {reference} {reads}"
-#     print(f"+ {cmd_align_}", file=sys.stderr)
-#     cmd_align = shlex.split(cmd_align_)
-#     cmd_compress = shlex.split("samtools view -b")
-#     cmd_sort = shlex.split(f"samtools sort -o {bamout}")
-#     cmd_index = shlex.split(f"samtools index {bamout}")
-#     if logfile is None:
-#         logfile = Path(f"{bamout}.log")
-#     with open(logfile, "wt") as logf:
-#         #logf = open(logfile, "wt")
-#         p_align = subprocess.Popen(cmd_align, stdout=subprocess.PIPE, stderr=logf)
-#         p_compress= subprocess.Popen(cmd_compress,stdin=p_align.stdout, stdout=subprocess.PIPE, stderr=logf)
-#         p_align.stdout.close()
-#         p_sort= subprocess.Popen(cmd_sort,stdin=p_compress.stdout, stderr=logf)
-#         p_compress.stdout.close()
-#         p_sort.communicate()
-#         subprocess.call(cmd_index)
-#     #logf.close()
+def align_reads_with_last(
+    reference: Path | str,
+    reads: Path | str | list[Path | str],
+    bamout: Path | str,
+    aln_args: str = "-uRY4",
+    threads: int = 4,
+    logfile: Path | None = None,
+    timeout: float | None = None,
+    train_file: Path | None = None,
+    lastdb_prefix: Path | None = None,
+) -> None:
+    # >lastdb --help -P64 -uRY4 hs37d5.last.db hs37d5.fa
+    # >last-train -P64 -Q0 ../../../../../../references/hs37d5/hs37d5.last.db consensus.fasta > train/consensus.train
+    # >lastal -P64 --split -p train/consensus.train /data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/references/hs37d5/hs37d5.last.db consensus.fasta > consensus.maf
+    # then convert to bam with maf-convert sam
+    # 1) create header, e.g.
+    # maf-convert sam consensus.maf > new_alns.sam
+    # >samtools view -bt ref.fai new_alns.sam > new_alns.bam
+    # >samtools sort -o new_alns.sorted.bam new_alns.bam
+    # >samtools index new_alns.sorted.bam
+
+    # Prepare reads string once
+    if isinstance(reads, list):
+        reads_str = " ".join(str(r) for r in reads)
+    else:
+        reads_str = str(reads)
+
+    log_handle = open(logfile, "wt") if logfile else None
+    try:
+        # 1. create lastdb
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1. soft link the reference, so that the lastdb files are created in tmpdir
+            ref_link = Path(tmpdir) / "reference.fa"
+            subprocess.check_call(["ln", "-s", str(reference), str(ref_link)])
+            # and link the fasta index (.fai) as well
+            fai_link = Path(tmpdir) / "reference.fa.fai"
+            subprocess.check_call(["ln", "-s", str(reference) + ".fai", str(fai_link)])
+
+            # now generate the lastdb
+            if lastdb_prefix is None:
+                lastdb_prefix = Path(tmpdir) / "reference.lastdb"
+                cmd_lastdb = shlex.split(
+                    f"lastdb -P{threads} {aln_args} {str(lastdb_prefix)} {ref_link}"
+                )
+                log.debug(" ".join(cmd_lastdb))
+                subprocess.check_call(cmd_lastdb, stderr=log_handle)
+
+            # 2. train last
+            if train_file is None:
+                train_file = Path(tmpdir) / "last.train"
+                cmd_last_train = shlex.split(
+                    f"last-train -P{threads} -Q0 {str(lastdb_prefix)} {reads_str}"
+                )
+                log.debug(" ".join(cmd_last_train))
+                with open(train_file, "wt") as train_f:
+                    subprocess.check_call(
+                        cmd_last_train, stdout=train_f, stderr=log_handle
+                    )
+
+            # 3. align with lastal and write to MAF file
+            maf_file = Path(tmpdir) / "alignments.maf"
+            cmd_lastal = shlex.split(
+                f"lastal -P{threads} --split -p {str(train_file)} {str(lastdb_prefix)} {reads_str}"
+            )
+            log.debug(" ".join(cmd_lastal))
+            with open(maf_file, "wt") as maf_f:
+                try:
+                    subprocess.check_call(
+                        cmd_lastal,
+                        stdout=maf_f,
+                        stderr=log_handle,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    log.error("Alignment with lastal timed out...")
+                    raise TimeoutError(
+                        "Alignment with lastal timed out after the specified time limit."
+                    )
+
+            # 4. convert MAF to SAM with maf-convert
+            sam_file = Path(tmpdir) / "alignments.sam"
+            cmd_maf_convert = shlex.split(f"maf-convert sam {str(maf_file)}")
+            log.debug(" ".join(cmd_maf_convert))
+            with open(sam_file, "wt") as sam_f:
+                subprocess.check_call(
+                    cmd_maf_convert,
+                    stdout=sam_f,
+                    stderr=log_handle,
+                )
+
+            # 5. convert SAM to BAM with header using samtools view
+            bam_unsorted = Path(tmpdir) / "alignments.unsorted.bam"
+            cmd_view = shlex.split(
+                f"samtools view -bt {str(reference)}.fai {str(sam_file)}"
+            )
+            log.debug(" ".join(cmd_view))
+            with open(bam_unsorted, "wb") as bam_f:
+                subprocess.check_call(
+                    cmd_view,
+                    stdout=bam_f,
+                    stderr=log_handle,
+                )
+
+            # 6. sort BAM
+            cmd_sort = shlex.split(
+                f"samtools sort -O BAM -o {bamout} {str(bam_unsorted)}"
+            )
+            log.debug(" ".join(cmd_sort))
+            subprocess.check_call(cmd_sort, stderr=log_handle)
+
+            # 7. index BAM
+            log.info(f"indexing {bamout}")
+            cmd_index = shlex.split(f"samtools index {bamout}")
+            subprocess.check_call(cmd_index, stderr=log_handle)
+    finally:
+        if log_handle:
+            log_handle.close()
 
 
 def align_reads_with_ngmlr(
@@ -264,7 +355,7 @@ def align_reads_with_ngmlr(
     tech: str = "ont",
     threads: int = 3,
     aln_args: str = "",
-):
+) -> None:
     # first cat all consensus sequences into one fasta file
     cmd_cat = shlex.split("cat " + reads)
     # write to temp fasta
@@ -291,15 +382,15 @@ def align_reads_with_ngmlr(
 
 
 def align_reads_with_winnowmap(
-    reference: Path, reads: Path, bamout: Path, tech: str, rep_k15: Path = Path("")
-):
+    reference: Path, reads: Path, bamout: Path, tech: str, rep_k15: Path | None = None
+) -> None:
     if tech not in ["map-pb", "map-ont", "asm5", "asm10", "asm20"]:
         raise ValueError(f"tech must be either 'map-pb' or 'map-ont', not {tech}")
     # if no rep_k15 is provided, then it must be computed beforehand.
     # create temporary merylDB file
     tmp_merylDB = tempfile.NamedTemporaryFile(suffix=".merylDB", delete=False)
     rep_k15_file = tempfile.NamedTemporaryFile(suffix=".rep15.txt", delete=False)
-    if rep_k15 == Path(""):
+    if rep_k15 is None:
         rep_k15 = Path(rep_k15_file.name)
         cmd_k15_count = shlex.split(
             f"meryl count k=15 output {tmp_merylDB.name} {reference}"
@@ -624,7 +715,7 @@ def get_interval_on_read_in_region(
     istart = get_ref_position_on_read(
         alignment=a,
         position=start,
-        direction=Direction.LEFT,
+        direction=Direction.RIGHT,
         buffer_clipped_length=buffer_clipped_length,
     )
     iend = get_ref_position_on_read(
@@ -639,15 +730,14 @@ def get_interval_on_read_in_region(
 def get_interval_on_ref_in_region(
     a: pysam.libcalignedsegment.AlignedSegment, start: int, end: int
 ) -> tuple[int, int]:
+    """given a start and end on the read, return the corresponding interval on the reference."""
     # find start and end position on ref
     start, end = (end, start) if a.is_reverse else (start, end)
     istart = get_read_position_on_ref(
-        alignment=a, position=start, direction=Direction.LEFT
+        alignment=a, position=start, direction=Direction.RIGHT
     )
-    iend = get_read_position_on_ref(
-        alignment=a, position=end, direction=Direction.RIGHT
-    )
-    return istart, iend
+    iend = get_read_position_on_ref(alignment=a, position=end, direction=Direction.LEFT)
+    return min(iend, istart), max(iend, istart)
 
 
 # %%
@@ -794,6 +884,39 @@ def write_sequences_to_fasta(
 def index_reference(path: Path):
     cmd = shlex.split(f"samtools faidx {path}")
     subprocess.check_call(cmd)
+
+
+def seqrecord_to_dict(record):
+    """Convert SeqRecord to JSON-serializable dict"""
+    return {
+        "id": record.id,
+        "name": record.name,
+        "description": record.description,
+        "seq": str(record.seq),
+        "annotations": record.annotations,
+        "letter_annotations": {
+            k: list(v) for k, v in record.letter_annotations.items()
+        },
+        "features": [
+            {"type": f.type, "location": str(f.location), "qualifiers": f.qualifiers}
+            for f in record.features
+        ],
+    }
+
+
+def dict_to_seqrecord(data: dict) -> SeqRecord:
+    """Reconstruct SeqRecord from dict"""
+    from Bio.Seq import Seq
+
+    record = SeqRecord(
+        seq=Seq(data["seq"]),
+        id=data["id"],
+        name=data["name"],
+        description=data["description"],
+    )
+    record.annotations = data["annotations"]
+    # Add features if needed
+    return record
 
 
 # re-implement, but so that the path to the alignments is passed as a parameter
@@ -1259,7 +1382,7 @@ Forward or backward orientation of the aligned query sequence is respected.
     left_clipped = int(x[0]) if t[0] in (4, 5) else 0
     right_clipped = int(x[-1]) if t[-1] in (4, 5) else 0
     # if the position is left of the read, return alignment.query_alignment_start.
-    if position <= ref_start:
+    if position < ref_start:
         buffer = max(0, left_clipped - buffer_clipped_length)
         if is_reverse:
             return aln_length - buffer, -1, t, x
@@ -1270,7 +1393,8 @@ Forward or backward orientation of the aligned query sequence is respected.
         last_matching_block = np.where(
             (t == 0) | (t == 2) | (t == 3) | (t == 7) | (t == 8)
         )[0][-1]
-        buffer = max(0, right_clipped - buffer_clipped_length)
+        used_buffer = buffer_clipped_length if position > ref_end else 0
+        buffer = max(0, right_clipped - used_buffer)
         if is_reverse:
             return buffer, last_matching_block, t, x
         else:
@@ -1280,7 +1404,22 @@ Forward or backward orientation of the aligned query sequence is respected.
     )
     # find the block in which the position is located. It can be multiple blocks if the position is in an insertion
     # in that case, select fromt he blocks that are not insertions
-    block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
+
+    # Determine traversal direction based on read orientation
+    # If is_reverse, Read RIGHT (increasing) corresponds to Ref LEFT (decreasing block index)
+    traversal_direction = direction
+    if is_reverse:
+        if direction == Direction.RIGHT:
+            traversal_direction = Direction.LEFT
+        elif direction == Direction.LEFT:
+            traversal_direction = Direction.RIGHT
+
+    if direction == Direction.RIGHT:
+        block = np.where((x_ref_starts <= position) & (position < x_ref_ends))[0][0]
+    elif direction == Direction.LEFT:
+        block = np.where((x_ref_starts < position) & (position <= x_ref_ends))[0][0]
+    else:
+        block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
     # block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
     # if the block is a match, return the position on the read
     final_pos = -1
@@ -1299,7 +1438,7 @@ Forward or backward orientation of the aligned query sequence is respected.
         # if the position is exactly on an insertion, then go 1 to the right, until 'block' is on a match block,
         # if direction is RIGHT
         # else go 1 to the left.
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
             final_pos = x_read_starts[block]
@@ -1308,7 +1447,7 @@ Forward or backward orientation of the aligned query sequence is respected.
                 block -= 1
             final_pos = x_read_ends[block]
     if t[block] in (2, 3):
-        if direction == Direction.LEFT:
+        if traversal_direction == Direction.LEFT:
             # iterate index to the left (-1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block > 0:
                 block -= 1
@@ -1316,7 +1455,7 @@ Forward or backward orientation of the aligned query sequence is respected.
                 final_pos = x_read_starts[block]
             else:
                 final_pos = x_read_ends[block]
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             # iterate index to the right (+1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
@@ -1359,6 +1498,15 @@ def get_ref_position_on_read(
     return get_ref_pitx_on_read(alignment, position, direction, buffer_clipped_length)[
         0
     ]
+
+
+def is_ref_position_on_aligned_read(
+    alignment: pysam.AlignedSegment,
+    position: int,
+) -> bool:
+    ref_start = alignment.reference_start
+    ref_end = alignment.reference_end
+    return ref_start <= position < ref_end
 
 
 # -----------------------------------------------------------------------------
@@ -1411,7 +1559,50 @@ def get_read_pitx_on_ref(
     # find the block in which the position is located. It can be multiple blocks if the position is in an insertion
     # in that case, select fromt he blocks that are not insertions
     # TODO: can be sped up with binary search
-    block = np.where((x_read_starts <= position) & (position <= x_read_ends))[0][0]
+
+    if direction != Direction.RIGHT and direction != Direction.LEFT:
+        logging.warning(
+            "Other directions than LEFT or RIGHT are not supported. Using RIGHT as default."
+        )
+        direction = Direction.RIGHT
+        # # find the closest position that is aligned to the left or right of the position.
+        # block_l, block_r = block, block
+        # while t[block_l] not in (0, 7, 8) and block_l > 0:
+        #     block_l -= 1
+        # while t[block_r] not in (0, 7, 8) and block_r < len(t) - 1:
+        #     block_r += 1
+        # # the final position of block_l is the end of the chosen block
+        # # the final position of block_r is the start of the chosen block
+        # pos_l = x_ref_ends[block_l]
+        # pos_r = x_ref_starts[block_r]
+        # if position - pos_l < pos_r - position:
+        #     if is_reverse:
+        #         final_pos = x_read_starts[block_l]
+        #     else:
+        #         final_pos = x_read_ends[block_l]
+        #     block = block_l
+        # else:
+        #     if is_reverse:
+        #         final_pos = x_read_ends[block_r]
+        #     else:
+        #         final_pos = x_read_starts[block_r]
+        #     block = block_r
+
+    # Determine traversal direction based on read orientation
+    # If is_reverse, Read RIGHT (increasing) corresponds to Ref LEFT (decreasing block index)
+    traversal_direction = direction
+    if is_reverse:
+        if direction == Direction.RIGHT:
+            traversal_direction = Direction.LEFT
+        elif direction == Direction.LEFT:
+            traversal_direction = Direction.RIGHT
+
+    if direction == Direction.RIGHT:
+        block = np.where((x_read_starts <= position) & (position < x_read_ends))[0][0]
+    elif direction == Direction.LEFT:
+        block = np.where((x_read_starts < position) & (position <= x_read_ends))[0][0]
+    else:
+        block = np.where((x_read_starts <= position) & (position <= x_read_ends))[0][0]
     # block = np.where((x_ref_starts <= position) & (position <= x_ref_ends))[0][0]
     # if the block is a match, return the position on the read
     final_pos = -1
@@ -1429,7 +1620,7 @@ def get_read_pitx_on_ref(
         # if the position is exactly on an insertion, then go 1 to the right, until 'block' is on a match block,
         # if direction is RIGHT
         # else go 1 to the left.
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
             final_pos = x_ref_starts[block]
@@ -1438,7 +1629,7 @@ def get_read_pitx_on_ref(
                 block -= 1
             final_pos = x_ref_ends[block]
     if t[block] == 1:
-        if direction == Direction.LEFT:
+        if traversal_direction == Direction.LEFT:
             # iterate index to the left (-1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block > 0:
                 block -= 1
@@ -1446,7 +1637,7 @@ def get_read_pitx_on_ref(
                     final_pos = x_ref_starts[block]
                 else:
                     final_pos = x_ref_ends[block]
-        if direction == Direction.RIGHT:
+        if traversal_direction == Direction.RIGHT:
             # iterate index to the right (+1) until t[index] is a match
             while t[block] not in (0, 7, 8) and block < len(t) - 1:
                 block += 1
@@ -1454,29 +1645,7 @@ def get_read_pitx_on_ref(
                 final_pos = x_ref_ends[block]
             else:
                 final_pos = x_ref_starts[block]
-        if direction == Direction.NONE:
-            # find the closest position that is aligned to the left or right of the position.
-            block_l, block_r = block, block
-            while t[block_l] not in (0, 7, 8) and block_l > 0:
-                block_l -= 1
-            while t[block_r] not in (0, 7, 8) and block_r < len(t) - 1:
-                block_r += 1
-            # the final position of block_l is the end of the chosen block
-            # the final position of block_r is the start of the chosen block
-            pos_l = x_read_ends[block_l]
-            pos_r = x_read_starts[block_r]
-            if position - pos_l < pos_r - position:
-                if is_reverse:
-                    final_pos = x_ref_starts[block_l]
-                else:
-                    final_pos = x_ref_ends[block_l]
-                block = block_l
-            else:
-                if is_reverse:
-                    final_pos = x_ref_ends[block_r]
-                else:
-                    final_pos = x_ref_starts[block_r]
-                block = block_r
+
     return int(final_pos), int(block), t, x
 
 
@@ -1512,6 +1681,14 @@ def query_start_end_on_read(aln: pysam.AlignedSegment) -> tuple[int, int]:
         return e, e + body
     else:
         return s, s + body
+
+
+def is_read_position_on_ref(
+    alignment: pysam.AlignedSegment,
+    position: int,
+) -> bool:
+    s, e = query_start_end_on_read(alignment)
+    return s <= position < e
 
 
 def query_total_length(aln: pysam.AlignedSegment) -> int:
@@ -1645,7 +1822,7 @@ def kmer_similarity(
 def kmer_similarity_of_groups(
     group_a: list[str],
     group_b: list[str],
-    letter_dict: dict = None,
+    letter_dict: dict | None = None,
     k: int = 9,
 ) -> float:
     # construct kmer counter dicts for each group and combine them. Combining them means is summing their values

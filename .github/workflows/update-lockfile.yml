@@ -1,0 +1,28 @@
+name: Update Lockfile on Release PR
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  update-lock:
+    if: startsWith(github.head_ref, 'release-please--')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BOT_TOKEN }}
+          ref: ${{ github.head_ref }}
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+
+      - name: Update lockfile
+        run: |
+          pixi update --no-install
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pixi.lock
+          git commit -m "chore: update pixi.lock for version bump" || echo "No changes"
+          git push

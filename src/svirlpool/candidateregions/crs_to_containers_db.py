@@ -227,6 +227,7 @@ def crs_to_crs_containers(
     log.info(f"writing crs containers to {path_db}")
     write_containers_to_db(path_db=path_db, crs_containers=crs_containers)
     crIDs = [cr["crID"] for cr in crs_containers]
+
     if QC_histogram:
         log.info(f"Creating QC histogram at {QC_histogram}")
         crs_containers_QC(crs_containers=crs_containers, path_histogram=QC_histogram)

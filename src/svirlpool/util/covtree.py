@@ -102,11 +102,11 @@ def parallel_coverage_computation(
 
 def covtree(path_db: Path | str) -> dict[str, IntervalTree]:
     """Returns a dict of interval trees. Each tree consists of intervals (start, end, readname) of the 'read alignment fragments (RAFs)'."""
-    log.info(f"loading data from {path_db}")
+    log.debug(f"loading coverage tree data from {path_db}")
     data = load_reference_data(path_db)
     # print the memory usage of data
-    log.info(f"Data loaded. Memory usage: {data.nbytes / (1024**2):.2f} MB")
-    log.info("constructing interval trees")
+    log.debug(f"Data loaded. Memory usage: {data.nbytes / (1024**2):.2f} MB")
+    log.debug("constructing interval trees")
     intervall_trees, all_positions = construct_interval_trees(data)
     return intervall_trees
     # log.info(f"computing coverages")

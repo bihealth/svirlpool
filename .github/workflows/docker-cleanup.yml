@@ -1,0 +1,36 @@
+name: Targeted Docker Cleanup
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+      - name: Delete SHA and PR tags older than 3 months
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          package: 'svirlpool'
+          
+          # 1. Only look at images older than 3 months
+          older-than: '3 months'
+          
+          # 2. Only delete if the tag matches these specific patterns:
+          # ^sha-.* matches tags starting with sha-
+          # ^pr-.* matches tags starting with pr-
+          delete-tags: '^sha-.*,^pr-.*'
+          use-regex: true
+          
+          # 3. Specifically target untagged images (orphaned versions)
+          delete-untagged: true
+          
+          # 4. Safety: Do NOT delete anything else (like main or v*)
+          # By specifically naming our targets in 'delete-tags', 
+          # everything else is safe by default.
+          dry-run: false

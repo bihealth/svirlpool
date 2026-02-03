@@ -151,39 +151,55 @@ def run(args):
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Extract consensus sequences from a SVIRLPOOL database."
-    )
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "database", type=Path, help="Path to the SVIRLPOOL database file."
-    )
-    parser.add_argument(
-        "output_fasta",
+        "-i",
+        "--input",
+        help="Path to the SVIRLPOOL database file.",
+        required=True,
         type=Path,
-        help="Path to the output FASTA file for consensus sequences.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Path to the output FASTA file for consensus sequences. Use .gz extension for gzip compression (will be indexed with samtools faidx).",
+        required=True,
+        type=Path,
     )
     parser.add_argument(
         "--batch-size",
+        help="Number of sequences to batch before writing to file (default: 1000).",
+        required=False,
         type=int,
         default=1000,
-        help="Number of sequences to batch before writing to file (default: 1000).",
     )
     parser.add_argument(
         "--consensus-ids",
+        help="Optional list of consensus IDs to extract. If not provided, all sequences will be extracted.",
+        required=False,
         type=str,
         nargs="+",
         default=None,
-        help="Optional list of consensus IDs to extract. If not provided, all sequences will be extracted.",
     )
 
+
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description="Extract consensus sequences from a SVIRLPOOL database."
+    )
+    add_arguments(parser)
+    return parser
+
+
+def main():
+    parser = get_parser()
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
     write_consensus_sequences(
-        args.database,
-        args.output_fasta,
+        args.input,
+        args.output,
         batch_size=args.batch_size,
         consensus_ids=args.consensus_ids,
     )

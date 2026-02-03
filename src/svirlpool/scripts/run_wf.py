@@ -92,6 +92,7 @@ def run_wf(args):
     path_base_wf = Path(__file__).parent.parent / "workflows/main.smk"
     cmd_wf = split(
         f"snakemake \
+        --directory {str(args.workdir)} \
         {'--unlock' if args.snakemake_unlock else ''} \
         {'--executor slurm --jobs ' + str(args.executor_slurm_jobs) if args.executor_slurm_jobs > 0 else ''} \
         --rerun-incomplete \
