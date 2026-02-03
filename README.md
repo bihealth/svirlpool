@@ -31,6 +31,7 @@ Svirlpool obtains competitive results to leading methods like Sniffles on Genome
     * [I. Required Input Files](https://www.google.com/search?q=%23i-required-input-files)
     * [II. Step-by-Step Execution](https://www.google.com/search?q=%23ii-step-by-step-execution)
 4. [Developer & Formatting Hints](https://www.google.com/search?q=%23developer--formatting-hints)
+5. [Release Management](https://www.google.com/search?q=%23release-management)
 
 ---
 
@@ -180,3 +181,13 @@ For contributors or users running from source via `pixi`:
 * **Format Code:** `make fix`
 * **Lint & Tests:** `make check` or `make test`
 * **Full Suite:** `make fix check test`
+
+---
+
+## Release Management
+
+For maintainers creating releases:
+
+* **Automated Releases:** The project uses [Release Please](https://github.com/googleapis/release-please) for automated releases. Simply merge commits with conventional commit messages to `main`, and Release Please will create/update a release PR.
+* **Manual Releases:** If you need to create a manual release, see [RELEASE_GUIDE.md](RELEASE_GUIDE.md) for detailed instructions.
+* **Quick Reference:** See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for a quick checklist when creating manual releases.
