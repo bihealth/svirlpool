@@ -16,6 +16,8 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      pr: ${{ steps.release.outputs.pr }}
+      pr_head_ref: ${{ steps.release.outputs.pr_head_ref }}
     steps:
       - name: Create GitHub release
         uses: GoogleCloudPlatform/release-please-action@v4
@@ -24,6 +26,33 @@ jobs:
           # Use the built-in GITHUB_TOKEN if permissions allow, 
           # otherwise ensure BOT_TOKEN has 'workflows' scope.
           token: ${{ secrets.BOT_TOKEN }}
+      
+      - name: Checkout release PR branch
+        if: ${{ steps.release.outputs.pr }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.pr_head_ref }}
+          token: ${{ secrets.BOT_TOKEN }}
+      
+      - name: Setup Pixi
+        if: ${{ steps.release.outputs.pr }}
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+      
+      - name: Update lockfile
+        if: ${{ steps.release.outputs.pr }}
+        run: |
+          pixi update --no-install
+          if git diff --quiet pixi.lock 2>/dev/null; then
+            echo "No lockfile changes needed"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add pixi.lock
+            git commit -m "chore: update pixi.lock for version bump"
+            git push
+          fi
 
   build-publish:
     runs-on: ubuntu-latest
