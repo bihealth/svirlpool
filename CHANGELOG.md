@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/bihealth/svirlpool/compare/v0.1.0...v0.1.1) (2026-02-05)
+
+
+### Bug Fixes
+
+* close unclosed file handles in consensus module ([#54](https://github.com/bihealth/svirlpool/issues/54)) ([d2b2876](https://github.com/bihealth/svirlpool/commit/d2b28761d2e234922b93fa236054bf6557b34dea))
+
 ## [0.0.0](https://github.com/bihealth/svirlpool/compare/v0.0.0...v0.0.0) (2026-02-03)
 
 
