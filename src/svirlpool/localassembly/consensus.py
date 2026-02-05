@@ -52,34 +52,31 @@ def subsample_alignments(
     input_bamfile: Path, output_samfile: Path, number: int = 20, verbose: bool = False
 ) -> list[str]:
     """Filter BAM file to include only the longest reads up to 'number' and write to SAM format."""
-    # Read all alignments from bam file
-    alignments = list(pysam.AlignmentFile(input_bamfile))
+    # Read all alignments from bam file using context manager
+    with pysam.AlignmentFile(input_bamfile, "rb") as infile:
+        alignments = list(infile)
 
-    alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
-    alignments_by_length = sorted(
-        alignments_filtered,
-        key=lambda a: a.reference_end - a.reference_start,
-        reverse=True,
-    )
-    alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
+        alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
+        alignments_by_length = sorted(
+            alignments_filtered,
+            key=lambda a: a.reference_end - a.reference_start,
+            reverse=True,
+        )
+        alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
 
-    if len(alignments_by_length) == 0:
-        # No valid alignments, create empty output file
-        with pysam.AlignmentFile(
-            output_samfile, "w", template=pysam.AlignmentFile(input_bamfile, "rb")
-        ) as f:
-            pass
-        return []
+        if len(alignments_by_length) == 0:
+            # No valid alignments, create empty output file
+            with pysam.AlignmentFile(output_samfile, "w", template=infile) as f:
+                pass
+            return []
 
-    # Get readnames of selected alignments
-    readnames = [a.query_name for a in alignments_sampled]
+        # Get readnames of selected alignments
+        readnames = [a.query_name for a in alignments_sampled]
 
-    # Write selected alignments to samfile
-    with pysam.AlignmentFile(
-        output_samfile, "w", template=pysam.AlignmentFile(input_bamfile, "rb")
-    ) as f:
-        for a in alignments_sampled:
-            f.write(a)
+        # Write selected alignments to samfile
+        with pysam.AlignmentFile(output_samfile, "w", template=infile) as f:
+            for a in alignments_sampled:
+                f.write(a)
 
     return readnames
 
@@ -854,10 +851,9 @@ def final_consensus(
         threads=threads,
     )
 
-    # Parse alignments
-    cut_read_alns: list[pysam.AlignedFragment] = list(
-        pysam.AlignmentFile(tmp_alignments.name, mode="r")
-    )
+    # Parse alignments using context manager
+    with pysam.AlignmentFile(tmp_alignments.name, mode="r") as aln_file:
+        cut_read_alns: list[pysam.AlignedFragment] = list(aln_file)
     if len(cut_read_alns) == 0:
         log.warning(
             f"No alignments found for consensus {ID} in {tmp_alignments.name}. Returning None."
@@ -1088,9 +1084,8 @@ def align_cutreads_to_representative(
     )
 
     if show_ascii_alignments:
-        alignments_to_rafs.display_ascii_alignments(
-            alignments=list(pysam.AlignmentFile(tmp_alignments_sam.name, mode="r"))
-        )
+        with pysam.AlignmentFile(tmp_alignments_sam.name, mode="r") as aln_file:
+            alignments_to_rafs.display_ascii_alignments(alignments=list(aln_file))
 
     if compress:
         # convert sam to bam and index
@@ -1272,10 +1267,9 @@ def consensus_while_clustering(
                 log.error(f"Alignment with minimap2 timed out after {timeout} seconds.")
                 return None
 
-            # 3) parse alignments
-            all_vs_all_alignments = list(
-                pysam.AlignmentFile(tmp_all_vs_all_sam.name, mode="r")
-            )
+            # 3) parse alignments using context manager
+            with pysam.AlignmentFile(tmp_all_vs_all_sam.name, mode="r") as aln_file:
+                all_vs_all_alignments = list(aln_file)
             if len(all_vs_all_alignments) == 0:
                 log.warning(
                     "no alignments found in all-vs-all alignment of reads. Returning None."
@@ -1568,7 +1562,8 @@ def add_unaligned_reads_to_consensuses_inplace(
 
         # for each alignment, choose the primary alignment's reference name to re-distribute the read to the consensus object
         redistribution: dict[str, str] = {}  # {readname:consensusID}
-        alns = list(pysam.AlignmentFile(tmp_alignments.name, mode="r"))
+        with pysam.AlignmentFile(tmp_alignments.name, mode="r") as aln_file:
+            alns = list(aln_file)
         for aln in alns:
             if aln.is_unmapped:
                 continue

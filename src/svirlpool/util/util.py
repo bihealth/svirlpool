@@ -78,7 +78,8 @@ def yield_from_extendedSVsignal(
 
 
 def load_alignments(path: Path) -> list[pysam.AlignedSegment]:
-    return list(pysam.AlignmentFile(path, "rb"))
+    with pysam.AlignmentFile(path, "rb") as f:
+        return list(f)
 
 
 def load_crs_connections(input: Path) -> dict:
@@ -970,8 +971,9 @@ def create_alignments_to_reference(
         tech="map-ont",
         threads=1,
     )
-    # parse alignments to list of AlignedSegments
-    alns = list(pysam.AlignmentFile(alignments, "rb"))
+    # parse alignments to list of AlignedSegments using context manager
+    with pysam.AlignmentFile(alignments, "rb") as aln_file:
+        alns = list(aln_file)
     # return list of AlignedSegments
     # close tmp_dir
     tmp_dir.cleanup()
@@ -1003,8 +1005,9 @@ def get_alignments_to_reference(
             tech="map-ont",
             threads=1,
         )
-        # parse alignments to list of AlignedSegments
-        alns = list(pysam.AlignmentFile(path_alignments, "rb"))
+        # parse alignments to list of AlignedSegments using context manager
+        with pysam.AlignmentFile(path_alignments, "rb") as aln_file:
+            alns = list(aln_file)
     # return list of AlignedSegments
     return alns
 
@@ -1025,15 +1028,15 @@ def create_sample_dict_from_alignments(
     if no RG tag is present, then the sample name is the file name stem."""
     sample_dict = {}
     for a in alignments:
-        samfile = pysam.AlignmentFile(a.absolute(), "rb")
-        if "RG" not in samfile.header.to_dict().keys():
-            sample_dict[a.stem] = str(a.absolute())
-        else:
-            sns = get_samplenames_from_samfile(samfile)
-            if len(sns) == 1:
-                sample_dict[sns[0]] = str(a.absolute())
-            if len(sns) > 1:
-                raise ValueError(f"more than one sample name in {a.absolute()}")
+        with pysam.AlignmentFile(a.absolute(), "rb") as samfile:
+            if "RG" not in samfile.header.to_dict().keys():
+                sample_dict[a.stem] = str(a.absolute())
+            else:
+                sns = get_samplenames_from_samfile(samfile)
+                if len(sns) == 1:
+                    sample_dict[sns[0]] = str(a.absolute())
+                if len(sns) > 1:
+                    raise ValueError(f"more than one sample name in {a.absolute()}")
     return sample_dict
 
 
@@ -2081,34 +2084,33 @@ def cut_alignment(
 def cut_alignments(
     alignments_file: Path, region: tuple[str, int, int]
 ) -> list[pysam.AlignedSegment]:
-    samfile = pysam.AlignmentFile(alignments_file, "rb")
-    return [
-        value
-        for value in [
-            cut_alignment(alignment, region)
-            for alignment in samfile.fetch(region[0], region[1], region[2])
+    with pysam.AlignmentFile(alignments_file, "rb") as samfile:
+        return [
+            value
+            for value in [
+                cut_alignment(alignment, region)
+                for alignment in samfile.fetch(region[0], region[1], region[2])
+            ]
+            if value
         ]
-        if value
-    ]
 
 
 def cut_alignments_in_regions(
     samfile: Path, regions: list[tuple[str, int, int]], output: Path
 ) -> None:
-    with pysam.AlignmentFile(
-        output, "wb", template=pysam.AlignmentFile(samfile, "rb")
-    ) as f:
-        for region in tqdm(regions):
-            print(region)
-            for i, a in enumerate(cut_alignments(samfile, region)):
-                # test query lengths
-                if a.query_length != a.infer_query_length():
-                    print(
-                        f"query length mismatch: {a.query_length} vs {a.infer_query_length()}"
-                    )
-                if abs(a.query_length - a.infer_query_length()) > 1:
-                    print(i, a.query_name, a.query_length, a.infer_query_length())
-                f.write(a)
+    with pysam.AlignmentFile(samfile, "rb") as template_file:
+        with pysam.AlignmentFile(output, "wb", template=template_file) as f:
+            for region in tqdm(regions):
+                print(region)
+                for i, a in enumerate(cut_alignments(samfile, region)):
+                    # test query lengths
+                    if a.query_length != a.infer_query_length():
+                        print(
+                            f"query length mismatch: {a.query_length} vs {a.infer_query_length()}"
+                        )
+                    if abs(a.query_length - a.infer_query_length()) > 1:
+                        print(i, a.query_name, a.query_length, a.infer_query_length())
+                    f.write(a)
     return None
 
 
