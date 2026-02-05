@@ -6,6 +6,7 @@ import sqlite3
 from itertools import combinations
 from pathlib import Path, PosixPath
 
+from numpy import mean, median
 # from sklearn.cluster import AgglomerativeClustering
 # import numpy as np
 # import pandas as pd
@@ -87,37 +88,62 @@ def write_containers_to_db(path_db: Path, crs_containers: list[dict[str, object]
 
 # %%
 
+def is_bnd_significant(
+    signal: datatypes.ExtendedSVsignal,
+    cr: datatypes.CandidateRegion,
+    bnd_border_tolerance: int,
+    bnd_min_size: int,
+) -> bool:
+    if signal.sv_type == 3:
+        # BND left
+        return (
+            signal.ref_start >= cr.referenceStart + bnd_border_tolerance
+            and signal.size >= bnd_min_size
+        )
+    elif signal.sv_type == 4:
+        # BND right
+        return (
+            signal.ref_start <= cr.referenceEnd - bnd_border_tolerance
+            and signal.size >= bnd_min_size
+        )
+    return False
 
 def get_crs_containers(
     crs_dict: dict[int, datatypes.CandidateRegion],
     min_connections: int = 3,
     bnd_border_tolerance: int = 60,
     bnd_min_size: int = 500,
+    dynamic_min_connections_factor: float = 3.0,
 ) -> dict[str, list[int]]:
     """computes a dict of the form readname -> [crID] for all reads that connect two or more crs via BND signals"""
     """candidate regions are only connected if they share at least [min_connections] reads"""
-
+    # estimate avergage coverage by the average coverage of the average coverage of all candidate regions
+    avg_avg_cov:float = float(median([
+        mean([signal.coverage for signal in cr.sv_signals]) for cr in crs_dict.values()
+    ]))
+    log.debug(f"crs_to_containers_db::get_crs_containers: Average of average coverages of all candidate regions: {avg_avg_cov:.2f}")
+    
+    dynamic_min_connections:int = int(round(max(min_connections, int(avg_avg_cov / dynamic_min_connections_factor))))
+    
     dict_connectors: dict[str, list[int]] = {}
     for cr in crs_dict.values():
+        # don't connect candidate regions that are outside of the expected coverage
+        # group sv signals by readname
+        # only readnames that dont have more than one "significant" BND can serve as connectors.
+        # a "significant" BND is defined as a BND that is at least bnd_min_size and is at least bnd_border_tolerance away from the border of the candidate region
+        # 1) find all readnames with only one significant BND signal in this candidate region
+        cr_readnames:dict[str, int] = {} 
         for signal in cr.sv_signals:
-            # BND left
-            if (
-                signal.sv_type == 3
-                and signal.ref_start >= cr.referenceStart + bnd_border_tolerance
-                and signal.size >= bnd_min_size
-            ):
-                if signal.readname not in dict_connectors:
-                    dict_connectors[signal.readname] = []
-                dict_connectors[signal.readname].append(cr.crID)
-            # BND right
-            if (
-                signal.sv_type == 4
-                and signal.ref_start <= cr.referenceEnd - bnd_border_tolerance
-                and signal.size >= bnd_min_size
-            ):
-                if signal.readname not in dict_connectors:
-                    dict_connectors[signal.readname] = []
-                dict_connectors[signal.readname].append(cr.crID)
+            if is_bnd_significant(signal, cr, bnd_border_tolerance, bnd_min_size):
+                if signal.readname not in cr_readnames:
+                    cr_readnames[signal.readname] = 0
+                cr_readnames[signal.readname] += 1
+        # now filter cr_readnames to only those with exactly one significant BND signal
+        connectors:set[str] = {readname for (readname, count) in cr_readnames.items() if count == 1}
+        for readname in connectors:
+            if readname not in dict_connectors:
+                dict_connectors[readname] = []
+            dict_connectors[readname].append(cr.crID)
 
     dict_connections: dict[tuple[int, int], list[str]] = {}
     for readname, crIDs in dict_connectors.items():
@@ -127,8 +153,9 @@ def get_crs_containers(
                     dict_connections[(crIDa, crIDb)] = []
                 dict_connections[(crIDa, crIDb)].append(readname)
     dict_connections_filtered = {
-        key: val for key, val in dict_connections.items() if len(val) >= min_connections
+        key: val for key, val in dict_connections.items() if len(val) >= dynamic_min_connections
     }
+
     # all keys (crID tuples) in dict_connections_filtered are connected crIDs.
     # flat set of all connected crIDs:
     set_connected_crIDs: set[int] = {
@@ -141,6 +168,13 @@ def get_crs_containers(
     for crIDa, crIDb in dict_connections_filtered.keys():
         UF.union_by_name(crIDa, crIDb)
     CC = UF.get_connected_components()
+    
+    # print the number of elements per cc in sorted order
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("Connected components and their sizes:")
+        for cc in sorted(CC, key=len, reverse=True):
+            log.debug(f"  CC with {len(cc)} elements: {cc}")
+    
 
     log.info("Creating crs containers")
 
@@ -175,41 +209,14 @@ def get_crs_containers(
     return crs_containers
 
 
-def crs_containers_QC(
-    crs_containers: list[dict[str, object]], path_histogram: Path
-) -> None:
-    if not str(path_histogram).endswith(".png"):
-        raise ValueError(f"path_histogram must end with .png. It is {path_histogram}")
-    # validate crs_containers
-    assert type(crs_containers) == list, "crs_containers is not a list"
-    assert all(type(crs_container) == dict for crs_container in crs_containers), (
-        "crs_containers is not a list of dicts"
-    )
-    # check if all crs_containers have the keys 'crID', 'crs' and 'connecting_reads'
-    assert all("crs" in crs_container for crs_container in crs_containers), (
-        "crs_containers does not contain the key 'crs'"
-    )
-
-    # create a histogram of the number of crs per crs container
-    _data = [len(cr["crs"]) for cr in crs_containers]  # FIXME: unused?
-
-    # sns.histplot(data,bins=range(1,max(data)+1),discrete=True)
-    # import matplotlib.pyplot as plt
-    # plt.title('Histogram of crs per container')
-    # plt.xlabel('Number of crs')
-    # plt.ylabel('Number of containers')
-    # plt.grid(axis='y')
-    # plt.savefig(path_histogram)
-
-
 def crs_to_crs_containers(
     path_crs: Path,
     path_db: Path,
-    QC_histogram: Path | None = None,
     crIDs_file: Path | None = None,
     min_connections: int = 3,
     bnd_border_tolerance: int = 60,
     bnd_min_size: int = 500,
+    dynamic_min_connections_factor: float = 3.0,
 ) -> list[dict]:
     crs_dict = {
         cr.crID: cr for cr in signalstrength_to_crs.load_crs_from_db(path_db=path_crs)
@@ -219,6 +226,7 @@ def crs_to_crs_containers(
         min_connections=min_connections,
         bnd_border_tolerance=bnd_border_tolerance,
         bnd_min_size=bnd_min_size,
+        dynamic_min_connections_factor=dynamic_min_connections_factor,
     )
     # write crs_containers to sqlite3 database
     # to do so, the containers need to be json serialized
@@ -228,9 +236,6 @@ def crs_to_crs_containers(
     write_containers_to_db(path_db=path_db, crs_containers=crs_containers)
     crIDs = [cr["crID"] for cr in crs_containers]
 
-    if QC_histogram:
-        log.info(f"Creating QC histogram at {QC_histogram}")
-        crs_containers_QC(crs_containers=crs_containers, path_histogram=QC_histogram)
     # write all crIDs of all containers to newline separated text file
     log.info(f"Writing crIDs to {crIDs_file}")
     if crIDs_file:
@@ -243,14 +248,22 @@ def crs_to_crs_containers(
 
 
 def run(args, **kwargs):
+    # Configure logging based on the log level argument
+    log_level = getattr(logging, args.log_level) if hasattr(args, "log_level") else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+    
     crs_to_crs_containers(
         path_crs=args.input,
         path_db=args.database,
-        QC_histogram=args.QC_histogram,
         crIDs_file=args.crIDs,
         min_connections=args.min_connections,
         bnd_border_tolerance=args.bnd_border_tolerance,
         bnd_min_size=args.bnd_min_size,
+        dynamic_min_connections_factor=args.dynamic_min_connections_factor,
     )
 
 
@@ -271,13 +284,6 @@ def get_parser():
         type=Path,
         required=True,
         help="Path to sqlite3 database that will contain all crs containers.",
-    )
-    parser.add_argument(
-        "--QC_histogram",
-        type=Path,
-        required=False,
-        default=None,
-        help="Path to QC histogram file. Can be html or png.",
     )
     parser.add_argument(
         "--crIDs",
@@ -306,6 +312,20 @@ def get_parser():
         required=False,
         default=500,
         help="Minimum size of a BND signal to be considered.",
+    )
+    parser.add_argument(
+        "--dynamic-min-connections-factor",
+        type=float,
+        required=False,
+        default=3.0,
+        help="Factor to dynamically adjust minimum connections based on average coverage (default: 3.0).",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set the logging level (default: INFO).",
     )
     return parser
 
