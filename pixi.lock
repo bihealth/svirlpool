@@ -3934,8 +3934,8 @@ packages:
   - cython ; extra == 'tests'
 - pypi: ./
   name: svirlpool
-  version: 0.1.0
-  sha256: 6cc1fb3dde8dfa7c996f38194a34601f5a147f6195e31536e2a0c95a292b7b8c
+  version: 0.1.1
+  sha256: 31b930d8a0b96c2d140b548b783289720e631de462007f1b5328072c753565c3
   requires_dist:
   - numpy>=2.3.4,<3
   - pandas>=2.3.3,<3
