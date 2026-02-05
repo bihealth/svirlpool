@@ -2,6 +2,8 @@
 # %%
 
 import argparse
+import gzip
+import json
 import logging
 import os
 import pickle
@@ -11,6 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from itertools import groupby
+from math import ceil, floor
 from pathlib import Path
 from shlex import split
 
@@ -29,14 +32,34 @@ from .SVcomposite import SVcomposite
 
 log = logging.getLogger(__name__)
 
-SUPPORTED_SV_TYPES = {"INS", "DEL"}
-# SYMBOLIC_ALLELE_THRESHOLD will be passed as parameter instead of being a constant
+SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
+    SVpatterns.SVpatternInversionDeletion,
+    SVpatterns.SVpatternInversionDuplication,
+    SVpatterns.SVpatternInsertion,
+    SVpatterns.SVpatternDeletion,
+    SVpatterns.SVpatternInversion,
+    SVpatterns.SVpatternSingleBreakend,
+    SVpatterns.SVpatternAdjacency,
+})
 
+SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
+    pattern_type.get_sv_type() for pattern_type in SUPPORTED_SV_TYPES
+})
+# Add a sorted list constant for consistent ordering and help text
+SUPPORTED_SV_TYPE_STRINGS_LIST: list[str] = sorted(SUPPORTED_SV_TYPE_STRINGS)
+
+# Map SV type strings to lists of pattern types (handles multiple types for "BND")
+SUPPORTED_SV_TYPE_STRINGS_INVERSE: dict[str, list[type[SVpatterns.SVpatternType]]] = {}
+for pattern_type in SUPPORTED_SV_TYPES:
+    sv_type_str = pattern_type.get_sv_type()
+    if sv_type_str not in SUPPORTED_SV_TYPE_STRINGS_INVERSE:
+        SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv_type_str] = []
+    SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv_type_str].append(pattern_type)
 
 # %% FUNCTIONS
 
 
-def parse_candidate_regions_file(filepath: Path) -> dict[str, set[str]]:
+def parse_candidate_regions_file(filepath: Path) -> dict[str, set[int]]:
     """
     Parse a TSV file containing sample names and candidate region IDs.
 
@@ -46,7 +69,7 @@ def parse_candidate_regions_file(filepath: Path) -> dict[str, set[str]]:
     Returns:
         dict mapping samplename to set of candidate region IDs (crIDs)
     """
-    result = {}
+    result: dict[str, set[int]] = {}
     with open(filepath, "r") as f:
         for line in f:
             line = line.strip()
@@ -59,7 +82,7 @@ def parse_candidate_regions_file(filepath: Path) -> dict[str, set[str]]:
                 )
                 continue
             samplename = parts[0]
-            crIDs = set(parts[1].split(","))
+            crIDs = set(map(int, parts[1].split(",")))
             result[samplename] = crIDs
     log.info(f"Parsed candidate regions for {len(result)} samples")
     return result
@@ -190,33 +213,49 @@ def binary_svpattern_index_mask(
 
 
 # the horizontal merge allows to merge inter with intra alignment SVpatterns
+# this really only concerns insertions and deletions, which can be split across multiple aligned fragments
 def svPatterns_to_horizontally_merged_svComposites(
-    svPatterns: list[SVpatterns.SVpatternType], sv_types: list[str]
+    svPatterns: list[SVpatterns.SVpatternType],
+    sv_types: set[type[SVpatterns.SVpatternType]],
 ) -> list[SVcomposite]:
-    def get_sv_group_key(sv_type: str) -> str:
-        """Map SV types to group keys. INS and DEL are grouped together as INDEL."""
-        if sv_type in ("INS", "DEL"):
-            return "INDEL"
-        return sv_type
 
     result: list[SVcomposite] = []
     if len(svPatterns) == 0:
         log.warning(f"No SVpatterns found in {svPatterns}. Returning empty list.")
         return result
-    # filter by size and type
-    _svPatterns = [
+    # split the insertiosn and deletions. Add the rest to results immediately.
+    # filter svPatterns for supported types
+    _svPatterns = [svp for svp in svPatterns if type(svp) in sv_types]
+    unsupported = [svp for svp in svPatterns if type(svp) not in sv_types]
+    if unsupported:
+        log.warning(
+            f"Skipping {len(unsupported)} unsupported SVpatterns during horizontal merging: {[type(svp).__name__ for svp in unsupported]}"
+        )
+        unsupported.clear()
+    indels = [
         svp
-        for svp in svPatterns
-        if svp.get_size() is not None and svp.get_sv_type() in sv_types
+        for svp in _svPatterns
+        if type(svp) in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)
     ]
-    # sort svPatterns by consensusID and read_start
-    _svPatterns = sorted(_svPatterns, key=lambda x: (x.consensusID, x.get_sv_type()))
+    others = [
+        svp
+        for svp in _svPatterns
+        if type(svp)
+        not in (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)
+    ]
+    _svPatterns.clear()
 
-    groups = groupby(
-        _svPatterns, key=lambda x: (x.consensusID, get_sv_group_key(x.get_sv_type()))
-    )
+    # convert other svPatterns directly to svComposites
+    for svp in others:
+        result.append(SVcomposite.from_SVpattern(svp))
+
+    # sort svPatterns by consensusID and read_start
+    indels = sorted(indels, key=lambda x: (x.consensusID, x.read_start))
+
+    groups = groupby(indels, key=lambda x: x.consensusID)
+
     # loop svPatterns of each group and connect them if they share at least one repeatID
-    for (_consensusID, _sv_type), group in groups:
+    for _consensusID, group in groups:
         group = list(group)
         if len(group) == 1:
             result.append(SVcomposite.from_SVpatterns(group))
@@ -238,24 +277,6 @@ def svPatterns_to_horizontally_merged_svComposites(
             sv_patterns_in_component = [group[idx] for idx in component]
             if len(sv_patterns_in_component) > 0:
                 result.append(SVcomposite.from_SVpatterns(sv_patterns_in_component))
-
-    # check result.
-    # any insertions and deletions needs to have all svprimitives on the same chromosome
-    for svComposite in result:
-        chr_set = set()
-        for svp in svComposite.svPatterns:
-            if (
-                isinstance(svp, SVpatterns.SVpatternInsertion)
-                or isinstance(svp, SVpatterns.SVpatternDeletion)
-                or isinstance(svp, SVpatterns.SVpatternInversion)
-            ):
-                chr_set.add(svp.get_reference_region()[0])
-            else:
-                pass
-        if len(chr_set) > 1:
-            raise ValueError(
-                f"SVcomposite of type {svComposite.sv_type} has SVpatterns on different chromosomes: {chr_set}. This is not allowed. svComposite: {svComposite}"
-            )
 
     return result
 
@@ -310,27 +331,10 @@ def can_merge_svComposites_insertions(
     # - have similar sizes (computes from a combined population of both composites), tested with Cohen's D
     # get population of sizes
 
-    complexities_a: list[np.ndarray] = a.get_inserted_complexity_tracks()
-    complexities_b: list[np.ndarray] = b.get_inserted_complexity_tracks()
-    mean_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_a],
-            weights=[len(c) for c in complexities_a],
-        )
-        if len(complexities_a) > 0
-        else 0.0
-    )
-    mean_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_b],
-            weights=[len(c) for c in complexities_b],
-        )
-        if len(complexities_b) > 0
-        else 0.0
-    )
-    size_a, size_b = abs(a.get_size()), abs(b.get_size())
-    size_tolerance_a = (1.0 - mean_complexity_a) * size_a
-    size_tolerance_b = (1.0 - mean_complexity_b) * size_b
+    size_tolerance_a = sizetolerance_from_SVcomposite(a)
+    size_a = abs(a.get_size())
+    size_tolerance_b = sizetolerance_from_SVcomposite(b)
+    size_b = abs(b.get_size())
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -430,6 +434,45 @@ def can_merge_svComposites_insertions(
     return True
 
 
+def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
+    # if a is sv type insertion or inversion, get inserted complexity tracks
+    mean_complexity: float = 1.0
+    if issubclass(a.sv_type, SVpatterns.SVpatternInsertion) or issubclass(
+        a.sv_type, SVpatterns.SVpatternInversion
+    ):
+        complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
+        if (
+            complexities is None
+            or len(complexities) == 0
+            or sum((np.sum(s) for s in complexities)) == 0
+        ):
+            mean_complexity = 0.0
+        else:
+            mean_complexity = float(
+                np.average(
+                    [np.mean(c) for c in complexities],
+                    weights=[len(c) for c in complexities],
+                )
+            )
+    elif issubclass(a.sv_type, SVpatterns.SVpatternDeletion):
+        complexities: list[np.ndarray] = a.get_reference_complexity_tracks()
+        if (
+            complexities is None
+            or len(complexities) == 0
+            or np.sum((np.sum(s) for s in complexities)) == 0
+        ):
+            mean_complexity = 0.0
+        else:
+            mean_complexity = float(
+                np.average(
+                    [np.mean(c) for c in complexities],
+                    weights=[len(c) for c in complexities],
+                )
+            )
+    size_tolerance = (1.0 - mean_complexity) * float(abs(a.get_size()))
+    return size_tolerance
+
+
 def can_merge_svComposites_deletions(
     a: SVcomposite,
     b: SVcomposite,
@@ -477,27 +520,10 @@ def can_merge_svComposites_deletions(
             )
         return False
 
-    complexities_a: list[np.ndarray] = a.get_reference_complexity_tracks()
-    complexities_b: list[np.ndarray] = b.get_reference_complexity_tracks()
-    mean_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_a],
-            weights=[len(c) for c in complexities_a],
-        )
-        if len(complexities_a) > 0
-        else 0.0
-    )
-    mean_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in complexities_b],
-            weights=[len(c) for c in complexities_b],
-        )
-        if len(complexities_b) > 0
-        else 0.0
-    )
-    size_a, size_b = abs(a.get_size()), abs(b.get_size())
-    size_tolerance_a = (1.0 - mean_complexity_a) * size_a
-    size_tolerance_b = (1.0 - mean_complexity_b) * size_b
+    size_tolerance_a = sizetolerance_from_SVcomposite(a)
+    size_a = abs(a.get_size())
+    size_tolerance_b = sizetolerance_from_SVcomposite(b)
+    size_b = abs(b.get_size())
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -608,17 +634,53 @@ def vertically_merged_svComposites_from_group(
     verbose: bool = False,
 ) -> list[SVcomposite]:
     # The group is divided into subgroups with shared SV types
-    insertions = [svc for svc in group if svc.sv_type == "INS"]
-    deletions = [svc for svc in group if svc.sv_type == "DEL"]
-    inversions = [svc for svc in group if svc.sv_type == "INV"]
+    insertions = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternInsertion)
+    }
+    deletions = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternDeletion)
+    }
+    inversions = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternInversion)
+    }
+    breakends = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternSingleBreakend)
+    }
+    adjacencies = {
+        i: svc
+        for i, svc in enumerate(group)
+        if issubclass(svc.sv_type, SVpatterns.SVpatternAdjacency)
+    }
+
+    used_indices = set().union(
+        insertions.keys(),
+        deletions.keys(),
+        inversions.keys(),
+        breakends.keys(),
+        adjacencies.keys(),
+    )
     others = [
-        svc for svc in group if svc.sv_type not in ("INS", "DEL", "INV")
+        svc for i, svc in enumerate(group) if i not in used_indices
     ]  # BND, DUP, etc.
-    # and other to be implemented (e.g. BND, DUP, INV)
-    # --- insertions --- #
+    if verbose:
+        # get the set of types of others and print ehir counts per type
+        other_types = defaultdict(int)
+        for svc in others:
+            other_types[svc.sv_type.get_sv_type()] += 1
+        print("Others svComposites counts by type:")
+        for k, v in other_types.items():
+            print(f"  {k}:\t{v}")
 
     merged_insertions = merge_insertions(
-        insertions=insertions,
+        insertions=list(insertions.values()),
         d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
@@ -626,7 +688,7 @@ def vertically_merged_svComposites_from_group(
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
     merged_deletions = merge_deletions(
-        deletions=deletions,
+        deletions=list(deletions.values()),
         d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
@@ -634,15 +696,36 @@ def vertically_merged_svComposites_from_group(
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
     merged_inversions = merge_inversions(
-        inversions=inversions,
+        inversions=list(inversions.values()),
         d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
         verbose=verbose,
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
     )
+    merged_breakends = merge_breakends(
+        breakends=list(breakends.values()),
+        d=d,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+        verbose=verbose,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+    )
+    merged_cpx = merge_adjacencies(
+        adjacencies=list(adjacencies.values()),
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+        verbose=verbose,
+    )
 
-    return merged_insertions + merged_deletions + merged_inversions + others
+    return (
+        merged_insertions
+        + merged_deletions
+        + merged_inversions
+        + merged_breakends
+        + merged_cpx
+        + others
+    )
 
 
 def merge_alt_count_dicts(
@@ -659,13 +742,12 @@ def merge_alt_count_dicts(
 
 def merge_insertions(
     insertions: list[SVcomposite],
-    d: int,
+    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
     verbose: bool = False,
 ) -> list[SVcomposite]:
-    # DEBUG: throroughly check the input svComposites
     # 1) test if they have svPatterns
     if len(insertions) == 0:
         return []
@@ -690,6 +772,12 @@ def merge_insertions(
                     raise ValueError(
                         "merge_insertions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                     )
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternInsertion) for sv in insertions
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternInsertion to merge them."
+        )
 
     """Merge insertions that overlap on the reference and have similar sizes."""
     if len(insertions) == 0:
@@ -731,7 +819,7 @@ def merge_insertions(
 
 def merge_deletions(
     deletions: list[SVcomposite],
-    d: int,
+    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -741,8 +829,12 @@ def merge_deletions(
     if len(deletions) == 0:
         return []
     # check if all svPatterns are deletions
-    if any(sv.sv_type != "DEL" for sv in deletions):
-        raise ValueError("All SVcomposites must be of type DEL to merge them.")
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternDeletion) for sv in deletions
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternDeletion to merge them."
+        )
     uf = UnionFind(range(len(deletions)))
     for i in range(len(deletions)):
         for j in range(i + 1, len(deletions)):
@@ -782,8 +874,7 @@ def can_merge_svComposites_inversions(
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
-    # throroughly check the input svComposites
-    # 1) test if they have svPatterns
+    """"""
     if (
         not a.svPatterns
         or not b.svPatterns
@@ -814,61 +905,29 @@ def can_merge_svComposites_inversions(
         b, tolerance_radius=near
     )  # eiter spatially close or share at least one repeatID
     if not are_near:
-        if verbose:
-            print(
-                f"Cannot merge inversions: SVcomposites are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
-            )
+        log.debug(
+            f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
+        )
         return False
 
-    # For inversions, we need to consider BOTH reference and inserted complexity
-    # Get reference complexity (the region being inverted)
-    ref_complexities_a: list[np.ndarray] = a.get_reference_complexity_tracks()
-    ref_complexities_b: list[np.ndarray] = b.get_reference_complexity_tracks()
-    mean_ref_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in ref_complexities_a],
-            weights=[len(c) for c in ref_complexities_a],
+    if (
+        a.get_representative_SVpattern().SVprimitives[0].chr
+        != b.get_representative_SVpattern().SVprimitives[0].chr
+        or a.get_representative_SVpattern().SVprimitives[-1].chr
+        != b.get_representative_SVpattern().SVprimitives[-1].chr
+    ):
+        log.debug(
+            f"Cannot merge inversions: SVcomposites {a.svPatterns[0].consensusID},{b.svPatterns[0].consensusID} are on different chromosomes ({a.get_representative_SVpattern().SVprimitives[0].chr},{a.get_representative_SVpattern().SVprimitives[-1].chr} vs {b.get_representative_SVpattern().SVprimitives[0].chr},{b.get_representative_SVpattern().SVprimitives[-1].chr})"
         )
-        if len(ref_complexities_a) > 0
-        else 0.0
-    )
-    mean_ref_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in ref_complexities_b],
-            weights=[len(c) for c in ref_complexities_b],
-        )
-        if len(ref_complexities_b) > 0
-        else 0.0
-    )
+        return False
 
-    # Get inserted complexity (the inverted sequence)
-    ins_complexities_a: list[np.ndarray] = a.get_inserted_complexity_tracks()
-    ins_complexities_b: list[np.ndarray] = b.get_inserted_complexity_tracks()
-    mean_ins_complexity_a: float = float(
-        np.average(
-            [np.mean(c) for c in ins_complexities_a],
-            weights=[len(c) for c in ins_complexities_a],
-        )
-        if len(ins_complexities_a) > 0
-        else 0.0
-    )
-    mean_ins_complexity_b: float = float(
-        np.average(
-            [np.mean(c) for c in ins_complexities_b],
-            weights=[len(c) for c in ins_complexities_b],
-        )
-        if len(ins_complexities_b) > 0
-        else 0.0
-    )
-
-    # Use average of reference and inserted complexity for inversions
-    # This balances both aspects: the reference region AND the inverted sequence
-    mean_complexity_a: float = (mean_ref_complexity_a + mean_ins_complexity_a) / 2.0
-    mean_complexity_b: float = (mean_ref_complexity_b + mean_ins_complexity_b) / 2.0
-
-    size_a, size_b = abs(a.get_size()), abs(b.get_size())
-    size_tolerance_a = (1.0 - mean_complexity_a) * size_a
-    size_tolerance_b = (1.0 - mean_complexity_b) * size_b
+    # in the case that inversions of different subclasses are merged, it is necessary to measure their inner sizes to find a good size comparison,
+    # since outer break ends can align very well while the inverted interval can be of very different sizes.
+    # this allows to merge e.g. inverted dels with inverted dups given a stronger local noise.
+    size_tolerance_a = sizetolerance_from_SVcomposite(a)
+    size_a = abs(a.get_size(inner=True))
+    size_tolerance_b = sizetolerance_from_SVcomposite(b)
+    size_b = abs(b.get_size(inner=True))
 
     population_a: np.ndarray = (
         np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -899,12 +958,8 @@ def can_merge_svComposites_inversions(
                 f"Size comparison - Trivial case: mean_diff={mean_diff:.1f} <= tolerance_sum={size_tolerance_a + size_tolerance_b:.1f}"
             )
             print(f"  Mean A: {mean_a:.1f}, Mean B: {mean_b:.1f}")
-            print(
-                f"  Tolerance A: {size_tolerance_a:.1f} (ref_complexity={mean_ref_complexity_a:.3f}, ins_complexity={mean_ins_complexity_a:.3f})"
-            )
-            print(
-                f"  Tolerance B: {size_tolerance_b:.1f} (ref_complexity={mean_ref_complexity_b:.3f}, ins_complexity={mean_ins_complexity_b:.3f})"
-            )
+            print(f"  Tolerance A: {size_tolerance_a:.1f}")
+            print(f"  Tolerance B: {size_tolerance_b:.1f}")
     else:
         # Shift means towards each other and calculate Cohen's d
         if mean_a > mean_b:
@@ -936,12 +991,6 @@ def can_merge_svComposites_inversions(
             )
             print(f"  Shifted means - A: {shifted_mean_a:.1f}, B: {shifted_mean_b:.1f}")
             print(
-                f"  Complexity A - ref: {mean_ref_complexity_a:.3f}, ins: {mean_ins_complexity_a:.3f}, avg: {mean_complexity_a:.3f}"
-            )
-            print(
-                f"  Complexity B - ref: {mean_ref_complexity_b:.3f}, ins: {mean_ins_complexity_b:.3f}, avg: {mean_complexity_b:.3f}"
-            )
-            print(
                 f"  Tolerances - A: {size_tolerance_a:.1f}, B: {size_tolerance_b:.1f}"
             )
             print(f"  Population A sizes: {population_a.tolist()}")
@@ -953,18 +1002,14 @@ def can_merge_svComposites_inversions(
     inverted_sequences_b = []
 
     for svPattern in a.svPatterns:
-        if (
-            isinstance(svPattern, SVpatterns.SVpatternInversion)
-            and svPattern.inserted_sequence
-        ):
-            inverted_sequences_a.append(pickle.loads(svPattern.inserted_sequence))
+        if isinstance(svPattern, SVpatterns.SVpatternInversion):
+            seq = svPattern.get_sequence()
+            inverted_sequences_a.append(seq)
 
     for svPattern in b.svPatterns:
-        if (
-            isinstance(svPattern, SVpatterns.SVpatternInversion)
-            and svPattern.inserted_sequence
-        ):
-            inverted_sequences_b.append(pickle.loads(svPattern.inserted_sequence))
+        if isinstance(svPattern, SVpatterns.SVpatternInversion):
+            seq = svPattern.get_sequence()
+            inverted_sequences_b.append(seq)
 
     if size_a < 100 and size_b < 100:
         similarity = 1.0  # don't compare k-mers for small inversions, they are too short to be meaningful
@@ -996,15 +1041,16 @@ def can_merge_svComposites_inversions(
 
 def merge_inversions(
     inversions: list[SVcomposite],
-    d: int,
+    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
     verbose: bool = False,
 ) -> list[SVcomposite]:
-    # DEBUG: throroughly check the input svComposites
+    """Merge inversions that overlap on the reference and have similar sizes."""
     # 1) test if they have svPatterns
     if len(inversions) == 0:
+        log.debug("merge_inversions: No inversions to merge.")
         return []
     for svComposite in inversions:
         if not svComposite.svPatterns or len(svComposite.svPatterns) == 0:
@@ -1027,14 +1073,25 @@ def merge_inversions(
                     raise ValueError(
                         "merge_inversions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                     )
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternInversion) for sv in inversions
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternInversion to merge them."
+        )
 
-    """Merge inversions that overlap on the reference and have similar sizes."""
-    if len(inversions) == 0:
-        return []
     # check if all svPatterns are inversions
-    if any(sv.sv_type != "INV" for sv in inversions):
-        raise ValueError("All SVcomposites must be of type INV to merge them.")
+    # create a set of sv_types and check if all are subclasses of SVpatternInversion
+    present_sv_types = {sv.sv_type for sv in inversions}
+    if not all(
+        issubclass(sv_type, SVpatterns.SVpatternInversion)
+        for sv_type in present_sv_types
+    ):
+        raise ValueError(
+            "All SVcomposites must be a subclass of SVpatternInversion to merge them."
+        )
     uf = UnionFind(range(len(inversions)))
+    log.debug(f"Starting merge of {len(inversions)} inversions.")
     for i in range(len(inversions)):
         for j in range(i + 1, len(inversions)):
             if can_merge_svComposites_inversions(
@@ -1047,8 +1104,14 @@ def merge_inversions(
                 verbose=verbose,
             ):
                 uf.union(i, j)
+                log.debug(
+                    f"Connected inversions: {inversions[i].svPatterns[0].consensusID} and {inversions[j].svPatterns[0].consensusID}"
+                )
     result: list[SVcomposite] = []
     for cc in uf.get_connected_components(allow_singletons=True):
+        log.debug(
+            f"Merging group of size {len(cc)} with consensusIDs: {[inversions[idx].svPatterns[0].consensusID for idx in cc]}"
+        )
         result.append(
             SVcomposite.from_SVpatterns(
                 svPatterns=[
@@ -1059,14 +1122,300 @@ def merge_inversions(
     return result
 
 
+def can_merge_svComposites_breakends(
+    a: SVcomposite,
+    b: SVcomposite,
+    apriori_size_difference_fraction_tolerance: float,
+    near: int,
+    d: float = 2.0,
+    min_kmer_overlap: float = 0.7,
+    verbose: bool = False,
+) -> bool:
+    """Check if two breakend SVcomposites can be merged based on proximity and sequence context similarity."""
+    # 1) test if they have svPatterns
+    if (
+        not a.svPatterns
+        or not b.svPatterns
+        or len(a.svPatterns) == 0
+        or len(b.svPatterns) == 0
+    ):
+        raise ValueError(
+            "can_merge_svComposites_breakends: SVcomposites must contain at least one SVpattern to merge."
+        )
+    # 2) check every svPattern if it contains svPrimitives
+    for svp in a.svPatterns + b.svPatterns:
+        if not svp.SVprimitives or len(svp.SVprimitives) == 0:
+            raise ValueError(
+                "can_merge_svComposites_breakends: SVpattern must contain at least one SVprimitive to merge."
+            )
+    # 3) test every svPattern if it has a genotypeMeasurement with supporting_reads_start
+    for svPattern in a.svPatterns + b.svPatterns:
+        for svPrimitive in svPattern.SVprimitives:
+            if (
+                not svPrimitive.genotypeMeasurement
+                or not svPrimitive.genotypeMeasurement.supporting_reads_start
+            ):
+                raise ValueError(
+                    "can_merge_svComposites_breakends: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
+                )
+
+    are_near: bool = a.overlaps_any(
+        b, tolerance_radius=near
+    )  # either spatially close or share at least one repeatID
+    if not are_near:
+        if verbose:
+            print(
+                f"Cannot merge breakends: SVcomposites are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
+            )
+        return False
+
+    # For breakends, we compare sequence contexts using k-mer similarity
+    # Get sequence contexts from both breakends
+    contexts_a = (
+        a.get_inserted_sequences()
+    )  # calls get_sequence on the SVpattern, which routes to get_sequence_context
+    contexts_b = b.get_inserted_sequences()
+
+    if len(contexts_a) == 0 or len(contexts_b) == 0:
+        if verbose:
+            print(
+                "Cannot merge breakends: one or both SVcomposites have no sequence context"
+            )
+        return False
+
+    similarity: float = kmer_similarity_of_groups(
+        group_a=contexts_a, group_b=contexts_b
+    )
+
+    similar_context_kmers: bool = similarity >= min_kmer_overlap
+
+    if verbose:
+        print(
+            f"K-mer similarity: {similarity:.3f}, threshold: {min_kmer_overlap}, similar_kmers: {similar_context_kmers}"
+        )
+
+    if not similar_context_kmers:
+        if verbose:
+            print("Cannot merge breakends: k-mer similarity is too low")
+        return False
+
+    if verbose:
+        print("Can merge breakends: all criteria passed")
+    return True
+
+
+def merge_breakends(
+    breakends: list[SVcomposite],
+    d: float,
+    near: int,
+    min_kmer_overlap: float,
+    apriori_size_difference_fraction_tolerance: float,
+    verbose: bool = False,
+) -> list[SVcomposite]:
+    """Merge breakends that are spatially close and have similar sequence contexts."""
+    # 1) test if they have svPatterns
+    if len(breakends) == 0:
+        return []
+    for svComposite in breakends:
+        if not svComposite.svPatterns or len(svComposite.svPatterns) == 0:
+            raise ValueError(
+                "merge_breakends: SVcomposites must contain at least one SVpattern to merge."
+            )
+        # 2) check every svPattern if it contains svPrimitives
+        for svp in svComposite.svPatterns:
+            if not svp.SVprimitives or len(svp.SVprimitives) == 0:
+                raise ValueError(
+                    "merge_breakends: SVpattern must contain at least one SVprimitive to merge."
+                )
+        # 3) test every svPattern if it has a genotypeMeasurement with supporting_reads_start
+        for svPattern in svComposite.svPatterns:
+            for svPrimitive in svPattern.SVprimitives:
+                if (
+                    not svPrimitive.genotypeMeasurement
+                    or not svPrimitive.genotypeMeasurement.supporting_reads_start
+                ):
+                    raise ValueError(
+                        "merge_breakends: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
+                    )
+    if not all(
+        issubclass(sv.sv_type, SVpatterns.SVpatternSingleBreakend) for sv in breakends
+    ):
+        raise ValueError(
+            "All SVcomposites must be of type SVpatternSingleBreakend to merge them."
+        )
+
+    if len(breakends) == 0:
+        return []
+    uf = UnionFind(range(len(breakends)))
+    for i in range(len(breakends)):
+        for j in range(i + 1, len(breakends)):
+            if verbose:
+                print(
+                    f"Checking breakends {i} and {j}: {breakends[i].svPatterns[0].samplename}:{breakends[i].svPatterns[0].consensusID} vs {breakends[j].svPatterns[0].samplename}:{breakends[j].svPatterns[0].consensusID}"
+                )
+            if can_merge_svComposites_breakends(
+                a=breakends[i],
+                b=breakends[j],
+                apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+                d=d,
+                near=near,
+                min_kmer_overlap=min_kmer_overlap,
+                verbose=verbose,
+            ):
+                uf.union(i, j)
+            else:
+                if verbose:
+                    print(f"Not merging breakends {i} and {j}")
+    result: list[SVcomposite] = []
+    for cc in uf.get_connected_components(
+        allow_singletons=True
+    ):  # connected components of svComposites to merge
+        result.append(
+            SVcomposite.from_SVpatterns(
+                svPatterns=[
+                    svPattern for idx in cc for svPattern in breakends[idx].svPatterns
+                ]
+            )
+        )
+    return result
+
+
+def _complexes_overlap(
+    complex_a: SVcomposite, complex_b: SVcomposite, near: int
+) -> bool:
+    """Check if two complex SVcomposites overlap in all their breakends within a given tolerance.
+    It is assumed that each sv complex is composed of exactly one sv pattern at this point."""
+    if len(complex_a.svPatterns) != 1 or len(complex_b.svPatterns) != 1:
+        raise ValueError(
+            f"_complexes_overlap: SVcomposites must contain exactly one SVpattern each to check for overlap. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
+        )
+
+    primitives_a = sorted(
+        complex_a.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start)
+    )
+    primitives_b = sorted(
+        complex_b.svPatterns[0].SVprimitives, key=lambda p: (p.chr, p.ref_start)
+    )
+
+    if len(primitives_a) != len(primitives_b):
+        return False  # Different number of breakends, cannot overlap
+
+    for prim_a, prim_b in zip(primitives_a, primitives_b, strict=True):
+        if prim_a.chr != prim_b.chr:
+            return False  # Different chromosomes, cannot overlap
+        start_a, end_a = sorted((prim_a.ref_start, prim_a.ref_end))
+        start_b, end_b = sorted((prim_b.ref_start, prim_b.ref_end))
+
+        # Check if the intervals overlap within the tolerance
+        if end_a + near < start_b or end_b + near < start_a:
+            return False  # No overlap within tolerance
+
+    return True  # All breakends overlap within tolerance
+
+
+def _adjacencies_kmer_similarity(
+    complex_a: SVcomposite,
+    complex_b: SVcomposite,
+    min_kmer_overlap: float,
+) -> bool:
+    """Calculate k-mer similarity between two complex SVcomposites based on their breakend sequences."""
+    # each complex has exactly one sv pattern at this point
+    if len(complex_a.svPatterns) != 1 or len(complex_b.svPatterns) != 1:
+        raise ValueError(
+            f"_adjacencies_kmer_similarity: SVcomposites must contain exactly one SVpattern each to calculate k-mer similarity. Got {len(complex_a.svPatterns)} and {len(complex_b.svPatterns)}."
+        )
+    if not issubclass(complex_a.sv_type, SVpatterns.SVpatternAdjacency):
+        raise ValueError(
+            f"_adjacencies_kmer_similarity: SVcomposite 'a' must be of type SVpatternAdjacency. Got {complex_a.sv_type}."
+        )
+    if not issubclass(complex_b.sv_type, SVpatterns.SVpatternAdjacency):
+        raise ValueError(
+            f"_adjacencies_kmer_similarity: SVcomposite 'b' must be of type SVpatternAdjacency. Got {complex_b.sv_type}."
+        )
+    # each sv pattern has saved sequence contexts (400 bp of consenus sequence, just like an inserrtion)
+    # they are indexed by their sv primitive ID
+    # this is not necessarily in the same order as the sv primitves sorted by reference chr, start_pos.
+    # so it is necessary to keep track of the indexes.
+    # sort sv primitives by chr, start_pos to get a consistent order. keep track of their old ID, so they can be mapped back to the sequences.
+
+    # generate tuples of (original sv primtive index, sv primitive, sequence context)
+    data_a = sorted(
+        [
+            (idx, sv_prim, complex_a.svPatterns[0].get_sequence_context(svp_index=idx))
+            for idx, sv_prim in enumerate(complex_a.svPatterns[0].SVprimitives)
+        ],
+        key=lambda x: (x[1].chr, x[1].ref_start),
+    )
+    data_b = sorted(
+        [
+            (idx, sv_prim, complex_b.svPatterns[0].get_sequence_context(svp_index=idx))
+            for idx, sv_prim in enumerate(complex_b.svPatterns[0].SVprimitives)
+        ],
+        key=lambda x: (x[1].chr, x[1].ref_start),
+    )
+    # now calculate kmer similarity for each group
+    group_a = [seq for _, _, seq in data_a]
+    group_b = [seq for _, _, seq in data_b]
+    similarity: float = kmer_similarity_of_groups(group_a=group_a, group_b=group_b)
+    return similarity >= min_kmer_overlap
+
+
+def merge_adjacencies(
+    adjacencies: list[SVcomposite],
+    near: int,
+    min_kmer_overlap: float,
+    verbose: bool = False,
+) -> list[SVcomposite]:
+    """Merge complex SVcomposites that are spatially close in every underlying sv primitive (breakend), and if their kmer similarities are high enough."""
+    # any combination of adjacencies can be merged here, so every combination of adjacencies must be tested.
+    uf: UnionFind = UnionFind(range(len(adjacencies)))
+    # if two adjacencies match, connect them. Every connected component will be merged into one complex at the end.
+    for i in range(len(adjacencies)):
+        for j in range(i + 1, len(adjacencies)):
+            if _complexes_overlap(
+                complex_a=adjacencies[i], complex_b=adjacencies[j], near=near
+            ):
+                if _adjacencies_kmer_similarity(
+                    complex_a=adjacencies[i],
+                    complex_b=adjacencies[j],
+                    min_kmer_overlap=min_kmer_overlap,
+                ):
+                    uf.union(i, j)
+                    if verbose:
+                        print(
+                            f"Merging adjacencies {i} and {j} based on overlap and k-mer similarity."
+                        )
+                else:
+                    if verbose:
+                        print(
+                            f"Not merging adjacencies {i} and {j}: k-mer similarity too low."
+                        )
+            else:
+                if verbose:
+                    print(
+                        f"Not merging adjacencies {i} and {j}: no overlap within tolerance."
+                    )
+    result: list[SVcomposite] = []
+    for cc in uf.get_connected_components(allow_singletons=True):
+        result.append(
+            SVcomposite.from_SVpatterns(
+                svPatterns=[
+                    svPattern for idx in cc for svPattern in adjacencies[idx].svPatterns
+                ]
+            )
+        )
+
+    return result
+
+
 # %%
 
 
 # horizontal merge
 def generate_svComposites_from_dbs(
-    input: list[str],
-    sv_types: list[str],
-    candidate_regions_filter: dict[str, set[str]] | None = None,
+    input: list[str | Path],
+    sv_types: set[type[SVpatterns.SVpatternType]],
+    candidate_regions_filter: dict[str, set[int]] | None = None,
 ) -> list[SVcomposite]:
     svComposites: list[SVcomposite] = []
     for p in input:
@@ -1075,7 +1424,7 @@ def generate_svComposites_from_dbs(
         samplename = metadata.get("samplename")
 
         # Determine if we should filter by crIDs for this sample
-        crIDs_to_query = None
+        crIDs_to_query: set[int] | None = None
         if (
             candidate_regions_filter is not None
             and samplename in candidate_regions_filter
@@ -1089,15 +1438,122 @@ def generate_svComposites_from_dbs(
         svPatterns = SVpatterns.read_svPatterns_from_db(
             database=Path(p), crIDs=crIDs_to_query
         )
+        # DEBUG START
+        # if there are sv patterns with consensusID "7.x", then print their consensusID and sv_type
+        # for svp in svPatterns:
+        #     if svp.consensusID.startswith("7."):
+        #         print(
+        #             f"generate_svComposites_from_dbs:: {svp.consensusID} - {svp.get_sv_type()}"
+        #         )
+        # note: 7.0, 7.1, 7.2 are here
 
-        log.info(f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}")
+        # count the type of each svPattern
+        # then print the counts
+        sv_type_counts: dict[str, int] = {}
+        for svp in svPatterns:
+            sv_type_counts[svp.get_sv_type()] = (
+                sv_type_counts.get(svp.get_sv_type(), 0) + 1
+            )
+        log.info(
+            f"Retrieved {len(svPatterns)} SVpatterns for sample {samplename}: {sv_type_counts}"
+        )
 
         svComposites.extend(
             svPatterns_to_horizontally_merged_svComposites(
                 svPatterns, sv_types=sv_types
             )
         )
+
+        # after horizontal merging, count again teh types of sv composites
+        sv_composite_type_counts: dict[str, int] = {}
+        for svc in svComposites:
+            sv_composite_type_counts[svc.sv_type.get_sv_type()] = (
+                sv_composite_type_counts.get(svc.sv_type.get_sv_type(), 0) + 1
+            )
+        log.debug(
+            f"After horizontal merging, total SVcomposites for sample {samplename}: {sv_composite_type_counts}"
+        )
+
     return svComposites
+
+
+def merge_svComposites_across_chromosomes(
+    svComposites: list[SVcomposite],
+    apriori_size_difference_fraction_tolerance: float,
+    max_cohens_d: float,
+    near: int,
+    min_kmer_overlap: float,
+    verbose: bool = False,
+) -> list[SVcomposite]:
+    """
+    Merge SVcomposites across chromosomes without parallelization.
+    This function processes all chromosomes sequentially.
+    """
+    log.debug(f"Processing {len(svComposites)} SVcomposites across chromosomes")
+
+    # build overlap trees for all chromosomes
+    overlap_trees: dict[str, IntervalTree] = defaultdict(IntervalTree)
+    for idx, svComposite in enumerate(svComposites):
+        for svprimitive in (
+            svComposite.svPatterns[0].SVprimitives
+        ):  # assuming there is only one sv pattern per sv composite at this point
+            chr = svprimitive.chr
+            start = svprimitive.ref_start
+            end = svprimitive.ref_end
+            if start > end:
+                start, end = end, start
+            if end - start < near:
+                start -= near
+                end += near
+            if start < 0:
+                start = 0
+            overlap_trees[chr].addi(start, end, {idx})
+    log.debug("Merging overlap trees for all chromosomes")
+    uf = UnionFind(range(len(svComposites)))
+
+    for _chr_name, tree in overlap_trees.items():
+        tree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
+
+    for _chr_name, tree in overlap_trees.items():
+        for interval in tree:
+            indices = sorted(interval.data)
+            if len(indices) > 1:
+                for i in range(len(indices)):
+                    for j in range(i + 1, len(indices)):
+                        uf.union_by_name(indices[i], indices[j])
+
+    # vertical merging
+    connected_components = uf.get_connected_components(allow_singletons=True)
+    merged_svComposites = []
+    log.debug(
+        f"Vertically merging {len(connected_components)} groups across chromosomes"
+    )
+    for cc in tqdm(connected_components, desc="All Chromosomes"):
+        if verbose:
+            log.info(f"Merging group with {len(cc)} svComposites: {cc}")
+        svComposite_group = [svComposites[idx] for idx in cc]
+
+        if len(svComposite_group) > 1:
+            log.debug(
+                f"Vertically merging group of size {len(svComposite_group)} with consensusIDs: {[svc.svPatterns[0].consensusID for svc in svComposite_group]}"
+            )
+
+            merged = vertically_merged_svComposites_from_group(
+                group=svComposite_group,
+                d=max_cohens_d,
+                near=near,
+                min_kmer_overlap=min_kmer_overlap,
+                apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+                verbose=verbose,
+            )
+
+            merged_svComposites.extend(merged)
+        else:
+            merged_svComposites.append(svComposite_group[0])
+    log.debug(
+        f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across chromosomes"
+    )
+    return merged_svComposites
 
 
 def merge_svComposites_for_chromosome(
@@ -1113,7 +1569,7 @@ def merge_svComposites_for_chromosome(
     Merge SVcomposites for a single chromosome.
     This function is designed to be run in parallel for different chromosomes.
     """
-    log.info(f"Processing chromosome {chr_name} with {len(svComposites)} SVcomposites")
+    log.debug(f"Processing chromosome {chr_name} with {len(svComposites)} SVcomposites")
 
     # Build overlap trees for this chromosome only
     overlaptree = IntervalTree()
@@ -1135,7 +1591,7 @@ def merge_svComposites_for_chromosome(
                 overlaptree.addi(start, end, {idx})
 
     # Merge overlapping intervals
-    log.info(f"Merging overlap tree for chromosome {chr_name}")
+    log.debug(f"Merging overlap tree for chromosome {chr_name}")
     uf = UnionFind(range(len(svComposites)))
     overlaptree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
 
@@ -1144,7 +1600,7 @@ def merge_svComposites_for_chromosome(
         if len(indices) > 1:
             for i in range(len(indices)):
                 for j in range(i + 1, len(indices)):
-                    # Don't merge if same sample and consensus
+                    # Don't merge if same sample and consensus are identical - this is vertical merging (across samples and consensuses)
                     if (
                         svComposites[indices[i]].svPatterns[0].consensusID
                         == svComposites[indices[j]].svPatterns[0].consensusID
@@ -1159,7 +1615,7 @@ def merge_svComposites_for_chromosome(
     connected_components = uf.get_connected_components(allow_singletons=True)
     merged_svComposites = []
 
-    log.info(
+    log.debug(
         f"Vertically merging {len(connected_components)} groups for chromosome {chr_name}"
     )
     for cc in tqdm(connected_components, desc=f"Chr {chr_name}"):
@@ -1168,6 +1624,9 @@ def merge_svComposites_for_chromosome(
         svComposite_group = [svComposites[idx] for idx in cc]
 
         if len(svComposite_group) > 1:
+            log.debug(
+                f"Vertically merging group of size {len(svComposite_group)} with consensusIDs: {[svc.svPatterns[0].consensusID for svc in svComposite_group]}"
+            )
             merged = vertically_merged_svComposites_from_group(
                 group=svComposite_group,
                 d=max_cohens_d,
@@ -1180,7 +1639,7 @@ def merge_svComposites_for_chromosome(
         else:
             merged_svComposites.append(svComposite_group[0])
 
-    log.info(
+    log.debug(
         f"Chromosome {chr_name}: Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)}"
     )
     return merged_svComposites
@@ -1199,12 +1658,27 @@ def merge_svComposites(
     Merge SVcomposites across samples, optionally using parallel processing per chromosome.
     """
     # Group SVcomposites by chromosome
-    log.info(f"Grouping {len(svComposites)} SVcomposites by chromosome...")
+    log.debug(f"Grouping {len(svComposites)} SVcomposites by chromosome...")
     chr_groups: dict[str, list[SVcomposite]] = defaultdict(list)
 
+    # not part of this merging should be all types of SV composites that are of a translocation type
+    # since the work is parallelized across chromosomes.
+
+    cpx_groups: list[SVcomposite] = []
+    # how to handle the cpx groups?
+    # since they can have parts hopping to homologous regions, the chromosome pattern
+    # can easily be disturbed. It could work much better to align all associated consensus
+    # sequences (the core sequences) in a all-vs-all alignment and then cluster them based partial overlaps.
+    # The alignment needs to be very strict and allow only small indels and mismatches.
+    # the condition of a merge attempt would be that the reciprocal overlap is greater than 50%
+    # however, it must be prevented that contradictory merges are made, e.g. A-B and B-C but A-C is not valid.
+
     for svComposite in svComposites:
-        chr_name = svComposite.ref_start[0]  # Get chromosome from ref_start tuple
-        chr_groups[chr_name].append(svComposite)
+        if issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
+            cpx_groups.append(svComposite)
+        else:
+            chr_name = svComposite.ref_start[0]  # Get chromosome from ref_start tuple
+            chr_groups[chr_name].append(svComposite)
 
     log.info(f"Found {len(chr_groups)} chromosomes with variants")
     for chr_name, group in chr_groups.items():
@@ -1263,6 +1737,19 @@ def merge_svComposites(
                 verbose=verbose,
             )
             merged_svComposites.extend(chr_merged)
+
+    # cpx_groups can jump across chromosomes, so they cannot be parallelized by chromosome.
+    # they are merged here sequentially.
+    merged_svComposites.extend(
+        merge_svComposites_across_chromosomes(
+            svComposites=cpx_groups,
+            apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+            max_cohens_d=max_cohens_d,
+            near=near,
+            min_kmer_overlap=min_kmer_overlap,
+            verbose=verbose,
+        )
+    )
 
     log.info(
         f"Merged {len(svComposites)} SVcomposites into {len(merged_svComposites)} across all chromosomes."
@@ -1326,6 +1813,9 @@ class SVcall:
     ref_sequence: bytes | None = None
     alt_sequence: bytes | None = None
     sequence_id: str | None = None  # ID for sequence in FASTA file if symbolic
+    description: dict[str, str] | None = (
+        None  # optional description field for additional annotations; e.g. outer and inner intervals of inversions or duplications
+    )
 
     def to_vcf_line(
         self,
@@ -1357,7 +1847,7 @@ class SVcall:
         FORMAT_field = "GT:GQ:TC:DR:DV:GP"
         format_content: list[Genotype] = []
         for samplename in samplenames:
-            gt: Genotype = self.genotypes.get(samplename, None)
+            gt: Genotype | None = self.genotypes.get(samplename, None)
             if gt is None:
                 tree: IntervalTree | None = covtrees[samplename].get(self.chrname, None)
                 found_intervals: set[Interval] = tree[self.start] if tree else set()
@@ -1372,7 +1862,7 @@ class SVcall:
         # now construct the vcf line
         vcfID = f"{self.svtype}.{str(vcfIDnumber)}"
         format_line = [gt.to_format_field(FORMAT_field) for gt in format_content]
-        refbase: str = refdict.get(f"{self.chrname}:{self.start}")
+        refbase: str | None = refdict.get(f"{self.chrname}:{self.start}", None)
         if refbase is None:
             log.warning(
                 f"Reference base not found for {self.chrname}:{self.start}. Please check the reference dictionary."
@@ -1383,18 +1873,28 @@ class SVcall:
         ref_seq = pickle.loads(self.ref_sequence) if self.ref_sequence else ""
         alt_seq = pickle.loads(self.alt_sequence) if self.alt_sequence else ""
 
-        use_symbolic = (
-            len(ref_seq) > symbolic_threshold or len(alt_seq) > symbolic_threshold
-        )
-
-        if use_symbolic:
-            # Use symbolic allele notation
-            ref_str = refbase  # Just the anchor base
-            alt_str = f"<{self.svtype}>"
+        # Special handling for BND (breakend) records
+        if self.svtype == "BND":
+            # For BND records, alt_seq contains the pre-formatted ALT field
+            # Replace the placeholder "N" with the actual reference base
+            ref_str = refbase
+            alt_str = (
+                alt_seq.replace("N", refbase) if isinstance(alt_seq, str) else refbase
+            )
         else:
-            # Use explicit sequences for small variants
-            ref_str = refbase + ref_seq
-            alt_str = refbase + alt_seq
+            # Normal handling for other SV types
+            use_symbolic = (
+                len(ref_seq) > symbolic_threshold or len(alt_seq) > symbolic_threshold
+            )
+
+            if use_symbolic:
+                # Use symbolic allele notation
+                ref_str = refbase  # Just the anchor base
+                alt_str = f"<{self.svtype}>"
+            else:
+                # Use explicit sequences for small variants
+                ref_str = refbase + ref_seq
+                alt_str = refbase + alt_seq
 
         return "\t".join([
             str(self.chrname),
@@ -1410,6 +1910,130 @@ class SVcall:
         ])
 
 
+def get_ref_reads_from_covtrees(
+    samplename: str,
+    chrname: str,
+    start: int,
+    end: int,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    min_radius: int = 1,
+) -> set[int]:
+    if end < start:
+        raise ValueError(
+            f"get_ref_reads_from_covtrees: end {end} is less than start {start} for sample {samplename} at {chrname}:{start}-{end}."
+        )
+    min_radius = abs(min_radius)
+    if end - start < min_radius * 2:
+        difference = min_radius * 2 - (end - start)
+        start -= floor(difference * 0.5)
+        end += ceil(difference * 0.5)
+        if start < 0:
+            start = 0
+    all_reads: set[int] = {
+        int(it.data) for it in covtrees[samplename][chrname][start:end]
+    }
+    return all_reads
+
+
+def genotype_of_sample(
+    samplename: str,
+    chrname: str,
+    start: int,
+    end: int,
+    raw_alt_reads: set[int],
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    min_radius: int = 1,
+) -> Genotype:
+    genotype: Genotype
+    if chrname not in covtrees.get(samplename, {}):
+        log.warning(
+            f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree for sample {samplename}. Assigning 0/0 genotype."
+        )
+        genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
+        return genotype
+    all_reads: set[int] = get_ref_reads_from_covtrees(
+        samplename=samplename,
+        chrname=chrname,
+        start=start,
+        end=end,
+        covtrees=covtrees,
+        min_radius=min_radius,
+    )
+    alt_reads: set[int] = all_reads.intersection(raw_alt_reads)
+
+    ref_reads: set[int] = all_reads.difference(alt_reads)
+
+    if len(alt_reads) == 0:
+        log.warning(
+            f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
+        )
+        genotype = create_wild_type_genotype(
+            samplename=samplename, total_coverage=len(all_reads)
+        )
+        return genotype
+
+    if len(all_reads) == 0:
+        log.warning(
+            f"SVcalls_from_SVcomposite: No ref/alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
+        )
+        genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
+        return genotype
+
+    # Query copy number for this locus from CN tracks
+    copy_number: int = 2  # Default diploid - if no copy number track is available
+    if samplename in cn_tracks and chrname in cn_tracks[samplename]:
+        try:
+            # Query overlapping intervals from the CN track IntervalTree
+            overlapping_cn = cn_tracks[samplename][chrname][start:end]
+            if overlapping_cn:
+                # Take the most common CN in the overlapping intervals
+                cn_values = [interval.data for interval in overlapping_cn]
+                copy_number = (
+                    max(set(cn_values), key=cn_values.count) if cn_values else 2
+                )
+                log.debug(
+                    f"Copy number at {chrname}:{start}-{end} for {samplename}: CN={copy_number} (from {len(cn_values)} overlapping bins)"
+                )
+            else:
+                log.debug(
+                    f"No CN data overlapping {chrname}:{start}-{end} for {samplename}, using default CN=2"
+                )
+        except Exception as e:
+            log.warning(
+                f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
+            )
+            # default copy number remains
+    else:
+        log.debug(
+            f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
+        )
+
+    # first compute the total gt for this locus and this sample (for all SVcomposites, that once overlapped)
+    gt_likelihoods: dict[str, float] = genotype_likelihood(
+        n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
+    )
+
+    gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
+    # if not gt in ('0/0', '0/1', '1/1'):
+    #     raise ValueError(f"Invalid genotype {gt} for sample {samplename}, in region: {chrname,start,end}, with {len(alt_reads)} alt reads and {len(all_reads)} total reads.")
+
+    genotype = Genotype(
+        samplename=samplename,
+        genotype=gt,
+        gt_likelihood=gt_likelihoods[gt],
+        genotype_quality=(
+            int(-10 * np.log10(1.0 - gt_likelihoods[gt]))
+            if gt_likelihoods[gt] < 1.0
+            else 60
+        ),
+        total_coverage=len(all_reads),
+        ref_reads=len(ref_reads),
+        var_reads=len(alt_reads),
+    )
+    return genotype
+
+
 def SVcalls_from_SVcomposite(
     svComposite: SVcomposite,
     covtrees: dict[str, dict[str, IntervalTree]],
@@ -1417,196 +2041,458 @@ def SVcalls_from_SVcomposite(
         str, dict[str, IntervalTree]
     ],  # saplename -> chrname -> IntervalTree with copy number
     find_leftmost_reference_position: bool,
+    symbolic_threshold: int,
 ) -> list[SVcall]:
-    # separate cases:
-    # 1) insertion & deletion
-    result: list[SVcall] = []
-    all_alt_reads: dict[str, set[str]] = (
-        svComposite.get_alt_readnames_per_sample()
+    # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
+    #   have one chr, start, end on the reference
+    # inter-alignment fragment variants (interrupted locus), e.g translocations, break points
+    #   have multiple chr, start, end on the reference
+
+    if svComposite.sv_type not in SUPPORTED_SV_TYPES:
+        log.warning(
+            f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} is not supported for SVcall generation. Supported types are: {', '.join(SUPPORTED_SV_TYPE_STRINGS)}"
+        )
+        return []
+    all_alt_reads: dict[str, set[int]] = (
+        svComposite.get_alt_readnamehashes_per_sample()
     )  # {samplename: {readname, ...}}
 
-    if svComposite.sv_type in ("INS", "DEL"):
-        chrname, start, end = get_svComposite_interval_on_reference(
+    if (
+        issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion)
+        or issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion)
+        or issubclass(svComposite.sv_type, SVpatterns.SVpatternInversion)
+        or issubclass(svComposite.sv_type, SVpatterns.SVpatternSingleBreakend)
+    ):
+        return [
+            svcall_object_from_svcomposite(
+                svComposite=svComposite,
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+                find_leftmost_reference_position=find_leftmost_reference_position,
+                all_alt_reads=all_alt_reads,
+            )
+        ]
+    elif issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
+        return svcall_objects_from_Adjacencies(
             svComposite=svComposite,
-            find_leftmost_reference_position=find_leftmost_reference_position,
-        )
-        svlen: int = abs(svComposite.get_size())
-        svtype: str = svComposite.sv_type
-        consensusIDs: list[str] = list({
-            svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
-        })
-        # TODO: add precise / imprecise flag: precise: all regions are near; imprecise: all regions are farther than X bp apart
-        # add genotypes: for each samplename collect supporting reads and max total coverage (from genotype measurements)
-        genotypes: dict[str, Genotype] = {}
-        # for samplename,group in groupby(svComposite.svPatterns, key= lambda x: x.samplename):
-        for samplename in all_alt_reads.keys():
-            if chrname not in covtrees.get(samplename, {}):
-                log.warning(
-                    f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree for sample {samplename}. Assigning 0/0 genotype."
-                )
-                genotypes[samplename] = create_wild_type_genotype(
-                    samplename=samplename, total_coverage=0
-                )
-                continue
-            all_reads: set[str] = {
-                it.data for it in covtrees[samplename][chrname][start - 500 : end + 500]
-            }
-            alt_reads: set[str] = all_reads.intersection(
-                all_alt_reads.get(samplename, set())
-            )
-            ref_reads: set[str] = all_reads.difference(alt_reads)
-
-            if len(alt_reads) == 0:
-                log.warning(
-                    f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
-                )
-                genotypes[samplename] = create_wild_type_genotype(
-                    samplename=samplename, total_coverage=len(all_reads)
-                )
-                continue
-
-            if len(all_reads) == 0:
-                log.warning(
-                    f"SVcalls_from_SVcomposite: No ref/alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
-                )
-                genotypes[samplename] = create_wild_type_genotype(
-                    samplename=samplename, total_coverage=0
-                )
-                continue
-
-            # Query copy number for this locus from CN tracks
-            copy_number = 2  # Default diploid
-            if samplename in cn_tracks and chrname in cn_tracks[samplename]:
-                try:
-                    # Query overlapping intervals from the CN track IntervalTree
-                    overlapping_cn = cn_tracks[samplename][chrname][start:end]
-                    if overlapping_cn:
-                        # Take the most common CN in the overlapping intervals
-                        cn_values = [interval.data for interval in overlapping_cn]
-                        copy_number = (
-                            max(set(cn_values), key=cn_values.count) if cn_values else 2
-                        )
-                        log.debug(
-                            f"Copy number at {chrname}:{start}-{end} for {samplename}: CN={copy_number} (from {len(cn_values)} overlapping bins)"
-                        )
-                    else:
-                        log.debug(
-                            f"No CN data overlapping {chrname}:{start}-{end} for {samplename}, using default CN=2"
-                        )
-                except Exception as e:
-                    log.warning(
-                        f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
-                    )
-                    copy_number = 2
-            else:
-                log.debug(
-                    f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
-                )
-
-            # first compute the total gt for this locus and this sample (for all SVcomposites, that once overlapped)
-            gt_likelihoods: dict[str, float] = genotype_likelihood(
-                n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
-            )
-
-            gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
-            # if not gt in ('0/0', '0/1', '1/1'):
-            #     raise ValueError(f"Invalid genotype {gt} for sample {samplename}, in region: {chrname,start,end}, with {len(alt_reads)} alt reads and {len(all_reads)} total reads.")
-
-            genotypes[samplename] = Genotype(
-                samplename=samplename,
-                genotype=gt,
-                gt_likelihood=gt_likelihoods[gt],
-                genotype_quality=(
-                    int(-10 * np.log10(1.0 - gt_likelihoods[gt]))
-                    if gt_likelihoods[gt] < 1.0
-                    else 60
-                ),
-                total_coverage=len(all_reads),
-                ref_reads=len(ref_reads),
-                var_reads=len(alt_reads),
-            )
-        if svtype == "INS":
-            end = start + 1
-        elif svtype in ["DEL", "INV"]:
-            end = start + svlen
-        # acquire the correct DNA sequences by querying all inserted sequences from the
-        # given SVpatterns
-        alt_seq: str | None = (
-            svComposite.get_alt_sequence() if svtype in ("INS", "INV") else None
-        )  # TODO: revcomp if representing consensus sequence is reverse complement (carrying consensus aln is reverse)
-        ref_seq: str | None = (
-            svComposite.get_ref_sequence() if svtype in ("DEL", "INV") else None
-        )
-
-        pass_altreads: bool = (
-            max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
-        )
-        pass_gq = True
-        passing: bool = pass_altreads and pass_gq
-
-        # call is not precise if it is in a repeat. Check for repeatIDs
-        precise: bool = not bool(
-            sum(
-                len(svPrimitive.repeatIDs)
-                for svPattern in svComposite.svPatterns
-                for svPrimitive in svPattern.SVprimitives
-            )
-        )
-
-        result.append(
-            SVcall(
-                genotypes=genotypes,
-                passing=passing,
-                chrname=chrname,
-                end=end,
-                start=start,
-                svtype=svtype,
-                svlen=svlen,
-                pass_altreads=pass_altreads,
-                pass_gq=pass_gq,
-                precise=precise,
-                mateid="",
-                consensusIDs=consensusIDs,
-                ref_sequence=pickle.dumps(ref_seq) if ref_seq else None,
-                alt_sequence=pickle.dumps(alt_seq) if alt_seq else None,
-            )
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+            all_alt_reads=all_alt_reads,
+            symbolic_threshold=symbolic_threshold,
         )
     else:
         log.warning(
-            f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type} is not supported for SVcall generation. Supported types are: INS, DEL"
+            f"SVcalls_from_SVcomposite: svComposite of type {svComposite.sv_type.__name__} in regions {svComposite.get_regions()} is not yet implemented for SVcall generation."
         )
-    # 3) inversion
-    # 4) complex
-    return result
+        return []
 
 
-# SVcall to breakends parsing
-# SVcall to ins/del parsing
+def svcall_object_from_svcomposite(
+    svComposite: SVcomposite,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    find_leftmost_reference_position: bool,
+    all_alt_reads: dict[str, set[int]],
+) -> SVcall:
+    chrname, start, end = get_svComposite_interval_on_reference(
+        svComposite=svComposite,
+        find_leftmost_reference_position=find_leftmost_reference_position,
+    )
+    svlen: int = abs(svComposite.get_size())
+    # Get read IDs supporting the SV. arguments: samplename, chrname, start, end, covtree
+    consensusIDs: list[str] = list({
+        svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
+    })
+
+    #
+    genotypes: dict[str, Genotype] = {
+        samplename: genotype_of_sample(
+            samplename=samplename,
+            chrname=chrname,
+            start=start,
+            end=end,
+            raw_alt_reads=all_alt_reads[samplename],
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+        )
+        for samplename in all_alt_reads.keys()
+    }
+    # start and end need to be adjusted based on sv_type and need to be determined for the whole sv composite
+
+    if issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion):
+        end = start + svlen
+    elif issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion):
+        end = start + 1
+
+    alt_seq: bytes | None = (
+        pickle.dumps(svComposite.get_alt_sequence())
+        if svComposite.get_alt_sequence()
+        else None
+    )
+
+    ref_seq: bytes | None = (
+        pickle.dumps(svComposite.get_ref_sequence())
+        if svComposite.get_ref_sequence()
+        else None
+    )
+
+    # quality filters
+    pass_altreads: bool = (
+        max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
+    )
+    pass_gq = True
+    passing: bool = pass_altreads and pass_gq
+
+    # call is not precise if it is in a repeat. Check for repeatIDs
+    precise: bool = not bool(
+        sum(
+            len(svPrimitive.repeatIDs)
+            for svPattern in svComposite.svPatterns
+            for svPrimitive in svPattern.SVprimitives
+        )
+    )
+
+    return SVcall(
+        genotypes=genotypes,
+        passing=passing,
+        chrname=chrname,
+        end=end,
+        start=start,
+        svtype=svComposite.sv_type.get_sv_type(),
+        svlen=svlen,
+        pass_altreads=pass_altreads,
+        pass_gq=pass_gq,
+        precise=precise,
+        mateid="",
+        consensusIDs=consensusIDs,
+        ref_sequence=ref_seq,
+        alt_sequence=alt_seq,
+    )
+
+
+def format_bnd_alt_field(
+    ref_base: str,
+    mate_chr: str,
+    mate_pos: int,
+    sv_type: int,
+    aln_is_reverse: bool,
+    inserted_sequence: str = "",
+    use_symbolic: bool = False,
+    sequence_id: str | None = None,
+    insertion_start: int = 1,
+    insertion_end: int | None = None,
+) -> str:
+    """
+    Format the ALT field for a BND (breakend) record according to VCF specification.
+
+    Args:
+        ref_base: The reference base at this breakend position (REF field, typically 'N' or actual base)
+        mate_chr: Chromosome of the mate breakend
+        mate_pos: Position of the mate breakend (1-based for VCF output)
+        sv_type: SV type of this breakend (3=BNDL/left, 4=BNDR/right)
+        aln_is_reverse: Whether the alignment is on the reverse strand
+        inserted_sequence: Optional inserted sequence between the breakends (ignored if use_symbolic=True)
+        use_symbolic: If True, use symbolic notation for large insertions with sequence_id
+        sequence_id: ID of the inserted sequence (e.g., "ctg1") when using symbolic notation
+        insertion_start: Start position in the symbolic sequence (1-based, default=1)
+        insertion_end: End position in the symbolic sequence (1-based); if None, uses full length
+
+    Returns:
+        Formatted ALT field string according to VCF BND specification
+
+    The four cases are:
+    - t[p[  : piece extending to the right of p is joined after t
+    - t]p]  : reverse comp piece extending left of p is joined after t
+    - ]p]t  : piece extending to the left of p is joined before t
+    - [p[t  : reverse comp piece extending right of p is joined before t
+
+    Where:
+    - t = ref_base + inserted_sequence (replacement string) or ref_base for symbolic
+    - p = mate_chr:mate_pos (mate position) or <sequence_id>:pos for symbolic insertions
+    - sv_type: 3 = BNDL (left break), 4 = BNDR (right break)
+
+    For large insertions (use_symbolic=True), uses symbolic notation like:
+    - C[<ctg1>:1[  (reference to start of contig)
+    - ]<ctg1>:329]A  (reference to end of contig)
+    """
+    # Prepare the replacement string t
+    if use_symbolic:
+        # For symbolic notation, t is just the ref base (insertion is referenced separately)
+        t = ref_base
+        # For symbolic insertions, p points to the contig
+        if sequence_id is None:
+            raise ValueError("sequence_id must be provided when use_symbolic=True")
+        # Determine which end of the insertion to reference based on the breakend
+        # First breakend points to start of insertion, second points to end
+        p = f"<{sequence_id}>:{insertion_start if sv_type == 4 else (insertion_end or len(inserted_sequence))}"
+    else:
+        # For explicit sequence, t includes ref base + insertion
+        t = ref_base + inserted_sequence
+        # Regular mate position
+        p = f"{mate_chr}:{mate_pos}"
+
+    # Determine the ALT format based on sv_type and orientation
+    # sv_type 3 = BNDL (left breakend), sv_type 4 = BNDR (right breakend)
+
+    if sv_type == 4:  # BNDR (right breakend)
+        if not aln_is_reverse:
+            # Right break, forward strand: t[p[
+            # Piece extending to the right of p is joined after t
+            return f"{t}[{p}["
+        else:
+            # Right break, reverse strand: t]p]
+            # Reverse comp piece extending left of p is joined after t
+            return f"{t}]{p}]"
+    elif sv_type == 3:  # BNDL (left breakend)
+        if not aln_is_reverse:
+            # Left break, forward strand: ]p]t
+            # Piece extending to the left of p is joined before t
+            return f"]{p}]{t}"
+        else:
+            # Left break, reverse strand: [p[t
+            # Reverse comp piece extending right of p is joined before t
+            return f"[{p}[{t}"
+    else:
+        raise ValueError(
+            f"Invalid sv_type for BND: {sv_type}. Expected 3 (BNDL) or 4 (BNDR)"
+        )
+
+
+def svcall_objects_from_Adjacencies(
+    svComposite: SVcomposite,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    all_alt_reads: dict[str, set[int]],
+    symbolic_threshold: int,
+) -> list[SVcall]:
+    """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
+    The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
+    """
+    if not issubclass(svComposite.sv_type, SVpatterns.SVpatternAdjacency):
+        raise ValueError(
+            f"svcall_objects_from_Adjacencies: svComposite of type {svComposite.sv_type.__name__} is not of type SVpatternAdjacency."
+        )
+
+    # Collect consensusIDs from all SVpatterns in the composite
+    consensusIDs: list[str] = list({
+        svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
+    })
+
+    # Get the representative SVpattern (with highest support)
+    representative_pattern = svComposite.get_representative_SVpattern()
+
+    # Verify it's an Adjacency pattern (should always be true due to earlier check)
+    if not isinstance(representative_pattern, SVpatterns.SVpatternAdjacency):
+        raise ValueError(
+            f"Representative pattern is not SVpatternAdjacency, got {type(representative_pattern).__name__}"
+        )
+
+    # Adjacency patterns must have exactly 2 SVprimitives (the two break ends)
+    if len(representative_pattern.SVprimitives) != 2:
+        raise ValueError(
+            f"SVpatternAdjacency must have exactly 2 SVprimitives, got {len(representative_pattern.SVprimitives)}"
+        )
+
+    # Extract the two break ends' reference positions
+    svprimitive_0 = representative_pattern.SVprimitives[0]
+    svprimitive_1 = representative_pattern.SVprimitives[1]
+
+    # Break end 0 location
+    chr0 = svprimitive_0.chr
+    start0 = svprimitive_0.ref_start
+    end0 = start0 + 1  # Break ends are essentially point locations, so end = start + 1
+
+    # Break end 1 location
+    chr1 = svprimitive_1.chr
+    start1 = svprimitive_1.ref_start
+    end1 = start1 + 1
+
+    # Get the inserted sequence between the two break ends
+    inserted_sequence = representative_pattern.get_sequence()
+    if inserted_sequence is None:
+        inserted_sequence = ""
+
+    # svlen is the length of the inserted sequence (or 1 if none)
+    svlen: int = len(inserted_sequence) if inserted_sequence else 1
+
+    # ref_seq is not important for adjacencies
+    ref_seq: bytes | None = None
+
+    # Determine if we should use symbolic notation for large insertions
+    # Using the symbolic_threshold parameter passed from command-line arguments
+    use_symbolic = len(inserted_sequence) > symbolic_threshold
+
+    # Generate a sequence ID for symbolic notation if needed
+    sequence_id: str | None = None
+    if use_symbolic:
+        # Create a unique sequence ID based on the SVcomposite
+        sequence_id = f"ctg_{representative_pattern.samplename}_{representative_pattern.consensusID}_{svprimitive_0.svID}_{svprimitive_1.svID}"
+
+    # Format the ALT field for each breakend according to VCF BND specification
+    # Note: We use "N" as placeholder for ref_base since actual base will be retrieved in to_vcf_line
+    # Breakend 0 points to breakend 1 (or to start of insertion contig)
+    alt_str_0 = format_bnd_alt_field(
+        ref_base="N",
+        mate_chr=chr1,
+        mate_pos=start1 + 1,  # VCF is 1-based, convert from 0-based
+        sv_type=svprimitive_0.sv_type,
+        aln_is_reverse=svprimitive_0.aln_is_reverse,
+        inserted_sequence=inserted_sequence,
+        use_symbolic=use_symbolic,
+        sequence_id=sequence_id,
+        insertion_start=1,
+        insertion_end=len(inserted_sequence) if use_symbolic else None,
+    )
+
+    # Breakend 1 points to breakend 0 (or to end of insertion contig)
+    alt_str_1 = format_bnd_alt_field(
+        ref_base="N",
+        mate_chr=chr0,
+        mate_pos=start0 + 1,  # VCF is 1-based, convert from 0-based
+        sv_type=svprimitive_1.sv_type,
+        aln_is_reverse=svprimitive_1.aln_is_reverse,
+        inserted_sequence=inserted_sequence,
+        use_symbolic=use_symbolic,
+        sequence_id=sequence_id,
+        insertion_start=1,
+        insertion_end=len(inserted_sequence) if use_symbolic else None,
+    )
+
+    # Store the formatted ALT strings as pickled bytes
+    alt_seq_0: bytes = pickle.dumps(alt_str_0)
+    alt_seq_1: bytes = pickle.dumps(alt_str_1)
+
+    # Generate genotypes for all samples
+    # For break end 0
+    genotypes_0: dict[str, Genotype] = {
+        samplename: genotype_of_sample(
+            samplename=samplename,
+            chrname=chr0,
+            start=start0,
+            end=end0,
+            raw_alt_reads=all_alt_reads[samplename],
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+        )
+        for samplename in all_alt_reads.keys()
+    }
+
+    # For break end 1
+    genotypes_1: dict[str, Genotype] = {
+        samplename: genotype_of_sample(
+            samplename=samplename,
+            chrname=chr1,
+            start=start1,
+            end=end1,
+            raw_alt_reads=all_alt_reads[samplename],
+            covtrees=covtrees,
+            cn_tracks=cn_tracks,
+        )
+        for samplename in all_alt_reads.keys()
+    }
+
+    # Quality filters (same logic as svcall_object_from_svcomposite)
+    # We use the maximum of both break ends for pass_altreads
+    max_var_reads_0 = max(genotypes_0.items(), key=lambda x: x[1].var_reads)[
+        1
+    ].var_reads
+    max_var_reads_1 = max(genotypes_1.items(), key=lambda x: x[1].var_reads)[
+        1
+    ].var_reads
+    pass_altreads: bool = max(max_var_reads_0, max_var_reads_1) >= 3
+
+    pass_gq = True
+    passing: bool = pass_altreads and pass_gq
+
+    # Check if call is precise (not in a repeat)
+    precise: bool = not bool(
+        sum(
+            len(svPrimitive.repeatIDs)
+            for svPattern in svComposite.svPatterns
+            for svPrimitive in svPattern.SVprimitives
+        )
+    )
+
+    # Generate unique mateid base from representative pattern
+    # Format: samplename.consensusID.svID_0.svID_1
+    mateid_base = f"{representative_pattern.samplename}.{representative_pattern.consensusID}.{svprimitive_0.svID}.{svprimitive_1.svID}"
+
+    # Create mateid for each break end (they reference each other)
+    mateid_0 = f"{mateid_base}.0"
+    mateid_1 = f"{mateid_base}.1"
+
+    # Create SVcall for break end 0
+    svcall_0 = SVcall(
+        genotypes=genotypes_0,
+        passing=passing,
+        chrname=chr0,
+        start=start0,
+        end=end0,
+        svtype="BND",
+        svlen=svlen,
+        pass_altreads=pass_altreads,
+        pass_gq=pass_gq,
+        precise=precise,
+        mateid=mateid_1,  # Points to the mate (break end 1)
+        consensusIDs=consensusIDs,
+        ref_sequence=ref_seq,
+        alt_sequence=alt_seq_0,  # BND-formatted ALT field for breakend 0
+        sequence_id=sequence_id,  # Set if using symbolic notation for large insertions
+    )
+
+    # Create SVcall for break end 1
+    svcall_1 = SVcall(
+        genotypes=genotypes_1,
+        passing=passing,
+        chrname=chr1,
+        start=start1,
+        end=end1,
+        svtype="BND",
+        svlen=svlen,
+        pass_altreads=pass_altreads,
+        pass_gq=pass_gq,
+        precise=precise,
+        mateid=mateid_0,  # Points to the mate (break end 0)
+        consensusIDs=consensusIDs,
+        ref_sequence=ref_seq,
+        alt_sequence=alt_seq_1,  # BND-formatted ALT field for breakend 1
+        sequence_id=sequence_id,  # Set if using symbolic notation for large insertions
+    )
+
+    return [svcall_0, svcall_1]
 
 
 def get_svComposite_interval_on_reference(
     svComposite: SVcomposite, find_leftmost_reference_position: bool
 ) -> tuple[str, int, int]:
-    if svComposite.sv_type not in ("INS", "DEL", "INV"):
+    if svComposite.sv_type not in SUPPORTED_SV_TYPES:
         raise ValueError(
-            f"get_svComposite_indel_interval called with svComposite that is neither INS,DEL,INV: {svComposite}"
+            f"get_svComposite_indel_interval called with svComposite that is neither {', '.join(t.__name__ for t in SUPPORTED_SV_TYPES)}: {svComposite}"
         )
+    # measure time. If the execution of this function takes longer than 2 seconds, print the input svComposite so it can be debugged.
+    time_start = datetime.now()
     weighted_regions: list[tuple[tuple[str, int, int], int]] = []
     for svPattern in svComposite.svPatterns:
-        if not (
-            isinstance(svPattern, SVpatterns.SVpatternInsertion)
-            or isinstance(svPattern, SVpatterns.SVpatternDeletion)
-            or isinstance(svPattern, SVpatterns.SVpatternInversion)
-        ):
+        if svPattern.get_sv_type() not in SUPPORTED_SV_TYPE_STRINGS:
             raise ValueError(
-                f"All svPatterns of a SVcomposite of type INS,INV,DEL needs to be of type SVpatternInsertion or SVpatternDeletion or SVpatternInversion, but it is {type(svPattern)}. The SVcomposite is: {svComposite}"
+                f"All svPatterns of a SVcomposite need to be of supported types {', '.join(SUPPORTED_SV_TYPE_STRINGS)}. The SVcomposite is: {svComposite}"
             )
         region: tuple[str, int, int] = svPattern.get_reference_region()
         if find_leftmost_reference_position:
-            weight = [svprimitive.ref_start for svprimitive in svPattern.SVprimitives]
+            weight = min(
+                svprimitive.ref_start for svprimitive in svPattern.SVprimitives
+            )
         else:
-            weight = len(svPattern.get_supporting_reads() * svPattern.get_size())
+            weight = len(svPattern.get_supporting_reads()) * svPattern.get_size()
         weighted_regions.append((region, weight))
+
+    time_end = datetime.now()
+    time_diff = (time_end - time_start).total_seconds()
+    if time_diff > 2:
+        log.warning(
+            f"get_svComposite_interval_on_reference took {time_diff} seconds for svComposite: {svComposite}"
+        )
+
     # pick the winning region
     if find_leftmost_reference_position:
         return min(
@@ -1802,7 +2688,7 @@ def genotype_likelihood(
         return dict.fromkeys(genotype_probs.keys(), uniform_prob)
 
     probabilities = {
-        genotype: likelihood / total_likelihood
+        genotype: float(likelihood / total_likelihood)
         for genotype, likelihood in likelihoods.items()
     }
 
@@ -1821,57 +2707,195 @@ def reference_bases_by_merged_svComposites(
     svComposites: list[SVcomposite],
     reference: Path,
     find_leftmost_reference_position: bool,
+    tmp_dir_path: Path | str | None = None,
 ) -> dict[str, str]:
-    # Collect all positions that need reference bases
+    """
+    Retrieve reference bases for SVcomposite positions using streaming to avoid memory issues.
+    """
+    log.info(f"Collecting positions from {len(svComposites)} SVcomposites...")
+    # print how much memory scComposites take
+    from sys import getsizeof
 
-    positions = []
-    for svComposite in svComposites:
-        chrname, start, end = get_svComposite_interval_on_reference(
-            svComposite=svComposite,
-            find_leftmost_reference_position=find_leftmost_reference_position,
-        )
-        positions.append((chrname, start))
+    log.info(f"Size of svComposites in memory: {getsizeof(svComposites)} bytes")
 
-    unique_positions = list(dict.fromkeys(positions))
-    if not unique_positions:
-        return {}
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".bed", delete=False
-    ) as tmp_regions:
-        for chrname, start in unique_positions:
-            print(f"{chrname}:{start}-{start}", file=tmp_regions)
-        tmp_regions_path = tmp_regions.name
-    try:
+    dict_reference_bases: dict[str, str] = {}
+
+    with tempfile.TemporaryDirectory(
+        dir=tmp_dir_path, delete=True if tmp_dir_path is None else False
+    ) as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        tmp_regions_path = temp_dir / "regions.txt"
+        ref_bases_path = temp_dir / "ref_bases.txt"
+
+        # 1. Collect unique positions and write to regions file formatted for samtools
+        #    Use a set to avoid duplicates without invoking 'uniq' command
+        positions = set()
+        for svComposite in tqdm(svComposites, desc="Collecting positions"):
+            chrname, start, end = get_svComposite_interval_on_reference(
+                svComposite=svComposite,
+                find_leftmost_reference_position=find_leftmost_reference_position,
+            )
+            # Store 0-based start
+            positions.add((str(chrname), int(start)))
+
+        # Sort positions by chromosome and then position
+        sorted_positions = sorted(positions)
+
+        with open(tmp_regions_path, "w") as f:
+            for chrname, start_0 in sorted_positions:
+                # Format: chr:start-end (1-based inclusive)
+                # region start is the same as region end for a single base: chr:pos-pos
+                pos_1 = start_0 + 1
+                f.write(f"{chrname}:{pos_1}-{pos_1}\n")
+
+        # 2. Retrieve reference bases with samtools
         cmd_faidx = f"samtools faidx --region-file {tmp_regions_path} {str(reference)}"
-        result = subprocess.run(
-            split(cmd_faidx), capture_output=True, text=True, check=True
-        )
+        log.info("Retrieving reference bases with samtools faidx...")
 
-        dict_reference_bases = {}
-        lines = result.stdout.strip().split("\n")
-        i = 0
-        while i < len(lines):
-            if lines[i].startswith(">"):
-                # Parse header line like ">chr1:123-124"
-                header = lines[i][1:]  # Remove '>'
-                if ":" in header and "-" in header:
-                    chrom_pos = header.split("-")[0]  # Get "chr1:123" part
-                    if i + 1 < len(lines) and not lines[i + 1].startswith(">"):
-                        base = lines[i + 1].upper()
-                        dict_reference_bases[chrom_pos] = base
-                        i += 2
-                    else:
-                        i += 1
-                else:
-                    i += 1
-            else:
-                i += 1
+        with open(ref_bases_path, "w") as f_out:
+            process_faidx = subprocess.Popen(
+                split(cmd_faidx), stdout=f_out, stderr=subprocess.PIPE, text=True
+            )
+            _, stderr_faidx = process_faidx.communicate()
+            if process_faidx.returncode != 0:
+                log.error(
+                    f"samtools faidx failed with return code {process_faidx.returncode}"
+                )
+                log.error(f"cmd_faidx: {cmd_faidx}")
+                log.error(f"stderr: {stderr_faidx}")
+                raise subprocess.CalledProcessError(
+                    process_faidx.returncode, cmd_faidx, stderr=stderr_faidx
+                )
 
-    finally:
-        # Clean up temporary file
-        Path(tmp_regions_path).unlink()
+        # 3. Parse the results
+        log.info("Parsing retrieved reference bases...")
+        with open(ref_bases_path, "r") as f:
+            current_header = None
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith(">"):
+                    # Parse header line like ">chr1:123-123"
+                    current_header = line[1:]  # Remove '>'
+                elif current_header:
+                    # This is the sequence line
+                    if ":" in current_header and "-" in current_header:
+                        chrom_pos_str = current_header.split("-")[
+                            0
+                        ]  # Get "chr1:123" part
+                        try:
+                            # Convert 1-based header coordinate back to 0-based key
+                            r_chr, r_start_str = chrom_pos_str.rsplit(":", 1)
+                            r_start_1 = int(r_start_str)
+                            # Key format: chr:start (0-based)
+                            key = f"{r_chr}:{r_start_1 - 1}"
 
+                            base = line.upper()
+                            if len(base) == 1:
+                                dict_reference_bases[key] = base
+                            else:
+                                log.warning(
+                                    f"Expected single base at {chrom_pos_str}, got '{base}'"
+                                )
+                        except ValueError:
+                            log.warning(
+                                f"Failed to parse header or key: {current_header}"
+                            )
+
+                    current_header = None  # Reset for next entry
+    log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
     return dict_reference_bases
+
+    # positions = []
+    # for i,svComposite in tqdm(enumerate(svComposites), desc="Collecting positions"):
+    #     chrname, start, end = get_svComposite_interval_on_reference(
+    #         svComposite=svComposite,
+    #         find_leftmost_reference_position=find_leftmost_reference_position,
+    #     )
+    #     positions.append((chrname, start))
+    #     if i % 1000 == 0:
+    #         # report size of positions in bytes
+    #         log.info(f"Collected {len(positions)} positions, size in memory: {getsizeof(positions)} bytes")
+
+    # log.info(f"Collected {len(positions)} positions, deduplicating...")
+    # # Use dict.fromkeys for deduplication without creating intermediate sets
+    # unique_positions = list(dict.fromkeys(positions))
+    # positions.clear()  # Free memory immediately
+
+    # log.info(f"Processing {len(unique_positions)} unique positions")
+
+    # if not unique_positions:
+    #     return {}
+
+    # dict_reference_bases: dict[str, str] = {}
+
+    # with tempfile.NamedTemporaryFile(
+    #     mode="w", suffix=".bed", delete=False if tmp_dir_path is not None else True, dir=tmp_dir_path
+    # ) as tmp_regions:
+    #     log.info("Writing positions to temp BED file...")
+    #     for chrname, start in unique_positions:
+    #         print(f"{chrname}\t{start}\t{start+1}", file=tmp_regions)
+    #     tmp_regions.flush()
+
+    #     # Clear this list as we don't need it anymore
+    #     unique_positions.clear()
+
+    #     cmd_faidx = f"samtools faidx --region-file {tmp_regions.name} {str(reference)}"
+    #     log.info("Retrieving reference bases with samtools faidx (streaming)...")
+
+    #     # Stream the output instead of loading it all into memory
+    #     process = subprocess.Popen(
+    #         split(cmd_faidx),
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.PIPE,
+    #         text=True,
+    #         bufsize=1  # Line buffered
+    #     )
+
+    #     if process.stdout is None:
+    #         raise RuntimeError("Failed to open samtools faidx stdout pipe.")
+
+    #     current_header = None
+    #     line_count = 0
+
+    #     for line in process.stdout:
+    #         line_count += 1
+    #         if line_count % 100000 == 0:
+    #             log.info(f"Processed {line_count} lines, collected {len(dict_reference_bases)} bases")
+
+    #         line = line.strip()
+    #         if not line:
+    #             continue
+
+    #         if line.startswith(">"):
+    #             # Parse header line like ">chr1:123-124"
+    #             current_header = line[1:]  # Remove '>'
+    #         elif current_header:
+    #             # This is the sequence line
+    #             if ":" in current_header and "-" in current_header:
+    #                 chrom_pos = current_header.split("-")[0]  # Get "chr1:123" part
+    #                 base = line.upper()
+
+    #                 if len(base) == 1:
+    #                     dict_reference_bases[chrom_pos] = base
+    #                 else:
+    #                     log.warning(f"Expected single base at {chrom_pos}, got '{base}'")
+
+    #             current_header = None  # Reset for next entry
+
+    #     # Wait for process to complete
+    #     stderr_output = process.stderr.read()
+    #     return_code = process.wait()
+
+    #     if return_code != 0:
+    #         log.error(f"samtools faidx failed with return code {return_code}")
+    #         log.error(f"stderr: {stderr_output}")
+    #         raise subprocess.CalledProcessError(return_code, cmd_faidx, stderr=stderr_output)
+
+    #     log.info(f"Successfully retrieved {len(dict_reference_bases)} reference bases")
+
+    # return dict_reference_bases
 
 
 def write_sequences_to_fasta(
@@ -1933,7 +2957,7 @@ def write_svCalls_to_vcf(
     with open(tmp_result_unsorted.name, "w") as f:
         # write header
         header = generate_header(
-            reference=reference, samplenames=samplenames, fasta_path=fasta_path
+            reference=Path(reference), samplenames=samplenames, fasta_path=fasta_path
         )
         for line in header:
             print(line, file=f)
@@ -1972,11 +2996,11 @@ def write_svCalls_to_vcf(
 def check_if_all_svtypes_are_supported(sv_types: list[str]) -> None:
     unsupported_sv_types = []
     for svtype in sv_types:
-        if svtype not in SUPPORTED_SV_TYPES:
+        if svtype not in SUPPORTED_SV_TYPE_STRINGS:
             unsupported_sv_types.append(svtype)
     if len(unsupported_sv_types) > 0:
         raise ValueError(
-            f"Unsupported SV types: {', '.join(unsupported_sv_types)}. Supported SV types are: {', '.join(SUPPORTED_SV_TYPES)}"
+            f"Unsupported SV types: {', '.join(unsupported_sv_types)}. Supported SV types are: {', '.join(SUPPORTED_SV_TYPE_STRINGS)}"
         )
 
 
@@ -2102,7 +3126,17 @@ def multisample_sv_calling(
     skip_covtrees: bool = False,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
-    samplenames = [svirltile.get_metadata(path)["samplename"] for path in input]
+    samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
+
+    # check if reference exists
+    if not Path(reference).exists():
+        raise FileNotFoundError(f"Reference file {reference} does not exist.")
+    # check if the input files exist
+    if not all(Path(path).exists() for path in input):
+        missing_files = [str(path) for path in input if not Path(path).exists()]
+        raise FileNotFoundError(
+            f"The following input files do not exist: {', '.join(missing_files)}"
+        )
 
     # Create covtrees - either real or dummy uniform coverage
     if skip_covtrees:
@@ -2127,7 +3161,7 @@ def multisample_sv_calling(
     )
 
     # Parse candidate regions file if provided
-    candidate_regions_filter = None
+    candidate_regions_filter: dict[str, set[int]] | None = None
     if candidate_regions_file is not None:
         candidate_regions_filter = parse_candidate_regions_file(
             Path(candidate_regions_file)
@@ -2136,29 +3170,95 @@ def multisample_sv_calling(
             f"Filtering SVpatterns to candidate regions from {candidate_regions_file}."
         )
 
+    # Convert string sv_types to SVpattern types
+    sv_types_set: set[type[SVpatterns.SVpatternType]] = set()
+    for sv in sv_types:
+        if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE:
+            # Add all pattern types that map to this SV type string (e.g., "BND" -> [SVpatternSingleBreakend, SVpatternAdjacency])
+            sv_types_set.update(SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv])
+    # debug - check what types are in sv_types_set
+    if verbose:
+        log.info(
+            f"SV types to be processed: {', '.join([t.__name__ for t in sv_types_set])}"
+        )
+
     data: list[SVcomposite] = generate_svComposites_from_dbs(
         input=input,
-        sv_types=sv_types,
+        sv_types=sv_types_set,
         candidate_regions_filter=candidate_regions_filter,
     )
+    if verbose:
+        svtype_counts: dict[str, int] = {}
+        for svComposite in data:
+            svtype = svComposite.sv_type.__name__
+            if svtype not in svtype_counts:
+                svtype_counts[svtype] = 0
+            svtype_counts[svtype] += 1
+        log.info(f"SVcomposite counts by type before merging: {svtype_counts}")
 
+    # if tmp dir is provided, dump all svComposites to a compressed json file
+    if tmp_dir_path is not None:
+        save_svComposites_to_json(
+            data=data, output_path=Path(tmp_dir_path) / "all_svComposites.json.gz"
+        )
+        # just save as pickle
+        import pickle
+
+        with open(Path(tmp_dir_path) / "all_svComposites.pkl", "wb") as f:
+            pickle.dump(data, f)
+
+    # --- vertical merging of svComposites across samples and consensus sequences --- #
     merged: list[SVcomposite] = merge_svComposites(
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
         svComposites=data,
         max_cohens_d=max_cohens_d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
+        threads=threads,
         verbose=verbose,
     )
 
-    merged = [
-        svComposite
-        for svComposite in merged
-        if abs(svComposite.get_size()) >= min_sv_size
-    ]
-    # if tmp dir is provided, dump all merged svComposites to a pickle file
+    if verbose:
+        svtype_counts_merged: dict[str, int] = {}
+        for svComposite in merged:
+            svtype = svComposite.sv_type.__name__
+            if svtype not in svtype_counts_merged:
+                svtype_counts_merged[svtype] = 0
+            svtype_counts_merged[svtype] += 1
+        log.info(f"SVcomposite counts by type after merging: {svtype_counts_merged}")
+
+    # Filter by minimum SV size and report what was dropped
+    dropped_composites = []
+    filtered_merged = []
+    for svComposite in merged:
+        if abs(svComposite.get_size()) >= min_sv_size:
+            filtered_merged.append(svComposite)
+        else:
+            dropped_composites.append(svComposite)
+
+    if dropped_composites:
+        log.info(f"Filtering by minimum SV size (>= {min_sv_size})")
+        log.info(
+            f"Dropped {len(dropped_composites)} SVcomposites below size threshold of {min_sv_size}:"
+        )
+        for svComposite in dropped_composites:
+            # Get consensusIDs from all SVpatterns
+            consensus_ids = [svp.consensusID for svp in svComposite.svPatterns]
+            sv_type = svComposite.sv_type.get_sv_type()
+            sv_size = abs(svComposite.get_size())
+            log.debug(
+                f"  - Dropped: consensusIDs={consensus_ids}, sv_type={sv_type}, size={sv_size}"
+            )
+
+    merged = filtered_merged
+
+    # if tmp dir is provided, dump all merged svComposites to a compressed json file
     if tmp_dir_path is not None:
-        save_svComposites_to_pickle(data=merged, output_path=tmp_dir_path)
+        save_svComposites_to_json(
+            data=merged, output_path=Path(tmp_dir_path) / "merged_svComposites.json.gz"
+        )
+    data.clear()  # free memory
+    log.info(f"Generating SVcalls from {len(merged)} merged SVcomposites...")
     svCalls: list[SVcall] = [
         svcall
         for svComposite in merged
@@ -2167,13 +3267,36 @@ def multisample_sv_calling(
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
+            symbolic_threshold=symbolic_threshold,
         )
     ]
+    if tmp_dir_path is not None:
+        save_svCalls_to_json(
+            data=svCalls, output_path=Path(tmp_dir_path) / "svCalls.json.gz"
+        )
+
+    cn_tracks.clear()  # free memory
+    log.info(
+        f"Generated {len(svCalls)} SVcalls from {len(merged)} merged SVcomposites. Now adding ref bases.."
+    )
+
     ref_bases_dict: dict[str, str] = reference_bases_by_merged_svComposites(
         svComposites=merged,
         reference=reference,
         find_leftmost_reference_position=find_leftmost_reference_position,
+        tmp_dir_path=tmp_dir_path,
     )
+
+    # save covtrees and ref_bases_dict to tmp dir if provided
+    if tmp_dir_path is not None:
+        import pickle
+
+        with open(Path(tmp_dir_path) / "covtrees.pkl", "wb") as f:
+            pickle.dump(covtrees, f)
+        with open(Path(tmp_dir_path) / "ref_bases_dict.pkl", "wb") as f:
+            pickle.dump(ref_bases_dict, f)
+
+    log.info("Writing SVcalls to VCF file...")
     write_svCalls_to_vcf(
         svCalls=svCalls,
         output=output,
@@ -2186,6 +3309,12 @@ def multisample_sv_calling(
 
 
 def run(args) -> None:
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+
     multisample_sv_calling(
         input=args.input,
         output=args.output,
@@ -2206,10 +3335,7 @@ def run(args) -> None:
     )
 
 
-def get_parser():
-    parser = argparse.ArgumentParser(
-        description="Multiple sample SV calling from precomputed svirltile files per sample."
-    )
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--input",
         help="Paths to the per sample svirltiles.",
@@ -2231,9 +3357,9 @@ def get_parser():
     )
     parser.add_argument(
         "--sv-types",
-        help=f"List of structural variant types to include. Default: ['INS', 'DEL']. Allowed are {SUPPORTED_SV_TYPES}.",
+        help=f"List of structural variant types to include. Default: all supported types. Allowed are {SUPPORTED_SV_TYPE_STRINGS_LIST}.",
         nargs="+",
-        default=["INS", "DEL"],
+        default=SUPPORTED_SV_TYPE_STRINGS_LIST,
     )
     parser.add_argument(
         "--max_cohens_d",
@@ -2296,8 +3422,22 @@ def get_parser():
         default=False,
     )
     parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set the logging level (default: INFO).",
+    )
+    parser.add_argument(
         "--verbose", help="Enable verbose output.", action="store_true", default=False
     )
+
+
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description="Multiple sample SV calling from precomputed svirltile files per sample."
+    )
+    add_arguments(parser)
     return parser
 
 
@@ -2310,6 +3450,24 @@ def main():
     """Main entry point for the consensus script."""
     parser = get_parser()
     args = parser.parse_args()
+
+    # Convert string log level to logging constant
+    log_level = getattr(logging, args.log_level.upper())
+
+    if args.logfile:
+        # Configure logging to file
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            handlers=[logging.FileHandler(str(args.logfile)), logging.StreamHandler()],
+        )
+    else:
+        # Configure logging to console only
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            handlers=[logging.StreamHandler()],
+        )
     run(args)
     return
 
@@ -2321,26 +3479,160 @@ if __name__ == "__main__":
 # %%
 
 
-def save_svComposites_to_pickle(
-    data: list[SVcomposite], output_path: Path | str
-) -> None:
-    """Save SVcomposites to a pickle file named 'svcomposites.pckl' in the provided directory."""
-    output_dir = Path(output_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def save_svComposites_to_json(data: list[SVcomposite], output_path: Path | str) -> None:
+    """
+    Save SVcomposites to a JSON file.
 
-    output_file = output_dir / "svcomposites.pckl"
+    Compression is automatically detected from file extension:
+    - .json.gz: compressed with gzip
+    - .json: uncompressed
 
-    with open(output_file, "wb") as f:
+    Args:
+        data: List of SVcomposites to serialize
+        output_path: Path to output JSON file
+
+    Returns:
+        None
+    """
+    output_path = Path(output_path)
+
+    # Create parent directory if it doesn't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Auto-detect compression from extension
+    compress = str(output_path).endswith(".gz")
+
+    # Serialize all SVcomposites
+    serialized_data = [sv.unstructure() for sv in data]
+
+    # Write to file
+    if compress:
+        # Ensure filename ends with .json.gz
+        if not str(output_path).endswith(".json.gz"):
+            output_path = Path(str(output_path).replace(".json", "") + ".json.gz")
+
+        with gzip.open(output_path, "wt", encoding="utf-8") as f:
+            json.dump(serialized_data, f, indent=2)
+        log.info(f"Saved {len(data)} SVcomposites to compressed JSON: {output_path}")
+    else:
+        # Ensure filename ends with .json
+        if str(output_path).endswith(".gz"):
+            output_path = Path(str(output_path).replace(".gz", ""))
+        if not str(output_path).endswith(".json"):
+            output_path = Path(str(output_path) + ".json")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(serialized_data, f, indent=2)
+        log.info(f"Saved {len(data)} SVcomposites to JSON: {output_path}")
+
+
+def load_svComposites_from_json(input_path: Path | str) -> list[SVcomposite]:
+    """
+    Load SVcomposites from a JSON file.
+
+    Compression is automatically detected from file extension:
+    - .json.gz: decompressed from gzip
+    - .json: read as plain text
+
+    Args:
+        input_path: Path to input JSON file
+
+    Returns:
+        List of SVcomposites
+    """
+    input_path = Path(input_path)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    # Auto-detect compression from extension
+    compressed = str(input_path).endswith(".gz")
+
+    try:
+        if compressed:
+            with gzip.open(input_path, "rt", encoding="utf-8") as f:
+                serialized_data = json.load(f)
+            log.info(
+                f"Loaded {len(serialized_data)} SVcomposites from compressed JSON: {input_path}"
+            )
+        else:
+            with open(input_path, "r", encoding="utf-8") as f:
+                serialized_data = json.load(f)
+            log.info(
+                f"Loaded {len(serialized_data)} SVcomposites from JSON: {input_path}"
+            )
+
+        # Deserialize SVcomposites
+        svcomposites = [SVcomposite.from_unstructured(item) for item in serialized_data]
+
+        return svcomposites
+
+    except json.JSONDecodeError as e:
+        log.error(f"Failed to parse JSON from {input_path}: {e}")
+        raise
+    except Exception as e:
+        log.error(f"Error loading SVcomposites from {input_path}: {e}")
+        raise
+
+
+def save_svCalls_to_json(data: list[SVcall], output_path: Path | str) -> None:
+    """
+    Save SVcalls to a compressed pickle file.
+
+    Args:
+        data: List of SVcalls to serialize
+        output_path: Path to output pickle file
+
+    Returns:
+        None
+    """
+    output_path = Path(output_path)
+
+    # Create parent directory if it doesn't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save the data
+    with open(output_path, "wb") as f:
         pickle.dump(data, f)
 
-    log.info(f"Saved {len(data)} SVcomposites to {output_file}")
+    log.info(f"Saved {len(data)} SVcalls to {output_path}")
+
+
+def load_svCalls_from_json(input_path: Path | str) -> list[SVcall]:
+    """
+    Load SVcalls from a pickle file.
+
+    Args:
+        input_path: Path to input pickle file
+
+    Returns:
+        List of SVcalls
+    """
+    input_path = Path(input_path)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    try:
+        with open(input_path, "rb") as f:
+            svCalls = pickle.load(f)
+
+        log.info(f"Loaded {len(svCalls)} SVcalls from {input_path}")
+        return svCalls
+
+    except pickle.UnpicklingError as e:
+        log.error(f"Failed to unpickle SVcalls from {input_path}: {e}")
+        raise
+    except Exception as e:
+        log.error(f"Error loading SVcalls from {input_path}: {e}")
+        raise
 
 
 def extract_test_svComposites(
     data: list[SVcomposite],
     consensus_ids: list[str],
-    sv_types: list[str] = None,
-    output_path: str | Path = None,
+    sv_types: list[str] | None = None,
+    output_path: str | Path | None = None,
 ) -> list[SVcomposite]:
     # Filter by consensus IDs
     filtered_svComposites = [
@@ -2352,10 +3644,16 @@ def extract_test_svComposites(
     ]
     # Optional filter by SV types
     if sv_types is not None:
+        # Convert string sv_types to pattern type set for filtering
+        sv_types_set = set()
+        for sv in sv_types:
+            if sv in SUPPORTED_SV_TYPE_STRINGS_INVERSE:
+                # Add all pattern types that map to this SV type string
+                sv_types_set.update(SUPPORTED_SV_TYPE_STRINGS_INVERSE[sv])
         filtered_svComposites = [
             svComposite
             for svComposite in filtered_svComposites
-            if svComposite.sv_type in sv_types
+            if svComposite.sv_type in sv_types_set
         ]
     # Save to file if output_path is provided
     if output_path is not None:
@@ -2398,5 +3696,3 @@ def extract_test_svComposites(
 #     consensus_ids=[f"6.{i}" for i in range(10)],
 #     sv_types=["INS"],
 #     output_path=BASE_PATH / "test_vertically_merged_svComposites_from_group__many_ins.json.gz")
-
-# %%

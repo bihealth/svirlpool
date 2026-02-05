@@ -1,9 +1,7 @@
 # %%
 
-import cProfile
-import io
+
 import logging
-import pstats
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,57 +18,6 @@ from . import consensus_class
 log = logging.getLogger(__name__)
 
 # %%
-
-
-def profile_parse_sv_signals_from_consensus(
-    samplename: str,
-    consensusAlignment: consensus_class.ConsensusAlignment,
-    consensus_sequence: str,
-    interval_core: tuple[int, int] | None = None,
-    min_signal_size: int = 5,
-    min_bnd_size: int = 200,
-    profile_output_path: Path | str | None = None,
-) -> tuple[list[datatypes.MergedSVSignal], str]:
-    """
-    Profile the parse_sv_signals_from_consensus function and return results with profiling stats.
-
-    Args:
-        Same as parse_sv_signals_from_consensus
-        profile_output_path: Optional path to save detailed profiling stats
-
-    Returns:
-        tuple: (results from function, profiling stats as string)
-    """
-    # Create a profiler
-    profiler = cProfile.Profile()
-
-    # Run the function under profiling
-    profiler.enable()
-    results = parse_sv_signals_from_consensus(
-        samplename=samplename,
-        consensusAlignment=consensusAlignment,
-        consensus_sequence=consensus_sequence,
-        interval_core=interval_core,
-        min_signal_size=min_signal_size,
-        min_bnd_size=min_bnd_size,
-    )
-    profiler.disable()
-
-    # Generate stats
-    stats_stream = io.StringIO()
-    stats = pstats.Stats(profiler, stream=stats_stream)
-    stats.sort_stats("cumulative")
-    stats.print_stats(20)  # Show top 20 functions
-
-    profiling_output = stats_stream.getvalue()
-
-    # Optionally save detailed stats to file
-    if profile_output_path:
-        with open(profile_output_path, "w") as f:
-            f.write(profiling_output)
-        log.info(f"Detailed profiling stats saved to {profile_output_path}")
-
-    return results, profiling_output
 
 
 # %%
@@ -637,26 +584,46 @@ def assign_repeat_ids(
 
 def parse_sv_signals_from_consensus(
     samplename: str,
-    consensusAlignment: consensus_class.ConsensusAlignment,
+    reference_name: str,
     consensus_sequence: str,
-    interval_core: tuple[int, int] | None = None,
+    pysam_alignment: AlignedSegment,
+    interval_core: tuple[int, int],
+    trf_intervals: list[tuple[int, int, int]],
     min_signal_size: int = 5,
-    min_bnd_size: int = 200,
-    _pysam_cache: dict[int, AlignedSegment] = None,
+    min_bnd_size: int = 50,
 ) -> list[datatypes.MergedSVSignal]:
     """
-    Parse SV signals from consensus alignment.
-
-    Args:
-        _pysam_cache: Optional cache for pysam alignments to avoid repeated to_pysam() calls
+    Parse SV signals from consensus alignment. Returned items are sorted by their position on the consensus.
     """
-    # Cache pysam alignment to avoid repeated expensive conversions
-    if _pysam_cache is None:
-        _pysam_cache = {}
-
-    if consensusAlignment.uid not in _pysam_cache:
-        _pysam_cache[consensusAlignment.uid] = consensusAlignment.alignment.to_pysam()
-    pysam_alignment = _pysam_cache[consensusAlignment.uid]
+    # DEBUG START
+    # save all input parameters to a json file for testing and debugging.
+    # serialize the alignment to a datatypes.Alignment object with unstructure()
+    # if pysam_alignment.query_name == "15.0":
+    #     log.info(
+    #         f"parsing sv signals for samplename: {samplename}, reference_name: {reference_name}, consensus_sequence length: {len(consensus_sequence)}, pysam_alignment: {pysam_alignment.to_string()}, interval_core: {interval_core}, trf_intervals: {trf_intervals}, min_signal_size: {min_signal_size}, min_bnd_size: {min_bnd_size}"
+    #     )
+    #     alignment_string = datatypes.Alignment.from_pysam(
+    #         pysam_alignment
+    #     ).unstructure()
+    #     # save to json
+    #     input_data = {
+    #         "samplename": samplename,
+    #         "reference_name": reference_name,
+    #         "consensus_sequence": consensus_sequence,
+    #         "alignment": alignment_string,
+    #         "interval_core": interval_core,
+    #         "trf_intervals": trf_intervals,
+    #         "min_signal_size": min_signal_size,
+    #         "min_bnd_size": min_bnd_size,
+    #     }
+    #     import gzip
+    #     import json
+    #     alignment_id = pysam_alignment.reference_start
+    #     save_path = Path(f"/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/parse_sv_signals_from_consensus_INV15.{alignment_id}.json.gz")
+    #     with gzip.open(save_path, "wt", encoding="utf-8") as f:
+    #         json.dump(input_data, f)
+    #     log.info(f"Saved input data to {save_path}")
+    # DEBUG END
 
     # parse sv signals from alignments
     sv_signals: list[datatypes.SVsignal] = (
@@ -667,7 +634,13 @@ def parse_sv_signals_from_consensus(
             min_bnd_size=min_bnd_size,
         ).SV_signals
     )
-
+    # DEBUG START print parsed sv signals if consensusID is 15.0
+    # if pysam_alignment.query_name == "15.0":
+    #     for sv_signal in sv_signals:
+    #         print("======================================================================================================================")
+    #         print(f"parsed sv signal:: type:{sv_signal.sv_type} ref_start:{sv_signal.ref_start} ref_end:{sv_signal.ref_end} read_start:{sv_signal.read_start} read_end:{sv_signal.read_end} size:{sv_signal.size}")
+    #         print("======================================================================================================================")
+    # DEBUG END
     # if interval_core is given: this describes the actual start and end of the consensus sequence
     # filter any signals whose read_start and read_end are not fully inside interval_core
     if interval_core is not None:
@@ -681,7 +654,7 @@ def parse_sv_signals_from_consensus(
     # transform all SVsignals to MergedSVSignals
     merged_sv_signals = [
         datatypes.MergedSVSignal(
-            chr=consensusAlignment.alignment.reference_name,
+            chr=reference_name,
             ref_start=sv_signal.ref_start,
             ref_end=sv_signal.ref_end,
             read_start=sv_signal.read_start,
@@ -695,7 +668,7 @@ def parse_sv_signals_from_consensus(
         for sv_signal in sv_signals
     ]
 
-    assign_repeat_ids(merged_sv_signals, consensusAlignment.trf_intervals)
+    assign_repeat_ids(merged_sv_signals, trf_intervals)
 
     # add alt sequences to all MergedSVSignals
     for merged_signal in merged_sv_signals:
@@ -713,7 +686,7 @@ def parse_sv_signals_from_consensus(
                 f"merged signal {merged_signal} has no alt_sequence. All breakends need to have an alt_sequence!"
             )
 
-    return sorted(merged_sv_signals, key=lambda x: x.ref_start)
+    return sorted(merged_sv_signals, key=lambda x: x.read_start)
 
 
 # # def add_ref_sequences_to_MergedSVSignals(merged_svs:list[datatypes.MergedSVSignal], path_reference:str) -> list[datatypes.MergedSVSignal]:

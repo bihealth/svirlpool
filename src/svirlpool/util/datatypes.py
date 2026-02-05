@@ -330,10 +330,16 @@ class Alignment:
     reference_end: int
     samdict: dict
     headerdict: dict
+    annotations: dict | None = None
     samplename: str | None = None
 
     @classmethod
-    def from_pysam(cls, aln: pysam.AlignedSegment, samplename: str | None = None):
+    def from_pysam(
+        cls,
+        aln: pysam.AlignedSegment,
+        samplename: str | None = None,
+        annotations: dict | None = None,
+    ):
         """Construct an Alignment object from a pysam.AlignedSegment."""
         return cls(
             readname=aln.query_name,
@@ -344,6 +350,7 @@ class Alignment:
             samdict=aln.to_dict(),
             headerdict=aln.header.to_dict() if hasattr(aln, "header") else {},
             samplename=samplename,
+            annotations=annotations,
         )
 
     def to_pysam(self) -> pysam.AlignedSegment:
@@ -355,7 +362,6 @@ class Alignment:
         return int(self.samdict["flag"]) & 0x10 != 0
 
     def __eq__(self, value) -> bool:
-        # TODO: compare start and cigar strings, not others
         return (
             self.samdict["ref_pos"] == value.samdict["ref_pos"]
             and self.samdict["ref_name"] == value.samdict["ref_name"]
@@ -365,28 +371,15 @@ class Alignment:
         )
 
     def unstructure(self):
-        cattrs.unstructure(self)
+        return cattrs.unstructure(self)
 
     def __hash__(self) -> int:
         return hash((
             self.readname,
             self.reference_name,
-            self.reference_ID,
             self.samplename,
             self.samdict["cigar"],
         ))
-
-
-# given this object and a reference, the original query sequence can be reconstructed
-# via consensus_lib.reconstruct_ReconstructibleSequence
-# @attrs.define
-# class ReconstructibleSequence:
-#     alignment:Alignment
-#     inserted_subseqs:list[str]
-#     reference_name:str
-#     description:str=''
-#     def unstructure(self):
-#         return cattrs.unstructure(self)
 
 
 # used to merge sv signals in case they are on the same repeat
@@ -420,84 +413,3 @@ class MergedSVSignal(SVsignal):
             return "".join(self.original_ref_sequences)[: self.size]
         else:
             return "".join(self.original_ref_sequences)
-
-
-# @attrs.define
-# class SVcomplex:
-#     svprimitives:list[SVprimitive] # list of SVprimitive objects (break ends) that are part of this complex
-#     svType:int
-#     vcfID:None|str=None
-#     alt_sequences:list[str]=[] # list of alternative sequences for the complex
-#     ref_sequences:list[str]=[]
-#     def unstructure(self):
-#         return cattrs.unstructure(self)
-#     def get_consensusID(self) -> str:
-#         if len(self.svprimitives) == 0:
-#             raise ValueError("Cannot get consensus ID from empty SVcomplex")
-#         return self.svprimitives[0].consensusID
-#     def __lt__(self, other: object) -> bool:
-#         # compare reference positions of the minimal SVprimitive in the list
-#         if len(self.svprimitives) == 0 or len(other.svprimitives) == 0:
-#             raise ValueError("Cannot compare empty SVcomplexes")
-#         min_self = min(self.svprimitives,key=lambda x: (x.reference_name, x.ref_start))
-#         min_other = min(other.svprimitives,key=lambda x: (x.reference_name, x.ref_start))
-#         return min_self.reference_name <= min_other.reference_name
-#     def __hash__(self):
-#         return hash(sum([hash(p) for p in self.svprimitives]))
-
-
-# @attrs.define
-# class InDelBndCandidate:
-#     svType:str # INS DEL BNDL BNDR
-#     svSize:int
-#     consensus_name:str
-#     refChrID:int
-#     refChr:str # reference chromosome
-#     refStart:int # start position of SV in reference
-#     refEnd:int # end position of SV in reference
-#     consensus_start:int # start ppsition of SV in consensus
-#     consensus_end:int # end position of SV in consensus
-#     consensus_length:int # length of consensus sequence
-#     depthSupport:dict # of form {sampleID:[depth_l,depth_r,error_l,error_r,support]}
-#     repIDs:list # list of IDs of repeats
-#     is_reverse:int
-#     def unstructure(self):
-#         r = cattrs.unstructure(self)
-#         r['repIDs'] = list(map(int,r['repIDs']))
-#         return r
-#     def __eq__(self, __o: object) -> bool:
-#         return self.svType == __o.svType \
-#             and self.svSize == __o.svSize \
-#             and self.consensus_name == __o.consensus_name \
-#             and self.refChrID == __o.refChrID \
-#             and self.refStart == __o.refStart \
-#             and self.refEnd == __o.refEnd \
-#             and self.consensus_start == __o.consensus_start \
-#             and self.consensus_end == __o.consensus_end \
-#             and self.depthSupport == __o.depthSupport \
-#             and self.repIDs == __o.repIDs \
-#             and self.is_reverse == __o.is_reverse
-
-# @attrs.define
-# class IntraSVCandidate:
-#     svType:str # INS DEL BND
-#     svSize:int
-#     consensus_name:str
-#     referenceIntervals:list
-#     referenceStrings:list
-#     consensusIntervals:list
-#     consensusStrings:list
-#     depthSupport:dict # of form {sampleID:[depth_l,depth_r,error_l,error_r,support]}
-#     repIDs:typing.List[int] # list of IDs of repeats
-#     def unstructure(self):
-#         r = cattrs.unstructure(self)
-#         r['repIDs'] = list(map(int,r['repIDs']))
-#         return r
-#     def __eq__(self, __o: object) -> bool:
-#         return self.svType == __o.svType \
-#             and self.svSize == __o.svSize \
-#             and self.consensus_name == __o.consensus_name \
-#             and self.referenceIntervals == __o.referenceIntervals \
-#             and self.consensusIntervals == __o.consensusIntervals \
-#             and self.depthSupport == __o.depthSupport \
-#             and self.repIDs == __o.repIDs

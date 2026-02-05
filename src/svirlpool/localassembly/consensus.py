@@ -36,10 +36,7 @@ from scipy.sparse import csr_matrix
 from sklearn.cluster import SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
-from ..util import (
-    datatypes,
-    util,
-)
+from ..util import datatypes, util
 from . import consensus_class
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -55,34 +52,31 @@ def subsample_alignments(
     input_bamfile: Path, output_samfile: Path, number: int = 20, verbose: bool = False
 ) -> list[str]:
     """Filter BAM file to include only the longest reads up to 'number' and write to SAM format."""
-    # Read all alignments from bam file
-    alignments = list(pysam.AlignmentFile(input_bamfile))
+    # Read all alignments from bam file using context manager
+    with pysam.AlignmentFile(input_bamfile, "rb") as infile:
+        alignments = list(infile)
 
-    alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
-    alignments_by_length = sorted(
-        alignments_filtered,
-        key=lambda a: a.reference_end - a.reference_start,
-        reverse=True,
-    )
-    alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
+        alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
+        alignments_by_length = sorted(
+            alignments_filtered,
+            key=lambda a: a.reference_end - a.reference_start,
+            reverse=True,
+        )
+        alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
 
-    if len(alignments_by_length) == 0:
-        # No valid alignments, create empty output file
-        with pysam.AlignmentFile(
-            output_samfile, "w", template=pysam.AlignmentFile(input_bamfile, "rb")
-        ) as f:
-            pass
-        return []
+        if len(alignments_by_length) == 0:
+            # No valid alignments, create empty output file
+            with pysam.AlignmentFile(output_samfile, "w", template=infile) as f:
+                pass
+            return []
 
-    # Get readnames of selected alignments
-    readnames = [a.query_name for a in alignments_sampled]
+        # Get readnames of selected alignments
+        readnames = [a.query_name for a in alignments_sampled]
 
-    # Write selected alignments to samfile
-    with pysam.AlignmentFile(
-        output_samfile, "w", template=pysam.AlignmentFile(input_bamfile, "rb")
-    ) as f:
-        for a in alignments_sampled:
-            f.write(a)
+        # Write selected alignments to samfile
+        with pysam.AlignmentFile(output_samfile, "w", template=infile) as f:
+            for a in alignments_sampled:
+                f.write(a)
 
     return readnames
 
@@ -857,10 +851,9 @@ def final_consensus(
         threads=threads,
     )
 
-    # Parse alignments
-    cut_read_alns: list[pysam.AlignedFragment] = list(
-        pysam.AlignmentFile(tmp_alignments.name, mode="r")
-    )
+    # Parse alignments using context manager
+    with pysam.AlignmentFile(tmp_alignments.name, mode="r") as aln_file:
+        cut_read_alns: list[pysam.AlignedFragment] = list(aln_file)
     if len(cut_read_alns) == 0:
         log.warning(
             f"No alignments found for consensus {ID} in {tmp_alignments.name}. Returning None."
@@ -911,7 +904,9 @@ def final_consensus(
     )
 
     if verbose:
-        util.display_ascii_alignments(alignments=cut_read_alns, terminal_width=125)
+        alignments_to_rafs.display_ascii_alignments(
+            alignments=cut_read_alns, terminal_width=125
+        )
 
     return result
 
@@ -1089,11 +1084,8 @@ def align_cutreads_to_representative(
     )
 
     if show_ascii_alignments:
-        from ..svirlpool.scripts.util import display_ascii_alignments
-
-        display_ascii_alignments(
-            alignments=list(pysam.AlignmentFile(tmp_alignments_sam.name, mode="r"))
-        )
+        with pysam.AlignmentFile(tmp_alignments_sam.name, mode="r") as aln_file:
+            alignments_to_rafs.display_ascii_alignments(alignments=list(aln_file))
 
     if compress:
         # convert sam to bam and index
@@ -1249,11 +1241,11 @@ def consensus_while_clustering(
             tmp_all_reads = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
                 prefix="all_reads.",
-                suffix=".fastq",
+                suffix=".fasta",
                 delete=False if tmp_dir_path else True,
             )
             with open(tmp_all_reads.name, "w") as f:
-                SeqIO.write(pool.values(), f, "fastq")
+                SeqIO.write(pool.values(), f, "fasta")
             # 2) align all reads to each other with minimap2
             tmp_all_vs_all_sam = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
@@ -1275,10 +1267,9 @@ def consensus_while_clustering(
                 log.error(f"Alignment with minimap2 timed out after {timeout} seconds.")
                 return None
 
-            # 3) parse alignments
-            all_vs_all_alignments = list(
-                pysam.AlignmentFile(tmp_all_vs_all_sam.name, mode="r")
-            )
+            # 3) parse alignments using context manager
+            with pysam.AlignmentFile(tmp_all_vs_all_sam.name, mode="r") as aln_file:
+                all_vs_all_alignments = list(aln_file)
             if len(all_vs_all_alignments) == 0:
                 log.warning(
                     "no alignments found in all-vs-all alignment of reads. Returning None."
@@ -1571,7 +1562,8 @@ def add_unaligned_reads_to_consensuses_inplace(
 
         # for each alignment, choose the primary alignment's reference name to re-distribute the read to the consensus object
         redistribution: dict[str, str] = {}  # {readname:consensusID}
-        alns = list(pysam.AlignmentFile(tmp_alignments.name, mode="r"))
+        with pysam.AlignmentFile(tmp_alignments.name, mode="r") as aln_file:
+            alns = list(aln_file)
         for aln in alns:
             if aln.is_unmapped:
                 continue
@@ -1998,7 +1990,7 @@ def score_ras_from_alignments(
     rafs_scores_dict = {}
     for ras, score in zip(rass, rass_scores, strict=True):
         if ras.read_name in rafs_scores_dict:
-            if rafs_scores_dict[ras.read_name] < score:
+            if rafs_scores_dict[ras.read_name] > score:
                 rafs_scores_dict[ras.read_name] = score
         else:
             rafs_scores_dict[ras.read_name] = float(score)
@@ -2055,7 +2047,6 @@ def create_padding_for_consensus(
     padding = _create_padding_object(
         cons=consensus_object,
         read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_sizes_per_read=padding_sizes_per_read,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
@@ -2091,7 +2082,7 @@ def _get_all_read_padding_intervals(
                 min(data[cutread.name][0], cutread_description_dict["start"]),
                 max(data[cutread.name][1], cutread_description_dict["end"]),
             )
-    result: dict[str, tuple[int, int, int, int]] = {}
+    result: dict[str, tuple[int, int, int, int, bool]] = {}
     # now add the read length to each entry
     for readname, (start, end) in data.items():
         if readname in read_records:
@@ -2107,7 +2098,7 @@ def _get_all_read_padding_intervals(
 
 
 def _get_padding_sizes_per_read(
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
 ) -> dict[str, tuple[int, int]]:
     """Generates a dict[readname, (left padding size, right padding size)] for all reads in the consensus object."""
     """A padding is the sequence that overshoots the cutread alignment on the left and right side (in the orientation of the consensus)."""
@@ -2136,7 +2127,7 @@ def _get_padding_read_names_of_consensus(
 
 
 def _get_read_padding_intervals(
-    read_paddings_for_consensus: dict[str, tuple[int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_read_names_of_consensus: tuple[str, str],
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     """Returns the left and right intervals on the two padding reads, ignorant toward clipped bases."""
@@ -2154,8 +2145,7 @@ def _get_read_padding_intervals(
 
 def _create_padding_object(
     cons: consensus_class.Consensus,
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int]],
-    padding_sizes_per_read: dict[str, tuple[int, int]],
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
@@ -2184,11 +2174,11 @@ def _create_padding_object(
         sequence=str(padded_consensus_sequence),
         readname_left=padding_reads[0],
         readname_right=padding_reads[1],
-        padding_size_left=padding_sizes_per_read[padding_reads[0]][0],
-        padding_size_right=padding_sizes_per_read[padding_reads[1]][1],
+        padding_size_left=len(left_padding),
+        padding_size_right=len(right_padding),
         consensus_interval_on_sequence_with_padding=(
-            padding_sizes_per_read[padding_reads[0]][0],
-            padding_sizes_per_read[padding_reads[0]][0] + len(cons.consensus_sequence),
+            len(left_padding),
+            len(padded_consensus_sequence) - len(right_padding),
         ),
     )
     return new_padding
@@ -2342,6 +2332,9 @@ def process_consensus_container(
     regions_for_cn_query = [
         (cr.chr, cr.referenceStart, cr.referenceEnd) for cr in crs_dict.values()
     ]
+    if verbose:
+        for cr in crs_dict.values():
+            print(f"CR region on ref: {cr.chr}:{cr.referenceStart}-{cr.referenceEnd}")
     max_copy_number = copynumber_tracks.query_copynumber_from_regions(
         bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
     )
@@ -2362,8 +2355,8 @@ def process_consensus_container(
         for crID, readnames in dict_unused_read_names.items():
             for readname in readnames:
                 # get the read sequence from the alignment file
-                with pysam.AlignmentFile(path_alignments, "rb") as samfile:
-                    read_seqRecord = samfile.fetch(readname=readname)
+                with pysam.AlignmentFile(str(path_alignments), "rb") as samfile:
+                    read_seqRecord = samfile.fetch(contig=readname)
                     for read in read_seqRecord:
                         read_sequence_object = datatypes.SequenceObject(
                             id=read.query_name,
@@ -2387,9 +2380,13 @@ def process_consensus_container(
         dict_alignments=alns,
         buffer_clipped_length=buffer_clipped_length,
     )
+    if verbose:
+        print(f"dict_all_intervals: {dict_all_intervals}")
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
+    if verbose:
+        print(f"max_intervals: {max_intervals}")
     read_records: dict[str, SeqRecord] = get_full_read_sequences_of_alignments(
         dict_alignments=alns, path_alignments=path_alignments
     )
@@ -2562,21 +2559,29 @@ def crs_containers_to_consensus(
     tmp_dir_path: Path | str | None = None,
     verbose: bool = False,
 ) -> None:
-    assert Path(lamassemble_mat).exists(), (
-        f"lamassemble matrix file {lamassemble_mat} does not exist."
-    )
-    assert input.exists(), f"Input file {input} does not exist."
-    assert input.is_file(), f"Input file {input} is not a file."
-    assert output.parent.exists(), f"Output directory {output.parent} does not exist."
-    assert threads > 0, "threads must be greater than 0."
-    if crIDs:
-        assert type(crIDs) == list, "crIDs must be a list of integers."
-        assert len(crIDs) > 0, (
-            "crIDs must be a list of integers with at least one element."
+    if not Path(lamassemble_mat).exists():
+        raise FileNotFoundError(
+            f"lamassemble matrix file {lamassemble_mat} does not exist."
         )
-        assert all(isinstance(crID, int) for crID in crIDs), (
-            "crIDs must be a list of integers."
+    if not input.exists():
+        raise FileNotFoundError(f"Input file {input} does not exist.")
+    if not input.is_file():
+        raise FileNotFoundError(f"Input file {input} is not a file.")
+    if not output.parent.exists():
+        raise FileNotFoundError(f"Output directory {output.parent} does not exist.")
+    if not output.parent.is_dir():
+        raise NotADirectoryError(
+            f"Output directory {output.parent} is not a directory."
         )
+    if threads <= 0:
+        raise ValueError("threads must be greater than 0.")
+    if crIDs is not None:
+        if not isinstance(crIDs, list):
+            raise TypeError("crIDs must be a list of integers.")
+        if len(crIDs) == 0:
+            raise ValueError("crIDs must contain at least one element.")
+        if not all(isinstance(crID, int) for crID in crIDs):
+            raise TypeError("crIDs must be a list of integers.")
     log.info("load data")
     if crIDs:
         existing_crIDs = load_crIDs_from_containers_db(path_db=input)
@@ -2637,6 +2642,17 @@ def crs_containers_to_consensus(
             log.info(
                 f"crID {crID} has {len(unused_reads)} unused reads: {[seqobj.id for seqobj in unused_reads]}"
             )
+
+    if verbose and tmp_dir_path is not None:
+        # write all consensus padded sequences to a fasta file in the tmp dir
+        fasta_path = (
+            Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
+        )
+        log.info(f"Writing padded consensus sequences to {fasta_path}.")
+        with open(fasta_path, "w") as f:
+            for consensusID, consensus in result.consensus_dicts.items():
+                if consensus.consensus_padding is not None:
+                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
 
     log.info(f"Writing result to {output}.")
     with open(output, "w") as f:
@@ -2726,8 +2742,8 @@ def get_consensus_parser(
         "--buffer-clipped-sequence",
         type=int,
         required=False,
-        default=5000,
-        help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read.",
+        default=500,
+        help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read. This should never be larger than --min-cr-size in the 'svirlpool run' command.",
     )
     parser.add_argument(
         "--timeout",

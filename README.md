@@ -4,231 +4,179 @@ Our [preprint](https://www.biorxiv.org/content/10.1101/2025.11.03.686231v1) is n
 
 <img src="media/illustration.png" align="right" alt="Svirlpool illustration" width="300" height="300">
 
-- License: MIT
-- Contact: [Vinzenz May](mailto:vinzenz.may@bih-charite.de)
+* **License:** MIT
+* **Contact:** [Vinzenz May](mailto:vinzenz.may@bih-charite.de)
+
+---
+
+## Overview
 
 **Motivation**
 
-Long-Read Sequencing (LRS) promises great improvements in the detection of structural genome variants (SVs). However, existing methods are lacking in key areas such as the reliable detection of inserted sequence, precise genotyping of variants, and reproducible calling of variants across multiple samples. Here, we present our method Svirlpool, that is aimed at the analysis of Oxford Nanopore Technologies (ONT) sequencing data. Svirlpool uses local assembly of candidate SV regions to obtain high-quality consensus sequences.
+Long-Read Sequencing (LRS) promises great improvements in the detection of structural genome variants (SVs). However, existing methods are lacking in key areas such as the reliable detection of inserted sequence, precise genotyping of variants, and reproducible calling of variants across multiple samples. **Svirlpool** targets Oxford Nanopore Technologies (ONT) sequencing data using local assembly of candidate SV regions to obtain high-quality consensus sequences.
 
 **Results**
 
-Svirlpool obtains competitive results to the leading method Sniffles on the widely used Genome in a Bottle (GiaB) benchmark data sets. On trio data, however, Svirlpools shows a clear favorable performance in terms of mendelian consistency. This indicates that Svirlpool shows great promise in clinical applications and beyond benchmark datasets.
+Svirlpool obtains competitive results to leading methods like Sniffles on Genome in a Bottle (GiaB) benchmarks. On trio data, Svirlpool shows favorable performance in Mendelian consistency, indicating great promise for clinical applications.
 
-## Installing & Running
+---
 
-Currently, the only way to run Svirlpool is in developer mode - so see "Developer Notes" below.
+## Table of Contents
 
-## Developer Notes
+1. [Installation](https://www.google.com/search?q=%23installation)
+    * [Option A: Docker or Singularity](https://www.google.com/search?q=%23option-a-docker-or-singularity)
+    * [Option B: From Source (Pixi)](https://www.google.com/search?q=%23option-b-from-source-pixi)
+2. [Quick Start (Example Data)](https://www.google.com/search?q=%23quick-start-example-data)
+3. [Workflow for Real Data](https://www.google.com/search?q=%23workflow-for-real-data)
+    * [I. Required Input Files](https://www.google.com/search?q=%23i-required-input-files)
+    * [II. Step-by-Step Execution](https://www.google.com/search?q=%23ii-step-by-step-execution)
+4. [Developer & Formatting Hints](https://www.google.com/search?q=%23developer--formatting-hints)
 
-### Prerequisites
+---
 
-First of all, you will need to have Git (to get the source code) and Git LFS (to get the example files) installed.
+## Installation
 
+You can run Svirlpool either via pre-built containers or by installing from the source code. Both methods are fully supported.
+
+### Option A: Docker or Singularity
+
+1. **Install Docker:** Follow the [official instructions](https://docs.docker.com/engine/install/).
+
+2. **Pull Image:**
+
+```bash
+docker pull ghcr.io/bihealth/svirlpool:main
 ```
+
+3. **Singularity (Alternative):** If on an HPC, convert the image:
+
+```bash
+singularity build svirlpool.sif docker://ghcr.io/bihealth/svirlpool:main
+```
+
+### Option B: From Source (Pixi)
+
+1. **Install Prerequisites:**
+
+```bash
 # Ubuntu 24.04+
 sudo apt install -y git git-lfs
-```
-
-Next, we install [Pixi](https://pixi.sh/latest/), for installing Python, the Python libraries we depend on.
-Also, Pixi allows us to install non-Python packages from the `conda-forge` and `bioconda` repositories.
-
-```
 curl -fsSL https://pixi.sh/install.sh | bash
 ```
 
-### Steps
+2. **Clone and Setup:**
 
-Clone repository:
-
-```
+```bash
 git clone git@github.com:bihealth/svirlpool.git
 cd svirlpool
+# Pixi will manage the environment automatically on the first run
 ```
 
-First, run Svirlpool to create the "svirltile" file.
+---
 
-```
-# create working directory
+## Quick Start (Example Data)
+
+This example uses a small MUC1 test dataset to demonstrate the two-step calling process.
+We demonstrate how to run with Docker.
+You can replace the `docker run ... svirlpool` part with `pixi run svirlpool` to run it using pixi rather than Docker.
+
+### 1. Generate Svirltile
+
+```bash
+# Create working directory
 mkdir -p /tmp/workdir/result
-# now run
-pixi run \
+
+# Run using Docker (or replace with 'pixi run svirlpool ...')
+docker run --rm -v $(realpath .):/data -v /tmp/workdir/result:/tmp/workdir/result -w /data \
+    ghcr.io/bihealth/svirlpool:main \
     svirlpool run \
-        --threads 1 \
-        --samplename muc1test \
-        --workdir /tmp/workdir/result \
+        --threads 1 --samplename muc1test --workdir /tmp/workdir/result \
+        --output /tmp/workdir/result/svirltile.db \
         --alignments examples/muc1/data/muc1.bam \
         --reference examples/muc1/data/muc1.fa \
         --trf examples/muc1/data/muc1.trf.bed \
         --mononucleotides examples/muc1/data/muc1.mononucleotides.lt6.bed \
-        --lamassemble-mat data/lamassemble-mats/promethion.mat \
-        --unique-regions examples/muc1/data/muc1.unique.bed
+        --lamassemble-mat data/lamassemble-mats/promethion.mat
 ```
 
-The directory `/tmp/workdir/result` will contain a number of files. The most important one is the file `/tmp/svirltile.db` that is necessary for the subsequent (potentially joint) SV calling and creation of a VCF file.
+### 2. Generate VCF
 
-Let us now run the SV calling:
-
-```
-pixi run \
+```bash
+docker run \
+    --rm -v $(realpath .):/data -v /tmp/workdir/result:/tmp/workdir/result -w /data \
+    ghcr.io/bihealth/svirlpool:main \
     svirlpool sv-calling \
-        --threads 1 \
-        --reference examples/muc1/data/muc1.fa \
+        --threads 1 --reference examples/muc1/data/muc1.fa \
         --input /tmp/workdir/result/svirltile.db \
         --output /tmp/workdir/result/variants.vcf.gz
 ```
 
-We will end up with the SV file `variants.vcf.gz` which contains the SV calls, see below for an excerpt.
+---
 
-```
-# zcat /tmp/workdir/result/variants.vcf.gz | cut -b 1-140
-##fileformat=VCFv4.2
-##FILTER=<ID=PASS,Description="All filters passed">
-##fileDate=20251104
-##reference=file:///home/mholtgrewe/Development/svirlpool/examples/muc1/data/muc1.fa
-##sequences=file:///tmp/workdir/result/variants.variants.fasta
-##contig=<ID=1,length=300436>
-##FILTER=<ID=LowQual,Description="Poor quality and insufficient number of informative reads.">
-##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the structural variant">
-##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of SV:DEL=Deletion, INS=Insertion, DUP=Duplication, INV=Inversion">
-##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
-##INFO=<ID=PASS_ALTREADS,Number=1,Type=String,Description="Passed alt reads threshold">
-##INFO=<ID=pass_GQ,Number=1,Type=String,Description="Passed Genotype precision threshold">
-##INFO=<ID=PRECISE,Number=0,Type=Flag,Description="Precise structural variant">
-##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise structural variant">
-##INFO=<ID=MATEID,Number=.,Type=String,Description="ID of mate breakends">
-##INFO=<ID=CONSENSUSIDs,Number=1,Type=String,Description="ID of the consensus that this SV originiates from. Other consensus sequences can a
-##INFO=<ID=SEQ_ID,Number=1,Type=String,Description="ID of sequence in companion FASTA file for symbolic alleles">
-##ALT=<ID=INS,Description="Insertion">
-##ALT=<ID=DEL,Description="Deletion">
-##ALT=<ID=DUP,Description="Duplication">
-##ALT=<ID=INV,Description="Inversion">
-##ALT=<ID=BND,Description="Breakend; Translocation">
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
-##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">
-##FORMAT=<ID=DR,Number=1,Type=Integer,Description="Number of reference reads">
-##FORMAT=<ID=DV,Number=1,Type=Integer,Description="Number of variant reads">
-##FORMAT=<ID=GP,Number=1,Type=Float,Description="Genotype probability">
-#CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO    FORMAT  muc1test
-1       114551  DEL.4   GGGGATTACAGGCGTGAGCCACCGCTCCTAGCGAAAAACATTTTTT  G       60      LowQual PASS_ALTREADS=False;pass_GQ=True;SVTYPE=DEL;END=114596;SVLEN=45;C
-1       159296  INS.0   C       Cggctggagcccgagggccggcctggtgtccgggggccgaggtcggacaccgcctggctgggggcggtggagccgccgggccggcctggtgtccgggggccgaggtgacaccgtgggctgggg
-1       159351  INS.3   G       Gcggtggagcccgggccggctggtgtccgggggccgaggtgacaccgtgggctggggcggtggagccgggccggcctggtgtccggggccgaggtgacaccgtgggctggggcggtggagccc
-1       159704  INS.1   G       Gggctggggcggctgcagcccggggccggcctgctctccggggccgaggtgacaccgccgtgggctgcggcgggcggcgtggagcccggggcccggctgctcctatcttccgggccgaggtgt
-1       159707  INS.2   T       Tggggcggtggagccgcgggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggcgtggagcccggggccggcctggtgtccggggccgaggtgacaccgtgggctgggcggc
+## Workflow for Real Data
+
+To call SVs on your own data, follow these three stages: Preparing prefab data, generating tiles, and calling variants.
+
+### I. Required Input Files
+
+| File Type | Description | Requirements |
+| --- | --- | --- |
+| **Alignments (.bam)** | Indexed long-read alignments | Generated with `minimap2`; must have DNA sequences and quality scores. |
+| **Reference (.fa)** | Reference genome | Indexed with `samtools faidx`. |
+| **Matrices (.mat)** | Error models for assembly | Included in the repository under `data/lamassemble-mats/`. |
+| **Annotations** | TRF and Mononucleotides | Download from [svirlpool-data](https://github.com/bihealth/svirlpool-data). |
+
+### II. Step-by-Step Execution
+
+Below, you will need to add the `docker run ...` or `pixi run` before the commands as explained above.
+
+#### 1. Setup Environment
+
+```bash
+export REFERENCE=hs37d5.fa
+export THREADS=16
+export TRF=$DATADIR/pbsv-annotations/human_hs37d5.trf.bed
+export MAT=$SVIRLPOOLDIR/data/lamassemble-mats/promethion.mat
+export MNNTS=$DATADIR/HG19/hs37d5.mononucleotides.lt6.bed.gz
 ```
 
-## How to call SVs with Svirlpool on my real data
+#### 2. Generate Svirltiles (Per Sample)
 
-You will need the get the prefab data (I), then create the svirltile(s) of your samples (II), then call SVs from the svirltiles (III) to generate the final vcf file.
+Run for each sample in your study (e.g., HG002 and HG003):
 
-Your starting point is the svirlpool directory.
-
-### I prefab data
-Some files are needed to run svirlpool. What you need:
-1) read alignments - indexed .bam files that were generated with minimap2. They need to have read DNA sequences and sequence quality scores.
-2) an indexed reference genome - in .fasta format; indexed with samtools faidx
-3) the matrices for lamassemble. They are here in the svirlool-repository. set: SVIRLPOOLDIR=$(realpath .)
-4) annotations files - you can get them from: https://github.com/bihealth/svirlpool-data
-  - download the data repository and cd into it. Set: DATADIR=$(realpath .)
-
-let's say you have the samples HG002 and HG003 from the GiaB test data set on HG19. You now set the variables and then run svirlpool:
-
-`cd $SVIRLPOOLDIR`
-
-`pixi shell`
-
-```
-REFERENCE={hs37d5.fa}
-THREADS=16
-
-TRF=$DATADIR/pbsv-annotations/human_hs37d5.trf.bed
-MAT=$SVIRLPOOLDIR/data/lamassemble-mats/promethion.mat
-MNNTS=$DATADIR/HG19/hs37d5.mononucleotides.lt6.bed.gz
-UNIQUER=$DATADIR/HG19/hs37d5.unique.bed.gz
-```
-
-Now cd into a directory of your choice, where your data shall be processed, e.g.
-
-`cd dataanalysis`
-
-### II generate svirltiles
-#### run the son HG002:
-```
-SAMPLENAME=HG002
-ALIGNMENTS={ALIGNMENTS.HG002.BAM}
-
+```bash
 svirlpool run \
-    --samplename $SAMPLENAME \
-    --workdir $SAMPLENAME \
-    --alignments $ALIGNMENTS \
+    --samplename HG002 \
+    --workdir HG002 \
+    --alignments HG002.bam \
     --reference $REFERENCE \
     --trf $TRF \
     --lamassemble-mat $MAT \
-    --mononucleotides $ MNNTS \
-    --unique-regions UNIQUER \
+    --mononucleotides $MNNTS \
     --threads $THREADS \
     --min-sv-size 30
 ```
-#### run the father HG003:
-```
-SAMPLENAME=HG003
-ALIGNMENTS={ALIGNMENTS.HG003.BAM}
 
-svirlpool run \
-    --samplename $SAMPLENAME \
-    --workdir $SAMPLENAME \
-    --alignments $ALIGNMENTS \
-    --reference $REFERENCE \
-    --trf $TRF \
-    --lamassemble-mat $MAT \
-    --mononucleotides $ MNNTS \
-    --unique-regions UNIQUER \
-    --threads $THREADS \
-    --min-sv-size 30
-```
-### III vcf
+#### 3. Joint SV Calling
 
-```
+Combine multiple tiles into a single VCF:
+
+```bash
 svirlpool sv-calling \
-    --input $HG002/svirltile.db $HG003/svirltile.db \
+    --input HG002/svirltile.db HG003/svirltile.db \
     --reference $REFERENCE \
     --output family.vcf.gz \
     --sv-types DEL INS \
     --min-sv-size 50
 ```
 
-The resulting file should be family.vcf.gz.
+---
 
+## Developer & Formatting Hints
 
-### Hints
+For contributors or users running from source via `pixi`:
 
-Open VS Code with pix-installed `dev` environment
-
-```
-pixi run -e dev code .
-```
-
-Run code formatting
-
-```
-make fix
-```
-
-Run formatting, lints, other static checks:
-
-```
-make check
-```
-
-Run tests:
-
-```
-make check
-```
-
-Or all in one:
-
-```
-make fix check test
-```
+* **IDE:** Open VS Code with the pre-configured environment: `pixi run -e dev code .`
+* **Format Code:** `make fix`
+* **Lint & Tests:** `make check` or `make test`
+* **Full Suite:** `make fix check test`

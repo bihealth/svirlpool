@@ -8,13 +8,16 @@ which were moved here from the main datatypes module for better organization.
 import logging
 import pickle
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
 
 import attrs
 import cattrs
+from pysam.libcalignedsegment import AlignedSegment
 
 # Import the base datatypes that these classes depend on
 from ..util import datatypes
+from ..util.util import get_interval_on_ref_in_region
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +66,7 @@ class ConsensusPadding:
     readname_left: str
     readname_right: str
     padding_size_left: int  # core interval start
-    padding_size_right: int
+    padding_size_right: int  # len(sequence) - core interval end
     consensus_interval_on_sequence_with_padding: tuple[int, int]
 
 
@@ -271,3 +274,66 @@ def read_consensus_from_db(
         log.debug(f"Retrieved {len(consensus_objects)} consensus objects from database")
 
     return consensus_objects
+
+
+def get_consensus_core_alignment_interval_on_reference(
+    consensus: Consensus, alignment: AlignedSegment
+) -> tuple[str, int, int]:
+    if consensus.consensus_padding is None:
+        raise ValueError("Consensus padding is None, cannot determine core interval.")
+    core_start: int = (
+        consensus.consensus_padding.consensus_interval_on_sequence_with_padding[0]
+    )
+    core_end: int = (
+        consensus.consensus_padding.consensus_interval_on_sequence_with_padding[1]
+    )
+    # check if core_start and core_end are within the alignment. If they are on a clipped part of the alignment,
+    # moce them to the next aligned position
+
+    traced_back_ref_start, traced_back_ref_end = get_interval_on_ref_in_region(
+        a=alignment,
+        start=core_start,
+        end=core_end,
+    )
+    traced_back_ref_start, traced_back_ref_end = (
+        min(traced_back_ref_start, traced_back_ref_end),
+        max(traced_back_ref_start, traced_back_ref_end),
+    )
+    return (str(alignment.reference_name), traced_back_ref_start, traced_back_ref_end)
+
+
+def yield_consensus_objects(
+    path_db: Path, consensusIDs: set[str] | None = None, silent: bool = True
+) -> Generator[Consensus, None, None]:
+    """produces a dict consensusID:consensus_sequence"""
+    # iterate all consensus objects in database and construct a dict consensusID:consensusObject
+    if not silent:
+        log.info(f"loading consensus sequences from {path_db}...")
+    try:
+        conn = sqlite3.connect("file:" + str(path_db) + "?mode=ro", uri=True)
+        c = conn.cursor()
+    except sqlite3.OperationalError as e:
+        log.error(
+            f"Could not open database {path_db}. Make sure the file exists and is not corrupted."
+        )
+        raise e
+    if not consensusIDs:
+        c.execute("SELECT id,consensus FROM consensuses")
+        for row in c:
+            consensus_object: Consensus = cattrs.structure(
+                pickle.loads(row[1]), Consensus
+            )
+            yield consensus_object
+    else:
+        placeholders = ",".join(
+            ["?"] * len(consensusIDs)
+        )  # Correctly format placeholders
+        query = f"SELECT id, consensus FROM consensuses WHERE id IN ({placeholders})"
+        c.execute(query, tuple(consensusIDs))  # Pass parameters correctly
+        for row in c:
+            consensus_object: Consensus = cattrs.structure(
+                pickle.loads(row[1]), Consensus
+            )
+            yield consensus_object
+    c.close()
+    conn.close()

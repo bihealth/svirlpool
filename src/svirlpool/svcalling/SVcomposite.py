@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import json
-import pickle
 
 import attrs  # type: ignore
 import numpy as np  # type: ignore
-from intervaltree import Interval, IntervalTree  # type: ignore
+from intervaltree import IntervalTree  # type: ignore
+from xxhash import xxh64
 
 from ..localassembly import SVpatterns
-
-# from .datatypes import SV_TYPE_DICT
 
 
 @attrs.define
 class SVcomposite:
     """Composite structural variant from one or more consensus sequences (across samples), built from one or more SVpattern instances."""
 
-    sv_type: str
+    sv_type: type[SVpatterns.SVpatternType]
     svPatterns: list[SVpatterns.SVpatternType]
 
     def __attrs_post_init__(self):
@@ -25,11 +23,18 @@ class SVcomposite:
 
     def unstructure(self):
         """Unstructure the SVcomposite for serialization."""
-        return SVpatterns.converter.unstructure(self)
+        d = SVpatterns.converter.unstructure(self)
+        # Manually convert sv_type class to string name
+        if "sv_type" in d and isinstance(d["sv_type"], type):
+            d["sv_type"] = SVpatterns.svpattern_class_to_name(d["sv_type"])
+        return d
 
     @classmethod
     def from_unstructured(cls, data: dict) -> SVcomposite:
         """Create SVcomposite from unstructured data."""
+        # Manually convert sv_type string name back to class
+        if "sv_type" in data and isinstance(data["sv_type"], str):
+            data["sv_type"] = SVpatterns.svpattern_name_to_class(data["sv_type"])
         return SVpatterns.converter.structure(data, cls)
 
     def to_json(self) -> str:
@@ -40,12 +45,12 @@ class SVcomposite:
     def from_json(cls, json_str: str) -> SVcomposite:
         """Create SVcomposite from JSON string."""
         data = json.loads(json_str)
-        return SVpatterns.converter.structure(data, cls)
+        return cls.from_unstructured(data)
 
     @classmethod
     def from_SVpattern(cls, svPattern: SVpatterns.SVpatternType) -> SVcomposite:
         """Build a composite from a single SVpattern, inferring the sv_type."""
-        return cls(sv_type=svPattern.get_sv_type(), svPatterns=[svPattern])
+        return cls(sv_type=type(svPattern), svPatterns=[svPattern])
 
     @classmethod
     def from_SVpatterns(cls, svPatterns: list[SVpatterns.SVpatternType]) -> SVcomposite:
@@ -54,24 +59,29 @@ class SVcomposite:
             raise ValueError("Must provide at least one SVpattern")
         # if the sv types of the SVpatterns are INS and DEL, compute the total number of insertions and deletions, where its abs(ins - del)
         if len(svPatterns) == 1:
-            return cls(sv_type=svPatterns[0].get_sv_type(), svPatterns=svPatterns)
-        sv_type = svPatterns[0].get_sv_type()
-        all_sv_types = {sv.get_sv_type() for sv in svPatterns}
+            return cls(sv_type=type(svPatterns[0]), svPatterns=svPatterns)
+        sv_type = type(svPatterns[0])
+        all_sv_types = {type(sv) for sv in svPatterns}
+        # re-calculate the SV size of horizontally merged INS+DEL runs
         if all_sv_types == {
-            "INS",
-            "DEL",
+            SVpatterns.SVpatternInsertion,
+            SVpatterns.SVpatternDeletion,
         }:  # compositions of INS and DEL can occur, e.g. in tandem repeats
             ins_count = sum(
-                sv.get_size() for sv in svPatterns if sv.get_sv_type() == "INS"
+                sv.get_size()
+                for sv in svPatterns
+                if isinstance(sv, SVpatterns.SVpatternInsertion)
             )
             del_count = sum(
-                sv.get_size() for sv in svPatterns if sv.get_sv_type() == "DEL"
+                sv.get_size()
+                for sv in svPatterns
+                if isinstance(sv, SVpatterns.SVpatternDeletion)
             )
             inserted_bases = ins_count - del_count
             if inserted_bases > 0:
-                sv_type = "INS"
+                sv_type = SVpatterns.SVpatternInsertion
             else:
-                sv_type = "DEL"
+                sv_type = SVpatterns.SVpatternDeletion
 
         return cls(sv_type=sv_type, svPatterns=svPatterns)
 
@@ -81,7 +91,7 @@ class SVcomposite:
 
     @property
     def ref_end(self) -> tuple[str, int]:
-        return max(p.ref_end for p in self.svPatterns)
+        return max((p.chr, p.ref_end) for p in self.svPatterns)
 
     @property
     def repeatIDs(self) -> set[int]:
@@ -106,14 +116,17 @@ class SVcomposite:
     def get_size_populations(self) -> list[int]:
         """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins."""
         return [
-            size for svp in self.svPatterns for size in svp.size_distortions.values()
+            int(size)
+            for svp in self.svPatterns
+            if svp.size_distortions is not None
+            for size in svp.size_distortions.values()
         ]
 
     # def get_most_supported_svPattern(self) -> SVpatterns.SVpatternType:
     #     """Get the SVpattern with the most supporting reads."""
     #     return max(self.svPatterns, key=lambda svp: len(svp.get_supporting_reads()))
 
-    def get_regions(self, tolerance_radius: int = 25) -> list[Interval]:
+    def get_regions(self, tolerance_radius: int = 25) -> list[tuple[str, int, int]]:
         if tolerance_radius <= 0:
             raise ValueError("Tolerance radius must be greater than 0")
         return [
@@ -131,146 +144,170 @@ class SVcomposite:
             )
         return alt_readnames
 
-    def get_size(self) -> int:
-        if self.sv_type in ("INS", "DEL", "INV"):
-            # Group SVpatterns by (samplename, consensusID) - same logic as get_alt_sequence
-            groups = {}
-            for svPattern in self.svPatterns:
-                key = (svPattern.samplename, svPattern.consensusID)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(svPattern)
+    def get_alt_readnamehashes_per_sample(self) -> dict[str, set[int]]:
+        """Get all supporting reads per sample (from each SVpattern, from each SVprimitive) returns a dict {samplename: set(hashed readnames)}"""
+        alt_readnames: dict[str, set[int]] = {}
+        for svPattern in self.svPatterns:
+            alt_readnames.setdefault(svPattern.samplename, set()).update(
+                int(xxh64(s).intdigest()) for s in svPattern.get_supporting_reads()
+            )
+        return alt_readnames
 
-            if not groups:
-                return 0
+    def get_size(self, inner: bool | None = None) -> int:
+        """returns the size of the SVcomposite, calculated from the SVpatterns with the highest support (same logic as get_alt_sequence).
+        The inner parameter can override the SVpattern.get_size() 'inner' parameter, which is useful for inversions or other 4+ relations-driven SV patterns."""
+        # Group SVpatterns by (samplename, consensusID) - same logic as get_alt_sequence
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
 
-            # Find the group with maximum supporting unique reads - same logic as get_alt_sequence
-            best_group = None
-            max_supporting_reads = 0
+        if not groups:
+            return 0
 
-            for group_patterns in groups.values():
-                # Get all unique supporting reads from this group
-                all_supporting_reads = set()
-                for svPattern in group_patterns:
-                    all_supporting_reads.update(svPattern.get_supporting_reads())
+        # Find the group with maximum supporting unique reads - same logic as get_alt_sequence
+        best_group = None
+        max_supporting_reads = 0
 
-                if len(all_supporting_reads) > max_supporting_reads:
-                    max_supporting_reads = len(all_supporting_reads)
-                    best_group = group_patterns
+        for group_patterns in groups.values():
+            # Get all unique supporting reads from this group
+            all_supporting_reads = set()
+            for svPattern in group_patterns:
+                all_supporting_reads.update(svPattern.get_supporting_reads())
 
-            if best_group is None:
-                return 0
+            if len(all_supporting_reads) > max_supporting_reads:
+                max_supporting_reads = len(all_supporting_reads)
+                best_group = group_patterns
 
-            # Calculate summed size from the best group only
-            summed_bp = 0
-            for svPattern in best_group:
+        if best_group is None:
+            return 0
+
+        # Calculate summed size from the best group only
+        summed_bp = 0
+        for svPattern in best_group:
+            if inner is not None and isinstance(
+                svPattern, SVpatterns.SVpatternInversion
+            ):
+                value = svPattern.get_size(inner=inner)
+            else:
                 value = svPattern.get_size()
-                if svPattern.get_sv_type() == "INS":
-                    summed_bp += value
-                elif svPattern.get_sv_type() == "DEL":
-                    summed_bp -= value
-                elif svPattern.get_sv_type() == "INV":
-                    summed_bp += value
-                else:
+            if isinstance(svPattern, SVpatterns.SVpatternDeletion):
+                summed_bp -= value
+            else:
+                summed_bp += value
+
+        return abs(summed_bp)  # Return absolute value for size
+
+    def _get_best_group(self) -> list[SVpatterns.SVpatternType]:
+        """Helper function to get the group of SVpatterns with the highest support."""
+        # Group SVpatterns by (samplename, consensusID)
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
+
+        if not groups:
+            raise ValueError("No SVpatterns in SVcomposite")
+
+        # Find the group with maximum supporting unique reads
+        best_group = None
+        max_supporting_reads = 0
+
+        for group_patterns in groups.values():
+            # Get all unique supporting reads from this group
+            all_supporting_reads = set()
+            for svPattern in group_patterns:
+                all_supporting_reads.update(svPattern.get_supporting_reads())
+
+            if len(all_supporting_reads) > max_supporting_reads:
+                max_supporting_reads = len(all_supporting_reads)
+                best_group = group_patterns
+
+        if best_group is None:
+            raise ValueError("No SVpatterns in SVcomposite")
+
+        return best_group
+
+    def get_all_groups(self) -> dict[tuple[str, str], list[SVpatterns.SVpatternType]]:
+        """Helper function to get all groups of SVpatterns. The key is (samplename, consensusID)."""
+        # Group SVpatterns by (samplename, consensusID)
+        groups = {}
+        for svPattern in self.svPatterns:
+            key = (svPattern.samplename, svPattern.consensusID)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(svPattern)
+
+        return groups
+
+    def get_representative_SVpattern(self) -> SVpatterns.SVpatternType:
+        """returns the SVpattern with the highest support (same logic as get_alt_sequence)."""
+        best_group = self._get_best_group()
+        # Return the SVpattern with the highest support from the best group
+        return max(best_group, key=lambda svp: len(svp.get_supporting_reads()))
+
+    def get_alt_sequence(self) -> str | None:
+        if not any(
+            issubclass(self.sv_type, t)
+            for t in (
+                SVpatterns.SVpatternSingleBreakend,
+                SVpatterns.SVpatternInsertion,
+                SVpatterns.SVpatternInversion,
+            )
+        ):
+            return None
+
+        best_group = self._get_best_group()
+
+        if isinstance(best_group[0], SVpatterns.SVpatternSingleBreakend):
+            return best_group[0].get_sequence_clipped()
+
+        # Concatenate alt sequences from the best group
+        concatenated_sequence = ""
+        for svPattern in best_group:
+            if any(
+                isinstance(svPattern, t)
+                for t in (
+                    SVpatterns.SVpatternInsertion,
+                    SVpatterns.SVpatternInversion,
+                )
+            ):
+                seq = svPattern.get_sequence()
+                if seq is None:
                     raise ValueError(
-                        f"Unexpected SV type {svPattern.get_sv_type()} in SVcomposite {self}"
+                        f"SVpattern {svPattern} in SVcomposite has no alt sequence set."
                     )
+                concatenated_sequence += seq
+            # Add other pattern types as needed
+        size = self.get_size()
+        return concatenated_sequence[:size] if size > 0 else ""
 
-            return abs(summed_bp)  # Return absolute value for size
-        else:
-            raise ValueError(
-                f"SVcomposite.get_size() called on SVcomposite with sv_type {self.sv_type}, which is not supported. Only INS,DEL,INV are supported right now."
-            )
+    def get_ref_sequence(self) -> str | None:
+        if not any(
+            issubclass(self.sv_type, t)
+            for t in (SVpatterns.SVpatternDeletion, SVpatterns.SVpatternInversion)
+        ):
+            return None
 
-    def get_alt_sequence(self) -> str:
-        if self.sv_type in ("INS", "INV"):
-            # Group SVpatterns by (samplename, consensusID)
-            groups = {}
-            for svPattern in self.svPatterns:
-                key = (svPattern.samplename, svPattern.consensusID)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(svPattern)
+        best_group = self._get_best_group()
 
-            if not groups:
-                return ""
+        # Concatenate reference sequences from the best group
+        concatenated_sequence = ""
+        for svPattern in best_group:
+            seq = svPattern.get_sequence()
+            if seq is None:
+                raise ValueError(
+                    f"SVpattern {svPattern} in SVcomposite has no ref sequence set."
+                )
+            concatenated_sequence += seq
+            # Add other pattern types as needed
 
-            # Find the group with maximum supporting unique reads
-            best_group = None
-            max_supporting_reads = 0
-
-            for group_patterns in groups.values():
-                # Get all unique supporting reads from this group
-                all_supporting_reads = set()
-                for svPattern in group_patterns:
-                    all_supporting_reads.update(svPattern.get_supporting_reads())
-
-                if len(all_supporting_reads) > max_supporting_reads:
-                    max_supporting_reads = len(all_supporting_reads)
-                    best_group = group_patterns
-
-            if best_group is None:
-                return ""
-
-            # Concatenate alt sequences from the best group
-            concatenated_sequence = ""
-            for svPattern in best_group:
-                if isinstance(svPattern, SVpatterns.SVpatternInsertion):
-                    concatenated_sequence += pickle.loads(svPattern.inserted_sequence)
-                elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                    concatenated_sequence += pickle.loads(svPattern.inserted_sequence)
-                # Add other pattern types as needed
-
-            size = self.get_size()
-            return concatenated_sequence[:size] if size > 0 else ""
-        else:
-            raise ValueError(
-                f"get_alt_sequence called on SVcomposite with sv_type {self.sv_type}, which is not supported. Only INS,INV are supported."
-            )
-
-    def get_ref_sequence(self) -> str:
-        if self.sv_type == "DEL":
-            # Group SVpatterns by (samplename, consensusID)
-            groups = {}
-            for svPattern in self.svPatterns:
-                key = (svPattern.samplename, svPattern.consensusID)
-                if key not in groups:
-                    groups[key] = []
-                groups[key].append(svPattern)
-
-            if not groups:
-                return ""
-
-            # Find the group with maximum supporting unique reads
-            best_group = None
-            max_supporting_reads = 0
-
-            for group_patterns in groups.values():
-                # Get all unique supporting reads from this group
-                all_supporting_reads = set()
-                for svPattern in group_patterns:
-                    all_supporting_reads.update(svPattern.get_supporting_reads())
-
-                if len(all_supporting_reads) > max_supporting_reads:
-                    max_supporting_reads = len(all_supporting_reads)
-                    best_group = group_patterns
-
-            if best_group is None:
-                return ""
-
-            # Concatenate reference sequences from the best group
-            concatenated_sequence = ""
-            for svPattern in best_group:
-                if isinstance(svPattern, SVpatterns.SVpatternDeletion):
-                    concatenated_sequence += pickle.loads(svPattern.deleted_sequence)
-                # Add other pattern types as needed
-
-            size = self.get_size()
-            return concatenated_sequence[:size] if size > 0 else ""
-        else:
-            raise ValueError(
-                f"get_ref_sequence called on SVcomposite with sv_type {self.sv_type}, which is not supported. Only DEL is supported."
-            )
+        size = self.get_size()
+        return concatenated_sequence[:size] if size > 0 else None
 
     def overlaps_any(self, other: SVcomposite, tolerance_radius: int = 50) -> bool:
         if self.repeatIDs.intersection(other.repeatIDs):
@@ -304,13 +341,15 @@ class SVcomposite:
         for svPattern in self.svPatterns:
             seq = ""
             if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
-                svPattern, SVpatterns.SVpatternTranslocation
+                svPattern, SVpatterns.SVpatternInversion
             ):
                 seq = svPattern.get_sequence()
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                seq = svPattern.get_inserted_sequence()
             else:
                 pass
+            if seq is None:
+                raise ValueError(
+                    f"SVpattern {svPattern} in SVcomposite has no alt sequence set."
+                )
             alt_sequences.append(seq)
         return alt_sequences
 
@@ -319,12 +358,9 @@ class SVcomposite:
         complexity_tracks = []
         for svPattern in self.svPatterns:
             if isinstance(svPattern, SVpatterns.SVpatternInsertion) or isinstance(
-                svPattern, SVpatterns.SVpatternTranslocation
+                svPattern, SVpatterns.SVpatternInversion
             ):
                 comp_track = svPattern.get_sequence_complexity()
-                complexity_tracks.append(comp_track)
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                comp_track = svPattern.sequence_complexity_inserted_sequence()
                 complexity_tracks.append(comp_track)
         return complexity_tracks
 
@@ -336,9 +372,6 @@ class SVcomposite:
             if isinstance(svPattern, SVpatterns.SVpatternDeletion):
                 seq = svPattern.get_sequence()
                 ref_sequences.append(seq)
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                seq = svPattern.get_deleted_sequence()
-                ref_sequences.append(seq)
             else:
                 pass
         return ref_sequences
@@ -349,8 +382,5 @@ class SVcomposite:
         for svPattern in self.svPatterns:
             if isinstance(svPattern, SVpatterns.SVpatternDeletion):
                 comp_track = svPattern.get_sequence_complexity()
-                complexity_tracks.append(comp_track)
-            elif isinstance(svPattern, SVpatterns.SVpatternInversion):
-                comp_track = svPattern.sequence_complexity_deleted_sequence()
                 complexity_tracks.append(comp_track)
         return complexity_tracks

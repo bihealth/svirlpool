@@ -13,8 +13,11 @@ log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)
 
 
 def load_reference_data(path_db: Path | str) -> np.ndarray:
-    """Loads reference dictionary and coverage data from the database."""
-    data = np.array(rafs_to_coverage.load_cov_from_db(path_db))
+    """
+    Loads reference dictionary and coverage data from the database.
+    data is a container that holds all parsed RAF intervals as numpy array. chr, start, end, readname
+    """
+    data = np.array(list(rafs_to_coverage.load_cov_from_db(path_db)))
     return data
 
 
@@ -22,13 +25,23 @@ def construct_interval_trees(
     data: np.ndarray,
 ) -> tuple[dict[str, IntervalTree], dict[str, list[int]]]:
     """Constructs interval trees and position sets from the input data."""
+    if data.shape[0] == 0:
+        log.warning("No data found to construct interval trees.")
+        return {}, {}
+    if data.shape[1] != 4:
+        raise ValueError(
+            f"Data shape is incorrect. Expected 4 columns, got {data.shape[1]} columns."
+        )
+
     chrs = set(data[:, 0])
     intervall_trees = {}
     all_positions: dict[str, list[int]] = {}
     for chr in tqdm(chrs, desc="Building interval trees"):
         chr = str(chr)
         data_chr_intervals = data[data[:, 0] == chr][:, 1:3].astype(int)
-        data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(str)
+        data_chr_readnames = data[data[:, 0] == chr][:, 3].astype(
+            np.uint64
+        )  # 64 bit hashed readnames
         tree = IntervalTree()
         tree = IntervalTree.from_tuples(
             zip(
@@ -49,6 +62,7 @@ def process_chromosome(
     chr: str, positions: list[int], intervall_tree: IntervalTree
 ) -> tuple[str, IntervalTree]:
     """Processes a single chromosome to compute coverage intervals."""
+    log.info(f"Processing chromosome {chr} for coverage computation")
     local_cov_tree = IntervalTree()
     for i in range(len(positions) - 1):
         start, end = positions[i], positions[i + 1]
@@ -62,9 +76,10 @@ def process_chromosome(
 def parallel_coverage_computation(
     all_positions: dict[str, list[int]],
     intervall_trees: dict[str, IntervalTree],
-    num_workers: int = mp.cpu_count(),
+    num_workers: int = 4,
 ) -> dict[str, IntervalTree]:
     """Computes coverage in parallel for all chromosomes."""
+    log.info(f"Using {num_workers} workers for parallel coverage computation")
     cov_trees = {}
     with mp.Pool(processes=num_workers) as pool:
         results = list(
@@ -87,9 +102,11 @@ def parallel_coverage_computation(
 
 def covtree(path_db: Path | str) -> dict[str, IntervalTree]:
     """Returns a dict of interval trees. Each tree consists of intervals (start, end, readname) of the 'read alignment fragments (RAFs)'."""
-    log.info(f"loading data from {path_db}")
+    log.debug(f"loading coverage tree data from {path_db}")
     data = load_reference_data(path_db)
-    log.info("constructing interval trees")
+    # print the memory usage of data
+    log.debug(f"Data loaded. Memory usage: {data.nbytes / (1024**2):.2f} MB")
+    log.debug("constructing interval trees")
     intervall_trees, all_positions = construct_interval_trees(data)
     return intervall_trees
     # log.info(f"computing coverages")

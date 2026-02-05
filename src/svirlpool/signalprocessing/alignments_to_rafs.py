@@ -7,6 +7,7 @@ import logging
 import multiprocessing as mp
 import subprocess
 import tempfile
+from math import floor
 from pathlib import Path
 from shlex import split
 
@@ -15,7 +16,7 @@ import pysam
 from tqdm import tqdm
 
 from ..util import datatypes, util
-from . import filter_nonseparated, filter_rafs
+from . import filter_nonseparated
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +258,53 @@ def parse_SVsignals_from_alignment(
     return sv_signals
 
 
+def sv_signals_densities(svSignals: list[datatypes.SVsignal], radius: int) -> list[int]:
+    """Returns"""
+    if len(svSignals) == 0:
+        return []
+    # check if list is sorted
+    if not all(
+        svSignals[i].ref_start <= svSignals[i + 1].ref_start
+        for i in range(len(svSignals) - 1)
+    ):
+        raise ValueError("List of SVsignals is not sorted by ref_start.")
+
+    # build a mask. The mask keeps the density of each signal. The mask has the length of svSignals
+    mask = [0] * len(svSignals)
+    left: int = 0
+    right: int = 0
+    for mid, midSvSignal in enumerate(svSignals):
+        # move right until right is out of radius (svSignals[right].ref_start - midSvSignal.ref_end > radius)
+        while (
+            right < len(svSignals)
+            and svSignals[right].ref_start - midSvSignal.ref_end <= radius
+        ):
+            right += 1
+        # right is now the the first signal that is out of radius
+        # move left until left is in radius (midSvSignal.ref_start - svSignals[left].ref_end <= radius)
+        while left < mid and midSvSignal.ref_start - svSignals[left].ref_end > radius:
+            left += 1
+        # left is now the first signal that is in the radius
+        # sum all signals sizes of the same type as midSvSignal that are in the radius
+        mask[mid] = sum(
+            s.size for s in svSignals[left:right] if s.sv_type == midSvSignal.sv_type
+        )
+    # filter all signals that have a mask value below min_signal_bp
+    return mask
+
+
+def filter_signals_for_minimum_density(
+    svSignals: list[datatypes.SVsignal], min_signal_bp: int, radius: int
+) -> list[datatypes.SVsignal]:
+    """filters any signal that fails to accumulate another min_signal_bp within radius. The returned list is sorted by ref_start."""
+    densities = sv_signals_densities(
+        svSignals=sorted(svSignals, key=lambda x: x.ref_start), radius=radius
+    )
+    return [
+        svSignals[i] for i in range(len(svSignals)) if densities[i] >= min_signal_bp
+    ]
+
+
 def parse_ReadAlignmentFragment_from_alignment(
     alignment: pysam.AlignedSegment,
     samplename: str,
@@ -282,7 +330,7 @@ def parse_ReadAlignmentFragment_from_alignment(
     sv_signals_density_filtered = sv_signals
     if filter_density_radius > 0 and filter_density_min_bp > 0:
         sv_signals_density_filtered = sorted(
-            filter_rafs.filter_signals_for_minimum_density(
+            filter_signals_for_minimum_density(
                 svSignals=sv_signals,
                 min_signal_bp=filter_density_min_bp,
                 radius=filter_density_radius,
@@ -326,6 +374,7 @@ def process_region(
     filter_nonseparated__min_overlap: float,
     filter_nonseparated__min_fragment_size: int,
     filter_nonseparated__max_inversion_coverage: float,
+    max_coverage: int = 400,
 ) -> list[datatypes.ReadAlignmentFragment]:
     """parse all alignments in a region and create from each alignment a ReadAlignmentFragment"""
     chrom, start, end = region
@@ -344,6 +393,8 @@ def process_region(
         )
     lines = []
     with pysam.AlignmentFile(path_alignments, "rb") as file:
+        current_coverage = 0
+        ending = []  # keeps track of alignment end positions in ascending sorted order
         for alignment in file.fetch(chrom, start, end):
             N_alignments += 1
             if alignment.query_name in non_separated_reads:
@@ -358,6 +409,24 @@ def process_region(
                 or alignment.reference_start > end
             ):
                 continue
+
+            # Update coverage: remove alignments that have ended
+            while ending and ending[0] <= alignment.reference_start:
+                ending.pop(0)
+                current_coverage -= 1
+
+            # Add current alignment to coverage tracking
+            current_coverage += 1
+            ending.append(alignment.reference_end)
+            ending.sort()
+
+            # Skip processing if coverage exceeds threshold
+            if current_coverage > max_coverage:
+                log.debug(
+                    f"Skipping alignment {chrom}:{alignment.reference_start}-{alignment.reference_end} due to high coverage ({current_coverage} > {max_coverage})"
+                )
+                continue
+
             lines.append(
                 parse_ReadAlignmentFragment_from_alignment(
                     alignment=alignment,
@@ -420,6 +489,7 @@ def process_bam(
     filter_nonseparated__max_inversion_coverage: float,
     threads: int = 1,
     tmp_dir_path: Path | None = None,
+    max_coverage: int = 400,
 ):
     if threads < 1:
         threads = mp.cpu_count()
@@ -453,6 +523,7 @@ def process_bam(
             "filter_nonseparated__max_inversion_coverage": (
                 filter_nonseparated__max_inversion_coverage
             ),
+            "max_coverage": max_coverage,
         }
         for i, region in enumerate(regions)
     ]
@@ -502,60 +573,89 @@ def process_bam(
 
 # %%
 
-# def process_all_samples(
-#             path_sampledicts:Path,
-#             path_regions:Path,
-#             output_prefix:Path,
-#             min_signal_size:int,
-#             min_bnd_size:int,
-#             min_segment_size:int,
-#             min_mapq:int,
-#             threads:int,
-#             filter_density_radius:int,
-#             filter_density_min_bp:int,
-#             tmp_dir_path:Path|None=None):
-#     log.info(f"load sample dicts from {path_sampledicts}")
-#     sampleID_bam_dict = util.load_sampledicts(path_sampledicts)[2]
 
-#     # # iterate over all samples and store their outputs in a temporary directory
-#     # if not tmp_dir_path:
-#     #     tmp_dir = tempfile.TemporaryDirectory()
-#     #     tmp_dir_path = Path(tmp_dir.name)
+def scale_coords(coords: list[int], maxlen: int, line_width: int) -> list[int]:
+    return [int(floor((coord / maxlen) * line_width)) for coord in coords]
 
-#     log.info(f"process all samples")
-#     for sampleID, path_alignments in sampleID_bam_dict.items():
-#         path_output = str(output_prefix)+f".{sampleID}.rafs.tsv.gz"
-#         process_bam(
-#             path_alignments=path_alignments,
-#             path_regions=path_regions,
-#             path_output=path_output,
-#             sampleID=sampleID,
-#             min_signal_size=min_signal_size,
-#             min_bnd_size=min_bnd_size,
-#             min_segment_size=min_segment_size,
-#             min_mapq=min_mapq,
-#             threads=threads,
-#             filter_density_radius=filter_density_radius,
-#             filter_density_min_bp=filter_density_min_bp,
-#             tmp_dir_path=tmp_dir_path)
 
-# log.info("concatenate and sort all sample outputs")
-# # TODO: each sample output is already sorted. So, we can merge them in a sorted manner to avoid the quadratic complexity of sorting.
-# cmd_cat = "cat " + ' '.join([str(tmp_dir_path / f"{sampleID}.tsv") for sampleID in sampleID_bam_dict.keys()])
-# cmd_sort = "sort -k1,1 -k2,2n"
-# tmp_text_out = tmp_dir_path / "tmp_text_out.tsv"
-# with open(tmp_text_out, "w") as file_out:
-#     p0 = subprocess.Popen(split(cmd_cat),stdout=subprocess.PIPE)
-#     p1 = subprocess.Popen(split(cmd_sort),stdin=p0.stdout,stdout=file_out)
-#     p1.communicate()
-# # remove tmp files ([str(tmp_dir_path / f"{sampleID}.tsv") for sampleID in sampleID_bam_dict.keys()])
-# for sampleID in sampleID_bam_dict.keys():
-#     (tmp_dir_path / f"{sampleID}.tsv").unlink()
-
-# compress_and_index_bedlike(input=tmp_text_out,output=output,threads=threads)
-# # remove tmp file
-# tmp_text_out.unlink()
-# log.info(f"done. Output written to {output}")
+def display_ascii_alignments(
+    alignments: list[pysam.AlignedSegment],
+    terminal_width: int = 100,
+    filter_density_min_bp: int = 30,
+    filter_density_radius: int = 1000,
+    min_bnd_size: int = 300,
+    min_signal_size: int = 8,
+    min_aln_length: int = 500,
+    max_ref_len: int = 0,
+):
+    if len(alignments) == 0:
+        return
+    dict_alns = {a.reference_name: [] for a in alignments}
+    for refname in dict_alns.keys():
+        dict_alns[refname] = [a for a in alignments if a.reference_name == refname]
+        alns = dict_alns[refname]
+        if max_ref_len < 1:
+            try:
+                max_ref_len = max(
+                    a.reference_start + a.reference_length
+                    for a in alns
+                    if a.reference_length
+                )
+            except Exception as e:
+                log.error(f"Error calculating max_ref_len for {refname}: {e}")
+                continue
+        print(f"{refname}: {len(alns)} aligned segments, max_ref_len: {max_ref_len}")
+        for a in alns:
+            if a.reference_length >= min_aln_length:
+                raf = parse_ReadAlignmentFragment_from_alignment(
+                    alignment=a,
+                    samplename="no samplename",
+                    filter_density_min_bp=filter_density_min_bp,
+                    filter_density_radius=filter_density_radius,
+                    min_bnd_size=min_bnd_size,
+                    min_signal_size=min_signal_size,
+                )
+                # construct the string.
+                rstart, rend = scale_coords(
+                    [raf.reference_alignment_start, raf.reference_alignment_end],
+                    max_ref_len,
+                    terminal_width,
+                )
+                rlen = rend - rstart
+                line = (
+                    ([" "] * rstart)
+                    + (["<" if a.is_reverse else ">"] * rlen)
+                    + ([" "] * (terminal_width - rend))
+                )
+                # insert insertions and deletions
+                for sv in raf.SV_signals:
+                    if sv.sv_type == 1:  # DEL
+                        start, end = scale_coords(
+                            [sv.ref_start, sv.ref_end], max_ref_len, terminal_width
+                        )
+                        # modify the interval on line
+                        line[start:end] = ["-"] * (end - start)
+                    if sv.sv_type == 0:  # INS
+                        start = scale_coords(
+                            [sv.ref_start], max_ref_len, terminal_width
+                        )[0]
+                        line[start] = "V"
+                    if sv.sv_type == 4:  # BNDR
+                        start = scale_coords(
+                            [sv.ref_start], max_ref_len, terminal_width
+                        )[0]
+                        # check if bndr is hard or soft clipped
+                        line[start - 1] = "R" if a.cigartuples[-1][0] == 5 else "r"
+                    if sv.sv_type == 3:  # BNDL
+                        start = scale_coords([sv.ref_end], max_ref_len, terminal_width)[
+                            0
+                        ]
+                        line[start] = (
+                            ("L" if a.cigartuples[0][0] == 5 else "l")
+                            if line[start] != "R"
+                            else "X"
+                        )
+                print("".join(line) + " " + a.query_name)
 
 
 def run(args, **kwargs):
@@ -576,6 +676,7 @@ def run(args, **kwargs):
         filter_nonseparated__min_fragment_size=args.filter_nonseparated__min_fragment_size,
         filter_nonseparated__max_inversion_coverage=args.filter_nonseparated__max_inversion_coverage,
         tmp_dir_path=args.tmp_dir_path,
+        max_coverage=args.max_coverage,
     )
 
     # path_alignments:Path,
@@ -699,6 +800,12 @@ def get_parser():
         type=float,
         default=0.15,
         help="maximum coverage by candidates to be considered as candidate. Increase if a greater proportion of the depth of coverage is attributed to candidates. Default is 0.15",
+    )
+    parser.add_argument(
+        "--max-coverage",
+        type=int,
+        default=400,
+        help="Maximum coverage threshold. Alignments in regions exceeding this coverage will be skipped. Default is 400.",
     )
     parser.add_argument(
         "--tmp-dir-path",
