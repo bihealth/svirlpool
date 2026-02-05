@@ -23,8 +23,8 @@ def parse_region(region: str) -> tuple[str, int, int]:
 def parse_alignments(
     path_alignments: PosixPath, region: tuple[str, int, int]
 ) -> list[pysam.AlignedSegment]:
-    bamfile = pysam.AlignmentFile(path_alignments, "rb")
-    return list(bamfile.fetch(*region))
+    with pysam.AlignmentFile(path_alignments, "rb") as bamfile:
+        return list(bamfile.fetch(*region))
 
 
 # parse breakends to tuples start, end, size (ref coordinates)
