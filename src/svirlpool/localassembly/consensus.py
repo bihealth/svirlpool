@@ -193,11 +193,13 @@ def get_full_read_sequences_of_alignments(
                         if aln.is_reverse
                         else Seq(aln.query_sequence)
                     )
-                    qualities = (
-                        {"phred_quality": aln.query_qualities}
-                        if aln.query_qualities
-                        else None
-                    )
+                    qualities = {"phred_quality": None}
+                    if aln.query_qualities:
+                        qualities = (
+                            {"phred_quality": aln.query_qualities[::-1]}
+                            if aln.is_reverse
+                            else {"phred_quality": aln.query_qualities}
+                        )
                     dict_read_sequences[aln.query_name] = SeqRecord(
                         seq=seq,
                         letter_annotations=qualities,

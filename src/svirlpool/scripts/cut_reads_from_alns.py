@@ -183,6 +183,8 @@ def get_full_read_sequences_of_alignments(
     dict_supplementary_positions: dict[str, list[tuple[str, int]]] = {}
     for alns in dict_alignments.values():
         for aln in alns:
+            if not aln.query_sequence:
+                continue
             if (
                 aln.infer_read_length() != len(aln.query_sequence)
                 and aln.query_name not in dict_supplementary_positions
@@ -225,7 +227,7 @@ def get_full_read_sequences_of_alignments(
         ]
     # the regions are then used to fetch the alignments from the bam file
     regions = [
-        (chrom, start, end)
+        (chrom, min(start, end), max(start, end))
         for chrom in dict_positions.keys()
         for start, end in dict_positions[chrom]
     ]
@@ -238,6 +240,8 @@ def get_full_read_sequences_of_alignments(
             log.info(f"fetching from {region}")
             for aln in f.fetch(region[0], region[1], region[2]):
                 if aln.query_name in dict_supplementary_positions.keys():
+                    if not aln.query_sequence:
+                        continue
                     if aln.query_name not in dict_read_sequences.keys():
                         dict_read_sequences[aln.query_name] = None
                     if not aln.infer_read_length() == len(aln.query_sequence):
@@ -249,11 +253,14 @@ def get_full_read_sequences_of_alignments(
                             if aln.is_reverse
                             else Seq(aln.query_sequence)
                         )
-                        qualities = (
-                            {"phred_quality": aln.query_qualities}
-                            if aln.query_qualities
-                            else None
-                        )
+                        qualities = None
+                        if aln.query_qualities:
+                            qualities = (
+                                {"phred_quality": aln.query_qualities[::-1]
+                                if aln.is_reverse else aln.query_qualities}
+                            )
+                        else:
+                            log.warning(f"read {aln.query_name} has no quality scores. This is unexpected for a full read sequence. Please check your alignments file.")
                         dict_read_sequences[aln.query_name] = SeqRecord(
                             seq=seq,
                             letter_annotations=qualities,
@@ -268,6 +275,8 @@ def get_full_read_sequences_of_alignments(
     # for all other alignments, just add the sequence and reverse flag
     for alignments in dict_alignments.values():
         for aln in alignments:
+            if not aln.query_sequence:
+                continue
             if (
                 aln.query_name not in dict_read_sequences.keys()
                 and aln.infer_read_length() == len(aln.query_sequence)

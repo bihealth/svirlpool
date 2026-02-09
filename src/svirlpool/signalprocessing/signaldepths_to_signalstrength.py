@@ -432,7 +432,10 @@ def signaldepths_to_signalstrength(
         suffix=".repeats.bed", dir=tmp_dir_path, delete=False if tmp_dir_path else True
     )
     log.info("prepare repeats file with only first three columns..")
-    with open(repeats, "r") as f:
+    # Handle both gzipped and non-gzipped repeat files
+    open_func = gzip.open if str(repeats).endswith('.gz') else open
+    mode = "rt" if str(repeats).endswith('.gz') else "r"
+    with open_func(repeats, mode) as f:
         with open(tmp_repeats.name, "w") as g:
             for line in f:
                 line_split = line.strip().split("\t")

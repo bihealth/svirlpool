@@ -7,6 +7,7 @@ from pathlib import Path, PosixPath
 
 import pysam
 from intervaltree import Interval
+from tqdm import tqdm
 
 from ..signalprocessing import alignments_to_rafs
 from ..util import datatypes
@@ -45,7 +46,7 @@ def parse_signals(
             filter_density_min_bp=min(min_insertion_size, min_deletion_size),
             filter_density_radius=100,
         )
-        for aln in alignments
+        for aln in tqdm(alignments, desc="Parsing alignments to RAFs")
     ]
     results = {
         raf.read_name: {"insertions": 0, "deletions": 0, "breakends": 0} for raf in rafs
@@ -76,6 +77,7 @@ def print_results(
     }
     sorted_readnames = sorted(indel_sums.keys(), key=lambda x: indel_sums[x])
     # create a plot. iterate each readname and print the indel_sum of it
+    print(f"Plotting ...")
     from matplotlib import pyplot as plt
 
     fig = plt.figure(figsize=(10, 5))
@@ -86,6 +88,7 @@ def print_results(
     ax.set_xlabel("reads")
     ax.set_ylabel("sum( insertions - deletions )")
     plt.savefig(figpath)
+    print(f"Plot saved to {figpath}")
 
 
 def run(

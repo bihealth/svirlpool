@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import json
 import logging
 import multiprocessing as mp
@@ -65,7 +66,9 @@ def trf_to_interval_tree(input_trf: Path) -> dict[str, IntervalTree]:
     """produces a dict chrom:IntervalTree"""
     # load the trf intervals to an intervaltree and set their index as their names
     trf_intervals = {}
-    with open(input_trf, "r") as f:
+    open_func = gzip.open if str(input_trf).endswith('.gz') else open
+    mode = 'rt' if str(input_trf).endswith('.gz') else 'r'
+    with open_func(input_trf, mode) as f:
         for i, line in enumerate(f):
             chrom, start, end = line.strip().split()[0:3]
             if chrom not in trf_intervals:
@@ -1096,7 +1099,9 @@ def _process_partition_for_trf_overlaps(
 
     # Add repeat_id to TRF bed file (0-indexed line number)
     trf_with_id = tmp_dir / f"trf_with_id_{partition_idx}.bed"
-    with open(input_trf, "r") as fin, open(trf_with_id, "w") as fout:
+    open_func = gzip.open if str(input_trf).endswith('.gz') else open
+    mode = 'rt' if str(input_trf).endswith('.gz') else 'r'
+    with open_func(input_trf, mode) as fin, open(trf_with_id, "w") as fout:
         for repeat_id, line in enumerate(fin):
             fields = line.rstrip().split("\t")
             if len(fields) >= 3:
