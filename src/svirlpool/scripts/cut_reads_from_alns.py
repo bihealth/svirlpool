@@ -255,12 +255,15 @@ def get_full_read_sequences_of_alignments(
                         )
                         qualities = None
                         if aln.query_qualities:
-                            qualities = (
-                                {"phred_quality": aln.query_qualities[::-1]
-                                if aln.is_reverse else aln.query_qualities}
-                            )
+                            qualities = {
+                                "phred_quality": aln.query_qualities[::-1]
+                                if aln.is_reverse
+                                else aln.query_qualities
+                            }
                         else:
-                            log.warning(f"read {aln.query_name} has no quality scores. This is unexpected for a full read sequence. Please check your alignments file.")
+                            log.warning(
+                                f"read {aln.query_name} has no quality scores. This is unexpected for a full read sequence. Please check your alignments file."
+                            )
                         dict_read_sequences[aln.query_name] = SeqRecord(
                             seq=seq,
                             letter_annotations=qualities,

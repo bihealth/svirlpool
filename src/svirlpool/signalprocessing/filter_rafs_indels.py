@@ -55,7 +55,8 @@ def read_rafs_per_chr(
     process = subprocess.Popen(shlex.split(cmd_tabix), stdout=subprocess.PIPE)
     for line in process.stdout:
         raw = (
-            line.decode("utf-8")
+            line
+            .decode("utf-8")
             .strip()
             .split("\t")[-1]
             .strip()

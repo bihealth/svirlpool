@@ -7,6 +7,7 @@ from itertools import combinations
 from pathlib import Path, PosixPath
 
 from numpy import mean, median
+
 # from sklearn.cluster import AgglomerativeClustering
 # import numpy as np
 # import pandas as pd
@@ -88,6 +89,7 @@ def write_containers_to_db(path_db: Path, crs_containers: list[dict[str, object]
 
 # %%
 
+
 def is_bnd_significant(
     signal: datatypes.ExtendedSVsignal,
     cr: datatypes.CandidateRegion,
@@ -108,6 +110,7 @@ def is_bnd_significant(
         )
     return False
 
+
 def get_crs_containers(
     crs_dict: dict[int, datatypes.CandidateRegion],
     min_connections: int = 3,
@@ -118,13 +121,20 @@ def get_crs_containers(
     """computes a dict of the form readname -> [crID] for all reads that connect two or more crs via BND signals"""
     """candidate regions are only connected if they share at least [min_connections] reads"""
     # estimate avergage coverage by the average coverage of the average coverage of all candidate regions
-    avg_avg_cov:float = float(median([
-        mean([signal.coverage for signal in cr.sv_signals]) for cr in crs_dict.values()
-    ]))
-    log.debug(f"crs_to_containers_db::get_crs_containers: Average of average coverages of all candidate regions: {avg_avg_cov:.2f}")
-    
-    dynamic_min_connections:int = int(round(max(min_connections, int(avg_avg_cov / dynamic_min_connections_factor))))
-    
+    avg_avg_cov: float = float(
+        median([
+            mean([signal.coverage for signal in cr.sv_signals])
+            for cr in crs_dict.values()
+        ])
+    )
+    log.debug(
+        f"crs_to_containers_db::get_crs_containers: Average of average coverages of all candidate regions: {avg_avg_cov:.2f}"
+    )
+
+    dynamic_min_connections: int = int(
+        round(max(min_connections, int(avg_avg_cov / dynamic_min_connections_factor)))
+    )
+
     dict_connectors: dict[str, list[int]] = {}
     for cr in crs_dict.values():
         # don't connect candidate regions that are outside of the expected coverage
@@ -132,14 +142,16 @@ def get_crs_containers(
         # only readnames that dont have more than one "significant" BND can serve as connectors.
         # a "significant" BND is defined as a BND that is at least bnd_min_size and is at least bnd_border_tolerance away from the border of the candidate region
         # 1) find all readnames with only one significant BND signal in this candidate region
-        cr_readnames:dict[str, int] = {} 
+        cr_readnames: dict[str, int] = {}
         for signal in cr.sv_signals:
             if is_bnd_significant(signal, cr, bnd_border_tolerance, bnd_min_size):
                 if signal.readname not in cr_readnames:
                     cr_readnames[signal.readname] = 0
                 cr_readnames[signal.readname] += 1
         # now filter cr_readnames to only those with exactly one significant BND signal
-        connectors:set[str] = {readname for (readname, count) in cr_readnames.items() if count == 1}
+        connectors: set[str] = {
+            readname for (readname, count) in cr_readnames.items() if count == 1
+        }
         for readname in connectors:
             if readname not in dict_connectors:
                 dict_connectors[readname] = []
@@ -153,7 +165,9 @@ def get_crs_containers(
                     dict_connections[(crIDa, crIDb)] = []
                 dict_connections[(crIDa, crIDb)].append(readname)
     dict_connections_filtered = {
-        key: val for key, val in dict_connections.items() if len(val) >= dynamic_min_connections
+        key: val
+        for key, val in dict_connections.items()
+        if len(val) >= dynamic_min_connections
     }
 
     # all keys (crID tuples) in dict_connections_filtered are connected crIDs.
@@ -168,13 +182,12 @@ def get_crs_containers(
     for crIDa, crIDb in dict_connections_filtered.keys():
         UF.union_by_name(crIDa, crIDb)
     CC = UF.get_connected_components()
-    
+
     # print the number of elements per cc in sorted order
     if log.isEnabledFor(logging.DEBUG):
         log.debug("Connected components and their sizes:")
         for cc in sorted(CC, key=len, reverse=True):
             log.debug(f"  CC with {len(cc)} elements: {cc}")
-    
 
     log.info("Creating crs containers")
 
@@ -249,13 +262,15 @@ def crs_to_crs_containers(
 
 def run(args, **kwargs):
     # Configure logging based on the log level argument
-    log_level = getattr(logging, args.log_level) if hasattr(args, "log_level") else logging.INFO
+    log_level = (
+        getattr(logging, args.log_level) if hasattr(args, "log_level") else logging.INFO
+    )
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         force=True,
     )
-    
+
     crs_to_crs_containers(
         path_crs=args.input,
         path_db=args.database,

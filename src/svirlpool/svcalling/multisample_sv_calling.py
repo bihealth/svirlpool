@@ -460,7 +460,7 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
             complexities is None
             or len(complexities) == 0
             or np.sum([np.sum(s) for s in complexities]) == 0
-        ): #try np.sum(np.fromiter(generator))
+        ):  # try np.sum(np.fromiter(generator))
             mean_complexity = 0.0
         else:
             mean_complexity = float(
@@ -3017,8 +3017,7 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import \
-        load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(

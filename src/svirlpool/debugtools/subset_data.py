@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -23,7 +24,6 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from ..localassembly import consensus
 from ..scripts import cut_reads_from_alns
 from ..util import util
 
@@ -49,7 +49,7 @@ def parse_bed_regions(path: Path) -> list[Region]:
             start, end = int(start_s), int(end_s)
             if end <= start:
                 raise ValueError(f"Invalid BED interval: {line.rstrip()}")
-            name = fields[3] if len(fields) > 3 else f"R{idx+1}_{chrom}_{start}_{end}"
+            name = fields[3] if len(fields) > 3 else f"R{idx + 1}_{chrom}_{start}_{end}"
             regions.append(Region(chrom=chrom, start=start, end=end, name=name))
     if not regions:
         raise ValueError(f"No regions found in {path}")
@@ -93,9 +93,7 @@ def run_bedtools_intersect(input_bed: Path, regions_bed: Path) -> list[list[str]
         str(regions_bed),
     ]
     try:
-        result = subprocess.run(
-            cmd, check=True, capture_output=True, text=True
-        )
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             "bedtools not found. Please install bedtools and ensure it is in PATH."
@@ -140,7 +138,7 @@ def lift_bed_annotations(
         new_row = [region.name, str(new_start), str(new_end)] + row[3:-4]
         lifted_rows.append(new_row)
 
-    with open(output_bed, "w") as f:
+    with gzip.open(output_bed, "wt") as f:
         writer = csv.writer(f, delimiter="\t", lineterminator="\n")
         for row in lifted_rows:
             writer.writerow(row)
@@ -164,6 +162,7 @@ def collect_cut_reads_from_regions(
 
 def write_reads_fastq(reads: dict[str, SeqRecord], output_fastq: Path) -> None:
     import gzip
+
     with gzip.open(output_fastq, "wt") as f:
         SeqIO.write(list(reads.values()), f, "fastq")
 
@@ -183,49 +182,56 @@ def build_reduced_test_data(
 
     regions = parse_bed_regions(regions_bed)
     reduced_reference = output_dir / "reference.reduced.fasta.gz"
-    lifted_trf = output_dir / "trf.reduced.bed"
-    lifted_mono = output_dir / "mononucleotides.reduced.bed"
+    lifted_trf = output_dir / "trf.reduced.bed.gz"
+    lifted_mono = output_dir / "mononucleotides.reduced.bed.gz"
     reads_fastq = output_dir / "reads.reduced.fastq.gz"
     realigned_bam = output_dir / "alignments.reduced.bam"
 
     # Create reduced reference in temp file, then bgzip and index
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as tmp_ref:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".fasta", delete=False
+    ) as tmp_ref:
         tmp_ref_path = Path(tmp_ref.name)
         create_reduced_reference(reference, regions, tmp_ref_path)
-    
+
     # Bgzip the reference
     subprocess.run(
         ["bgzip", "-c", str(tmp_ref_path)],
         stdout=open(reduced_reference, "wb"),
         check=True,
     )
-    
+
     # Remove the temporary uncompressed file
     tmp_ref_path.unlink()
-    
+
     # Index the bgzipped reference with samtools faidx
     subprocess.run(
         ["samtools", "faidx", str(reduced_reference)],
         check=True,
         capture_output=True,
     )
-    
+
     lift_bed_annotations(trf_bed, regions, lifted_trf)
     lift_bed_annotations(mononucleotides_bed, regions, lifted_mono)
 
     read_sequences = collect_cut_reads_from_regions(alignments, regions)
-    
+
     # Subsample reads if requested
     if subsample < 1.0:
         import random
+
         random.seed(seed)
         n_reads = len(read_sequences)
         n_subsample = int(n_reads * subsample)
         read_names = list(read_sequences.keys())
         random.shuffle(read_names)
         subsampled_names = set(read_names[:n_subsample])
-        read_sequences = {name: seq for name, seq in read_sequences.items() if name in subsampled_names}
-    
+        read_sequences = {
+            name: seq
+            for name, seq in read_sequences.items()
+            if name in subsampled_names
+        }
+
     write_reads_fastq(read_sequences, reads_fastq)
 
     util.align_reads_with_minimap(
@@ -235,7 +241,7 @@ def build_reduced_test_data(
         threads=threads,
         tech="map-ont",
     )
-    
+
     # Remove the reads fastq file after alignment to save space
     reads_fastq.unlink()
 

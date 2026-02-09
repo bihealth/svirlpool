@@ -77,7 +77,7 @@ def print_results(
     }
     sorted_readnames = sorted(indel_sums.keys(), key=lambda x: indel_sums[x])
     # create a plot. iterate each readname and print the indel_sum of it
-    print(f"Plotting ...")
+    print("Plotting ...")
     from matplotlib import pyplot as plt
 
     fig = plt.figure(figsize=(10, 5))

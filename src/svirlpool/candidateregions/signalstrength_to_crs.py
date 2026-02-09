@@ -21,6 +21,7 @@ import psutil
 from tqdm import tqdm
 
 from ..svcalling.multisample_sv_calling import cohens_d
+
 # %%
 from ..util import datatypes, util
 
@@ -133,8 +134,8 @@ windowingFunction=mean smoothingWindow=off"
 def yield_unstructured_crs_from_tsv(tsv_file: Path):
     """Yield unstructured CandidateRegion dicts from a TSV file."""
     # Handle both gzipped and non-gzipped files
-    open_func = gzip.open if str(tsv_file).endswith('.gz') else open
-    mode = "rt" if str(tsv_file).endswith('.gz') else "r"
+    open_func = gzip.open if str(tsv_file).endswith(".gz") else open
+    mode = "rt" if str(tsv_file).endswith(".gz") else "r"
     with open_func(tsv_file, mode) as f:
         reader = csv.reader(f, delimiter="\t", quotechar='"')
         for row in reader:
@@ -374,8 +375,8 @@ def split_tandem_repeats_by_chromosome(
         chr_file_handles[chr_name] = open(chr_file, "w")
 
     # Read and distribute repeats (handle both gzipped and non-gzipped files)
-    open_func = gzip.open if str(tandem_repeats).endswith('.gz') else open
-    mode = "rt" if str(tandem_repeats).endswith('.gz') else "r"
+    open_func = gzip.open if str(tandem_repeats).endswith(".gz") else open
+    mode = "rt" if str(tandem_repeats).endswith(".gz") else "r"
     with open_func(tandem_repeats, mode) as trf:
         reader = csv.reader(trf, delimiter="\t", quotechar='"')
         for row in reader:
@@ -586,9 +587,9 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
         )
 
     # Handle both gzipped and non-gzipped files
-    open_func = gzip.open if str(proto_crs_file).endswith('.gz') else open
-    mode = "rt" if str(proto_crs_file).endswith('.gz') else "r"
-    
+    open_func = gzip.open if str(proto_crs_file).endswith(".gz") else open
+    mode = "rt" if str(proto_crs_file).endswith(".gz") else "r"
+
     with (
         open_func(proto_crs_file, mode) as pcf,
         open(final_crs_file, "w") as fcf,
