@@ -56,13 +56,17 @@ def subsample_alignments(
     with pysam.AlignmentFile(input_bamfile, "rb") as infile:
         alignments = list(infile)
 
-        alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
+        alignments_filtered = [
+            a for a in alignments if a.query_name != a.reference_name
+        ]
         alignments_by_length = sorted(
             alignments_filtered,
             key=lambda a: a.reference_end - a.reference_start,
             reverse=True,
         )
-        alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
+        alignments_sampled = alignments_by_length[
+            : min(number, len(alignments_by_length))
+        ]
 
         if len(alignments_by_length) == 0:
             # No valid alignments, create empty output file

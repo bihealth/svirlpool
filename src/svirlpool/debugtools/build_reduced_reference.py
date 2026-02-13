@@ -48,7 +48,7 @@ def parse_bed_regions(path: Path) -> list[Region]:
             start, end = int(start_s), int(end_s)
             if end <= start:
                 raise ValueError(f"Invalid BED interval: {line.rstrip()}")
-            name = fields[3] if len(fields) > 3 else f"R{idx+1}_{chrom}_{start}_{end}"
+            name = fields[3] if len(fields) > 3 else f"R{idx + 1}_{chrom}_{start}_{end}"
             regions.append(Region(chrom=chrom, start=start, end=end, name=name))
     if not regions:
         raise ValueError(f"No regions found in {path}")
@@ -92,9 +92,7 @@ def run_bedtools_intersect(input_bed: Path, regions_bed: Path) -> list[list[str]
         str(regions_bed),
     ]
     try:
-        result = subprocess.run(
-            cmd, check=True, capture_output=True, text=True
-        )
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             "bedtools not found. Please install bedtools and ensure it is in PATH."
