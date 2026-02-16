@@ -39,7 +39,7 @@ class Region:
 def parse_bed_regions(path: Path) -> list[Region]:
     regions: list[Region] = []
     with open(path, "r") as f:
-        for idx, line in enumerate(f):
+        for line in f:
             if not line.strip() or line.startswith("#"):
                 continue
             fields = line.rstrip().split("\t")
@@ -49,7 +49,7 @@ def parse_bed_regions(path: Path) -> list[Region]:
             start, end = int(start_s), int(end_s)
             if end <= start:
                 raise ValueError(f"Invalid BED interval: {line.rstrip()}")
-            name = fields[3] if len(fields) > 3 else f"R{idx + 1}_{chrom}_{start}_{end}"
+            name = fields[3] if len(fields) > 3 else f"{chrom}_{start}_{end}"
             regions.append(Region(chrom=chrom, start=start, end=end, name=name))
     if not regions:
         raise ValueError(f"No regions found in {path}")

@@ -2,36 +2,33 @@
 """
 Check candidate regions consensus completeness.
 
-This script takes a CRs BED file and a consensus FASTA file and checks for completeness,
-meaning it counts the consensus sequences for each candidate region and lists the candidate
-regions that did not produce any consensus.
+This script takes a CRs BED file and a CRS container results file to check for completeness,
+meaning it identifies which candidate regions successfully produced consensus sequences
+and which ones failed to do so.
 
-The BED file should have columns: chrom, start, end, cr_ids
-where cr_ids can be comma-separated when multiple CRs are merged into one region.
+The BED file should have columns: chrom, start, end, crID
+where each line represents a single candidate region.
 
-The consensus sequences are represented in the record name of each record in the FASTA,
-with the prefix being the candidate region ID. The suffix is an index of the consensus
-sequence for that candidate region.
+The CRS container results file contains CrsContainerResult objects (one per line as JSON),
+which store Consensus objects. Each Consensus object has a crIDs field listing all
+candidate region IDs that contributed to creating that consensus object.
 
-Example:
-    A candidate region with ID 13 can have consensus sequences with IDs:
-    "13.0", "13.1", "13.2", etc.
-
-    Note: Some candidate regions may be merged, so multiple CR IDs can share the same
-    consensus sequence. In the BED file, this is represented as comma-separated IDs
-    (e.g., "12,13").
+This allows us to track:
+- Which candidate regions produced consensus sequences
+- Which candidate regions were merged together (multiple crIDs in one Consensus)
+- Which candidate regions failed to produce any consensus
 """
 
 from __future__ import annotations
 
 import argparse
-import gzip
 import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from Bio import SeqIO
+# Import the necessary classes and functions from the svirlpool package
+from ..localassembly import consensus_align
 
 log = logging.getLogger(__name__)
 
@@ -40,19 +37,26 @@ log = logging.getLogger(__name__)
 class CRConsensusMatch:
     """Results of matching a candidate region against consensus sequences."""
 
-    cr_ids: list[int]  # Can be multiple IDs if merged
+    cr_id: int
     cr_region: str
     found: bool
     consensus_count: int
     consensus_ids: list[str]
+    merged_with_crs: set[int]  # Other CR IDs that were merged with this one
 
     def __str__(self) -> str:
         """Format the match result as a string."""
         status = "FOUND" if self.found else "MISSING"
-        cr_ids_str = ",".join(str(cid) for cid in self.cr_ids)
+
+        # Format merged CRs
+        merged_str = "N/A"
+        if self.merged_with_crs:
+            merged_str = ",".join(str(cid) for cid in sorted(self.merged_with_crs))
+
         return (
-            f"{cr_ids_str}\t{self.cr_region}\t{status}\t"
-            f"{self.consensus_count}\t{','.join(self.consensus_ids) if self.consensus_ids else 'N/A'}"
+            f"{self.cr_id}\t{self.cr_region}\t{status}\t"
+            f"{self.consensus_count}\t{merged_str}\t"
+            f"{','.join(self.consensus_ids) if self.consensus_ids else 'N/A'}"
         )
 
 
@@ -60,7 +64,7 @@ class CRConsensusMatch:
 class CandidateRegion:
     """Simple representation of a candidate region from BED file."""
 
-    cr_ids: list[int]  # Can be multiple IDs if merged
+    cr_id: int
     chrom: str
     start: int
     end: int
@@ -68,14 +72,11 @@ class CandidateRegion:
     def region_string(self) -> str:
         return f"{self.chrom}:{self.start}-{self.end}"
 
-    def ids_string(self) -> str:
-        return ",".join(str(cid) for cid in self.cr_ids)
-
 
 def load_candidate_regions_from_bed(bed_path: Path) -> list[CandidateRegion]:
     """Load candidate regions from BED file.
 
-    Expected BED format: chrom, start, end, cr_ids (comma-separated)
+    Expected BED format: chrom, start, end, crID
     """
     crs: list[CandidateRegion] = []
 
@@ -96,13 +97,11 @@ def load_candidate_regions_from_bed(bed_path: Path) -> list[CandidateRegion]:
                 chrom = fields[0]
                 start = int(fields[1])
                 end = int(fields[2])
-                # Parse comma-separated CR IDs
-                cr_ids_str = fields[3]
-                cr_ids = [int(cid.strip()) for cid in cr_ids_str.split(",")]
+                cr_id = int(fields[3])
 
                 crs.append(
                     CandidateRegion(
-                        cr_ids=cr_ids,
+                        cr_id=cr_id,
                         chrom=chrom,
                         start=start,
                         end=end,
@@ -116,47 +115,48 @@ def load_candidate_regions_from_bed(bed_path: Path) -> list[CandidateRegion]:
     return crs
 
 
-def load_consensus_sequences(consensus_fasta_path: Path) -> dict[int, list[str]]:
-    """Load consensus sequences from FASTA file and group by CR ID.
+def load_consensus_from_container_results(
+    container_results_path: Path,
+) -> tuple[dict[int, list[str]], dict[str, set[int]]]:
+    """Load consensus objects from CRS container results file.
 
     Returns:
-        Dictionary mapping CR ID to list of consensus sequence IDs
+        Tuple of:
+        - Dictionary mapping CR ID to list of consensus IDs
+        - Dictionary mapping consensus ID to set of all CR IDs that contributed to it
     """
     consensus_by_cr: dict[int, list[str]] = {}
+    consensus_to_crs: dict[str, set[int]] = {}
 
-    # Handle both gzipped and regular FASTA files
-    if str(consensus_fasta_path).endswith(".gz"):
-        handle = gzip.open(consensus_fasta_path, "rt")
-    else:
-        handle = open(consensus_fasta_path, "r")
+    log.info(f"Parsing CRS container results from {container_results_path}")
 
-    try:
-        for record in SeqIO.parse(handle, "fasta"):
-            # Parse consensus ID (e.g., "13.0" -> CR ID 13, consensus index 0)
-            consensus_id = record.id
-            try:
-                # Split by '.' to get CR ID
-                cr_id_str = consensus_id.split(".")[0]
-                cr_id = int(cr_id_str)
+    for crs_container in consensus_align.parse_crs_container_results(
+        container_results_path
+    ):
+        # Process each Consensus object in this container
+        for consensus_id, consensus_obj in crs_container.consensus_dicts.items():
+            # Record the consensus ID and which CRs contributed to it
+            consensus_to_crs[consensus_id] = set(consensus_obj.crIDs)
 
+            # For each CR ID that contributed, record this consensus
+            for cr_id in consensus_obj.crIDs:
                 if cr_id not in consensus_by_cr:
                     consensus_by_cr[cr_id] = []
                 consensus_by_cr[cr_id].append(consensus_id)
-            except (ValueError, IndexError) as e:
-                log.warning(f"Could not parse consensus ID '{consensus_id}': {e}")
-                continue
-    finally:
-        handle.close()
+
+    total_consensus = sum(len(v) for v in consensus_by_cr.values())
+    unique_consensus = len(consensus_to_crs)
 
     log.info(
-        f"Loaded {sum(len(v) for v in consensus_by_cr.values())} consensus sequences "
+        f"Loaded {unique_consensus} unique consensus sequences "
+        f"(total {total_consensus} CR-to-consensus mappings) "
         f"for {len(consensus_by_cr)} candidate regions"
     )
-    return consensus_by_cr
+    return consensus_by_cr, consensus_to_crs
 
 
 def compare_crs_to_consensus(
-    crs_bed_path: Path, consensus_fasta_path: Path
+    crs_bed_path: Path, container_results_path: Path
 ) -> tuple[list[CRConsensusMatch], dict[str, int]]:
     """Compare candidate regions to consensus sequences and return detailed results.
 
@@ -164,43 +164,43 @@ def compare_crs_to_consensus(
 
     Args:
         crs_bed_path: Path to candidate regions BED file
-        consensus_fasta_path: Path to consensus FASTA file
+        container_results_path: Path to CRS container results file
 
     Returns:
         Tuple of (results, statistics) where:
         - results: List of CRConsensusMatch objects for each candidate region
-        - statistics: Dict with keys 'total', 'found', 'missing', 'total_consensus'
+        - statistics: Dict with keys 'total', 'found', 'missing', 'total_consensus', 'merged'
     """
     candidate_regions = load_candidate_regions_from_bed(crs_bed_path)
-    consensus_by_cr = load_consensus_sequences(consensus_fasta_path)
+    consensus_by_cr, consensus_to_crs = load_consensus_from_container_results(
+        container_results_path
+    )
 
     results: list[CRConsensusMatch] = []
 
     for cr in candidate_regions:
-        cr_ids = cr.cr_ids
+        cr_id = cr.cr_id
         cr_region = cr.region_string()
 
-        # Collect consensus IDs for all CR IDs in this region (in case of merged CRs)
-        all_consensus_ids = []
-        for cr_id in cr_ids:
-            all_consensus_ids.extend(consensus_by_cr.get(cr_id, []))
+        # Get consensus IDs for this CR
+        consensus_ids = consensus_by_cr.get(cr_id, [])
+        found = len(consensus_ids) > 0
 
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_consensus_ids = []
-        for cid in all_consensus_ids:
-            if cid not in seen:
-                seen.add(cid)
-                unique_consensus_ids.append(cid)
-
-        found = len(unique_consensus_ids) > 0
+        # Determine which other CRs this one was merged with
+        merged_with_crs = set()
+        for consensus_id in consensus_ids:
+            # Get all CRs that contributed to this consensus
+            contributing_crs = consensus_to_crs.get(consensus_id, set())
+            # Add all other CRs (excluding the current one)
+            merged_with_crs.update(crid for crid in contributing_crs if crid != cr_id)
 
         match = CRConsensusMatch(
-            cr_ids=cr_ids,
+            cr_id=cr_id,
             cr_region=cr_region,
             found=found,
-            consensus_count=len(unique_consensus_ids),
-            consensus_ids=unique_consensus_ids,
+            consensus_count=len(consensus_ids),
+            consensus_ids=consensus_ids,
+            merged_with_crs=merged_with_crs,
         )
         results.append(match)
 
@@ -209,61 +209,79 @@ def compare_crs_to_consensus(
     found = sum(1 for r in results if r.found)
     missing = total - found
     total_consensus = sum(r.consensus_count for r in results)
+    merged = sum(1 for r in results if r.merged_with_crs)
 
     statistics = {
         "total": total,
         "found": found,
         "missing": missing,
         "total_consensus": total_consensus,
+        "merged": merged,
     }
 
     return results, statistics
 
 
 def check_crs_consensus_completeness(
-    crs_bed_path: Path, consensus_fasta_path: Path, output_path: Path | None = None
+    crs_bed_path: Path, container_results_path: Path, output_path: Path | None = None
 ) -> None:
     """Check candidate regions consensus completeness."""
     log.info(f"Reading candidate regions from {crs_bed_path}")
-    log.info(f"Reading consensus sequences from {consensus_fasta_path}")
+    log.info(f"Reading consensus from container results {container_results_path}")
 
-    results, statistics = compare_crs_to_consensus(crs_bed_path, consensus_fasta_path)
+    results, statistics = compare_crs_to_consensus(crs_bed_path, container_results_path)
 
     total = statistics["total"]
     found = statistics["found"]
     missing = statistics["missing"]
     total_consensus = statistics["total_consensus"]
+    merged = statistics["merged"]
 
     # Output results
     output_file = open(output_path, "w") if output_path else sys.stdout
 
     try:
         # Write header
-        output_file.write("CR_ID\tREGION\tSTATUS\tCONSENSUS_COUNT\tCONSENSUS_IDS\n")
+        output_file.write(
+            "CR_ID\tREGION\tSTATUS\tCONSENSUS_COUNT\tMERGED_WITH_CRS\tCONSENSUS_IDS\n"
+        )
 
         # Write results
         for result in results:
             output_file.write(str(result) + "\n")
             # Print missing CRs to terminal
             if not result.found:
-                cr_ids_str = ",".join(str(cid) for cid in result.cr_ids)
                 log.warning(
-                    f"Missing consensus for CR(s) {cr_ids_str}: {result.cr_region}"
+                    f"Missing consensus for CR {result.cr_id}: {result.cr_region}"
                 )
+            # Print merged CRs to terminal
+            # elif result.merged_with_crs:
+            #     merged_str = ",".join(str(cid) for cid in sorted(result.merged_with_crs))
+            #     log.info(
+            #         f"CR {result.cr_id} was merged with CR(s) {merged_str}"
+            #     )
 
         # Summary statistics
         output_file.write("\n# SUMMARY\n")
         output_file.write(f"# Total candidate regions: {total}\n")
-        output_file.write(f"# With consensus: {found} ({found / total * 100:.1f}%)\n")
+        found_percentage = (found / total * 100) if total > 0 else 0
+        output_file.write(f"# With consensus: {found} ({found_percentage:.1f}%)\n")
+        missing_percentage = (missing / total * 100) if total > 0 else 0
         output_file.write(
-            f"# Without consensus: {missing} ({missing / total * 100:.1f}%)\n"
+            f"# Without consensus: {missing} ({missing_percentage:.1f}%)\n"
+        )
+        merged_percentage = (merged / total * 100) if total > 0 else 0
+        output_file.write(
+            f"# Merged with other CRs: {merged} ({merged_percentage:.1f}%)\n"
         )
         output_file.write(f"# Total consensus sequences: {total_consensus}\n")
+        average_consensus = (total_consensus / found) if found > 0 else 0
         output_file.write(
-            f"# Average consensus per CR: {total_consensus / total:.2f}\n"
+            f"# Average consensus per CR (with consensus): {average_consensus:.2f}\n"
         )
 
         log.info(f"Candidate regions with consensus: {found}/{total}")
+        log.info(f"Candidate regions merged with others: {merged}")
         log.info(f"Total consensus sequences: {total_consensus}")
 
     finally:
@@ -283,14 +301,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--crs-bed",
         type=Path,
         required=True,
-        help="Path to candidate regions BED file (chrom, start, end, cr_ids)",
+        help="Path to candidate regions BED file (chrom, start, end, crID)",
     )
     parser.add_argument(
         "-c",
-        "--consensus-fasta",
+        "--container-results",
         type=Path,
         required=True,
-        help="Path to consensus FASTA file (can be gzipped)",
+        help="Path to CRS container results file (JSON lines format)",
     )
     parser.add_argument(
         "-o",
@@ -322,7 +340,7 @@ def main() -> None:
 
     check_crs_consensus_completeness(
         crs_bed_path=args.crs_bed,
-        consensus_fasta_path=args.consensus_fasta,
+        container_results_path=args.container_results,
         output_path=args.output,
     )
 

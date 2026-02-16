@@ -45,7 +45,11 @@ class ExpectedVariant:
     @classmethod
     def from_line(cls, line: str) -> ExpectedVariant:
         """Parse an expected variant from a line in the regions file."""
+        # Split on tabs first, but if that doesn't work, split on whitespace
         fields = line.strip().split("\t")
+        if len(fields) < 4:
+            # Try splitting on any whitespace
+            fields = line.strip().split()
         if len(fields) < 4:
             raise ValueError(f"Invalid line format: {line}")
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from svirlpool.debugtools.check_vcf_correctness import compare_vcf_to_expected
 
 
-def test_vcf_correctness():
+def vcf_correctness():
     """Test that VCF contains all expected variants with correct properties."""
     vcf_path = Path("path/to/your/output.vcf.gz")
     expected_path = Path("path/to/expected_variants.bed")

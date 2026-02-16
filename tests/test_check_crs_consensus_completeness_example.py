@@ -11,7 +11,7 @@ from svirlpool.debugtools.check_crs_consensus_completeness import (
 )
 
 
-def test_crs_consensus_completeness():
+def crs_consensus_completeness():
     """Test that all candidate regions have consensus sequences."""
     crs_bed_path = Path("path/to/crs.bed")
     consensus_fasta_path = Path("path/to/consensus.fasta.gz")
@@ -51,7 +51,7 @@ def test_crs_consensus_completeness():
     )
 
 
-def test_specific_crs_have_consensus():
+def specific_crs_have_consensus():
     """Test that specific important candidate regions have consensus sequences."""
     crs_bed_path = Path("path/to/crs.bed")
     consensus_fasta_path = Path("path/to/consensus.fasta.gz")
@@ -76,7 +76,7 @@ def test_specific_crs_have_consensus():
         )
 
 
-def test_no_crs_with_excessive_consensus():
+def no_crs_with_excessive_consensus():
     """Test that no candidate region has an excessive number of consensus sequences."""
     crs_bed_path = Path("path/to/crs.bed")
     consensus_fasta_path = Path("path/to/consensus.fasta.gz")

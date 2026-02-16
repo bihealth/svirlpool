@@ -33,10 +33,11 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
 from scipy.sparse import csr_matrix
-from sklearn.cluster import SpectralClustering
+from sklearn.cluster import KMeans, SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
+from ..util.signal_loss_logger import get_signal_loss_logger
 from . import consensus_class
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -1520,6 +1521,280 @@ def consensus_while_clustering(
     return result
 
 
+def consensus_while_clustering_with_kmeans(
+    samplename: str,
+    dict_summed_indels: dict[str, list[int]],
+    lamassemble_mat: Path | str,
+    pool: dict[str, SeqRecord],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    max_k: int,
+    variance_threshold: float,
+    distance_threshold: float,
+    threads: int = 1,
+    tmp_dir_path: Path | None = None,
+    timeout: int = 120,
+    verbose: bool = False,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Cluster reads by their summed indel distribution using KMeans and assemble consensus per cluster.
+
+    If there is a very clear separation in dict_summed_indels (2 dimensions: sum insertions,
+    sum deletions), the all-vs-all alignment step can be skipped and reads can be directly
+    assembled per cluster.
+
+    The variance within a cluster should be low (below variance_threshold), and the distance
+    between the cluster centroids should be high (above distance_threshold).
+
+    Returns None if no good clustering is found (caller should fall back to
+    consensus_while_clustering).
+    """
+    crIDs = [cr.crID for cr in candidate_regions.values()]
+
+    # Need at least 2 reads for meaningful clustering
+    if len(dict_summed_indels) < 2:
+        log.debug("Not enough reads for KMeans clustering. Returning None.")
+        return None
+
+    # Build the feature matrix: each read has [sum_insertions, sum_deletions]
+    readnames = sorted(dict_summed_indels.keys())
+    X = np.array([dict_summed_indels[rn] for rn in readnames], dtype=np.float64)
+
+    # 1) Try KMeans clustering with k = 1 .. max_k
+    #    Greedily pick the first k where intra-cluster variance is low
+    #    and inter-cluster distance is high.
+    chosen_k: int | None = None
+    chosen_labels: np.ndarray | None = None
+
+    for k in range(1, max_k + 1):
+        if k > len(readnames):
+            break
+
+        kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
+        labels = kmeans.fit_predict(X)
+        centroids = kmeans.cluster_centers_
+
+        # Compute max intra-cluster variance (Euclidean distance from points to centroid)
+        max_intra_variance = 0.0
+        for cluster_id in range(k):
+            mask = labels == cluster_id
+            if mask.sum() == 0:
+                continue
+            cluster_points = X[mask]
+            distances = np.linalg.norm(cluster_points - centroids[cluster_id], axis=1)
+            cluster_variance = np.mean(distances)
+            max_intra_variance = max(max_intra_variance, cluster_variance)
+
+        # Compute min inter-cluster distance between centroids
+        min_inter_distance = float("inf")
+        if k > 1:
+            for i in range(k):
+                for j in range(i + 1, k):
+                    d = np.linalg.norm(centroids[i] - centroids[j])
+                    min_inter_distance = min(min_inter_distance, d)
+        else:
+            min_inter_distance = 0.0
+
+        if verbose:
+            log.info(
+                f"KMeans k={k}: max_intra_variance={max_intra_variance:.2f}, "
+                f"min_inter_distance={min_inter_distance:.2f}"
+            )
+
+        # For k=1, accept if variance is low (homogeneous pool)
+        if k == 1:
+            if max_intra_variance <= variance_threshold:
+                chosen_k = 1
+                chosen_labels = labels
+                break
+            # variance too high with k=1 -> try splitting
+            continue
+
+        # For k>1, require low variance AND high inter-cluster separation
+        if (
+            max_intra_variance <= variance_threshold
+            and min_inter_distance >= distance_threshold
+        ):
+            chosen_k = k
+            chosen_labels = labels
+            break
+
+    if chosen_k is None or chosen_labels is None:
+        log.debug(
+            f"No suitable KMeans clustering found for k=1..{max_k}. Returning None."
+        )
+        return None
+
+    if verbose:
+        log.info(f"Chosen KMeans clustering with k={chosen_k}")
+        for i, rn in enumerate(readnames):
+            log.info(
+                f"  {rn}: cluster={chosen_labels[i]}, "
+                f"ins={dict_summed_indels[rn][0]}, del={dict_summed_indels[rn][1]}"
+            )
+
+    # 2) Assemble consensus for each cluster
+    result: dict[str, consensus_class.Consensus] | None = None
+    failed_reads: list[str] = []
+
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=tmp_dir_path, delete=False if tmp_dir_path else True
+        ) as tmp_dir:
+            for cluster_id in range(chosen_k):
+                chosen_reads = [
+                    rn
+                    for rn, label in zip(readnames, chosen_labels, strict=True)
+                    if label == cluster_id
+                ]
+                if len(chosen_reads) == 0:
+                    continue
+
+                # Filter to reads that are actually in the pool
+                chosen_reads = [rn for rn in chosen_reads if rn in pool]
+                if len(chosen_reads) == 0:
+                    continue
+
+                consensus_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix=f"consensus.kmeans.{cluster_id}.",
+                    suffix=".fasta",
+                    delete=False if tmp_dir_path else True,
+                )
+                reads_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix=f"reads.kmeans.{cluster_id}.",
+                    suffix=".fastq",
+                    delete=False if tmp_dir_path else True,
+                )
+                with open(reads_fasta.name, "w") as f:
+                    SeqIO.write(
+                        [pool[readname] for readname in chosen_reads], f, "fastq"
+                    )
+                consensus_name = f"{min(crIDs)}.{cluster_id}"
+
+                consensus_sequence: str | None = assemble_consensus(
+                    lamassemble_mat=lamassemble_mat,
+                    name=consensus_name,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    threads=threads,
+                    timeout=timeout,
+                    verbose=verbose,
+                )
+
+                if consensus_sequence is None:
+                    log.warning(
+                        f"consensus assembly failed for KMeans cluster {cluster_id} "
+                        f"with {len(chosen_reads)} reads. Skipping this cluster."
+                    )
+                    failed_reads.extend(chosen_reads)
+                    continue
+
+                if result is None:
+                    result = {}
+                consensus = final_consensus(
+                    samplename=samplename,
+                    min_indel_size=8,
+                    min_bnd_size=100,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    consensus_sequence=consensus_sequence,
+                    ID=consensus_name,
+                    crIDs=crIDs,
+                    original_regions=[
+                        (cr.chr, cr.referenceStart, cr.referenceEnd)
+                        for cr in candidate_regions.values()
+                    ],
+                    threads=threads,
+                    verbose=verbose,
+                    tmp_dir_path=Path(tmp_dir),
+                )
+                if consensus is not None:
+                    result[consensus_name] = consensus
+                else:
+                    log.warning(
+                        f"final consensus generation failed for KMeans cluster {cluster_id} "
+                        f"with {len(chosen_reads)} reads. Skipping this cluster."
+                    )
+                    failed_reads.extend(chosen_reads)
+                    continue
+
+            # Try to rescue failed reads by assembling them into one consensus
+            if len(failed_reads) > 0 and (result is None or len(result) == 0):
+                log.info(
+                    f"Trying to rescue {len(failed_reads)} failed reads from KMeans "
+                    f"clustering by creating one consensus from them."
+                )
+                consensus_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix="consensus.kmeans.rescue.",
+                    suffix=".fasta",
+                    delete=False if tmp_dir_path else True,
+                )
+                reads_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix="reads.kmeans.rescue.",
+                    suffix=".fastq",
+                    delete=False if tmp_dir_path else True,
+                )
+                rescue_reads = [rn for rn in failed_reads if rn in pool]
+                with open(reads_fasta.name, "w") as f:
+                    SeqIO.write(
+                        [pool[readname] for readname in rescue_reads], f, "fastq"
+                    )
+                consensus_name = f"{min(crIDs)}.rescue"
+
+                consensus_sequence = assemble_consensus(
+                    lamassemble_mat=lamassemble_mat,
+                    name=consensus_name,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    threads=threads,
+                    timeout=timeout,
+                    verbose=verbose,
+                )
+
+                if consensus_sequence is not None:
+                    if result is None:
+                        result = {}
+                    consensus = final_consensus(
+                        samplename=samplename,
+                        min_indel_size=8,
+                        min_bnd_size=100,
+                        reads_fasta=Path(reads_fasta.name),
+                        consensus_fasta_path=Path(consensus_fasta.name),
+                        consensus_sequence=consensus_sequence,
+                        ID=consensus_name,
+                        crIDs=crIDs,
+                        original_regions=[
+                            (cr.chr, cr.referenceStart, cr.referenceEnd)
+                            for cr in candidate_regions.values()
+                        ],
+                        threads=threads,
+                        verbose=verbose,
+                        tmp_dir_path=Path(tmp_dir),
+                    )
+                    if consensus is not None:
+                        result[consensus_name] = consensus
+                    else:
+                        log.warning(
+                            f"final consensus generation failed for rescue reads "
+                            f"with {len(rescue_reads)} reads. Returning None."
+                        )
+                else:
+                    log.warning(
+                        f"consensus assembly failed for rescue reads "
+                        f"with {len(rescue_reads)} reads. Returning None."
+                    )
+
+    except Exception as e:
+        log.warning(
+            f"consensus_while_clustering_with_kmeans failed with exception: {e}. Returning None."
+        )
+        return None
+
+    return result
+
+
 def add_unaligned_reads_to_consensuses_inplace(
     samplename: str,
     consensus_objects: dict[str, consensus_class.Consensus],
@@ -1941,6 +2216,7 @@ def filter_excessive_QC_ras_inplace(
     read_sequences: dict[str, SeqRecord],
     reference_sequence: str,
 ) -> None:
+    _loss_logger = get_signal_loss_logger()
     for ras in rass:
         filtered_signals = []
         for sv_signal in ras.SV_signals:
@@ -1953,8 +2229,28 @@ def filter_excessive_QC_ras_inplace(
             else:
                 filtered_signals.append(sv_signal)
                 continue
-            if 0.1 < SeqUtils.gc_fraction(Seq(dna_string)) <= 0.9:
+            gc_frac = SeqUtils.gc_fraction(Seq(dna_string))
+            if 0.1 < gc_frac <= 0.9:
                 filtered_signals.append(sv_signal)
+            else:
+                _loss_logger.log_filtered(
+                    stage="filter_excessive_QC_ras_inplace",
+                    reason="extreme_GC_fraction",
+                    details={
+                        "read_name": ras.read_name,
+                        "sv_type": sv_signal.sv_type,
+                        "size": sv_signal.size,
+                        "ref_start": sv_signal.ref_start,
+                        "ref_end": sv_signal.ref_end,
+                        "gc_fraction": round(gc_frac, 4),
+                    },
+                )
+        _n_removed = len(ras.SV_signals) - len(filtered_signals)
+        if _n_removed > 0:
+            log.info(
+                f"filter_excessive_QC_ras_inplace: read {ras.read_name}: "
+                f"filtered {_n_removed}/{len(ras.SV_signals)} signals with extreme GC content"
+            )
         ras.SV_signals = filtered_signals
 
 
@@ -2405,27 +2701,40 @@ def process_consensus_container(
     # print the distribution of ins-dels of all alignments
     # parse all alignments to sv signals
 
-    # dict_summed_indels is of form readname:[sum_inss:int,sum_dels:int]
+    dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(alns=alns)
     if verbose:
-        dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(alns=alns)
         print_indel_distribution(dict_summed_indels)
 
     # =========================================== CONSENSUS BUILDING =========================================== #
 
-    consensus_objects: dict[str, consensus_class.Consensus] = {}
-
     res: dict[str, consensus_class.Consensus] | None = None
-    res = consensus_while_clustering(
+    consensus_objects: dict[str, consensus_class.Consensus] = {}
+    res = consensus_while_clustering_with_kmeans(
         samplename=samplename,
+        dict_summed_indels=dict_summed_indels,
         lamassemble_mat=lamassemble_mat,
         pool=cutreads,
         candidate_regions=crs_dict,
-        partitions=max_copy_number,
-        timeout=timeout,
+        max_k=max_copy_number,
+        variance_threshold=30.0,
+        distance_threshold=50.0,
         threads=threads,
         tmp_dir_path=tmp_dir_path,
+        timeout=timeout,
         verbose=verbose,
     )
+    if not res:
+        res = consensus_while_clustering(
+            samplename=samplename,
+            lamassemble_mat=lamassemble_mat,
+            pool=cutreads,
+            candidate_regions=crs_dict,
+            partitions=max_copy_number,
+            timeout=timeout,
+            threads=threads,
+            tmp_dir_path=tmp_dir_path,
+            verbose=verbose,
+        )
     if res is not None:
         consensus_objects.update(res)
 
@@ -2796,21 +3105,34 @@ def main():
     # Convert string log level to logging constant
     log_level = getattr(logging, args.log_level.upper())
 
+    # Configure logging formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    # Get the root logger to ensure all loggers in the hierarchy are configured
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # Remove any existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # Add console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # Add file handler if logfile is specified
     if args.logfile:
-        # Configure logging to file
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[logging.FileHandler(str(args.logfile)), logging.StreamHandler()],
-        )
-    else:
-        # Configure logging to console only
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[logging.StreamHandler()],
-        )
+        file_handler = logging.FileHandler(str(args.logfile), mode="w")
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+    log.info(f"Starting consensus generation with log level {args.log_level}")
     run_consensus_script(args)
+    log.info("Consensus generation completed")
     return
 
 
