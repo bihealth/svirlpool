@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import subprocess
 import tempfile
+import uuid
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from enum import Enum
@@ -859,8 +860,9 @@ def write_sequences_to_fasta(
         seqnames = [prefix + str(i) + suffix for i in range(len(seqs))]
     else:
         seqnames = [
-            prefix + str(hash("".join(["".join(s) for s in seqs])))[:5] + suffix
-        ] * len(seqs)
+            prefix + uuid.uuid4().hex[:8] + suffix
+            for _ in seqs
+        ]
     records = [
         SeqRecord(
             Seq("".join(seqs[i])),

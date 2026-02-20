@@ -2332,23 +2332,23 @@ def create_padding_for_consensus(
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
 
-    ## DEBUG START
+    # DEBUG START
     # if the consensusID is 11.0, then serialize the data to json and write to a file for debugging
-    # if consensus_object.ID == "11.0":
-    #     debug_path = Path("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus/consensus_padding.forward_breakends.json.gz")
-    #     # use consensus_object.unstructure() to serialize the consensus object to json
-    #     debug_data = {
-    #         "consensus_object": consensus_object.unstructure(),
-    #         "cutreads": {
-    #             name: util.seqRecord_to_json(cutread) for name, cutread in cutreads.items()},
-    #         "read_records": {
-    #             name: util.seqRecord_to_json(read_record) for name, read_record in read_records.items()},
-    #     }
-    #     import gzip
-    #     import json
-    #     with gzip.open(debug_path, "wt", encoding="utf-8") as f:
-    #         json.dump(debug_data, f, indent=4)
-    # ## DEBUG END
+    if consensus_object.ID == "11.0":
+        debug_path = Path("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus/consensus_padding.forward_breakends.json.gz")
+        # use consensus_object.unstructure() to serialize the consensus object to json
+        debug_data = {
+            "consensus_object": consensus_object.unstructure(),
+            "cutreads": {
+                name: util.seqRecord_to_json(cutread) for name, cutread in cutreads.items()},
+            "read_records": {
+                name: util.seqRecord_to_json(read_record) for name, read_record in read_records.items()},
+        }
+        import gzip
+        import json
+        with gzip.open(debug_path, "wt", encoding="utf-8") as f:
+            json.dump(debug_data, f, indent=4)
+    ## DEBUG END
 
     read_paddings_for_consensus = _get_all_read_padding_intervals(
         consensus_object=consensus_object, cutreads=cutreads, read_records=read_records
@@ -2489,7 +2489,7 @@ def _create_padding_object(
         right_padding = right_padding.reverse_complement()
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
-        left_padding + cons.consensus_sequence + right_padding
+        left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
     )
 
     new_padding = consensus_class.ConsensusPadding(

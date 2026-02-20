@@ -4,13 +4,58 @@ from gzip import open as gzip_open
 from pathlib import Path
 
 import cattrs
+import pysam
+from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
 from svirlpool.localassembly import consensus, consensus_class
-from svirlpool.util.util import dict_to_seqrecord
+from svirlpool.localassembly.consensus import (
+    get_max_extents_of_read_alignments_on_cr,
+    get_read_alignment_intervals_in_region)
+from svirlpool.util.util import (align_reads_with_minimap, dict_to_seqrecord,
+                                 generate_sequence, reverse_complement,
+                                 write_sequences_to_fasta)
 
 #%%
 DATA_DIR = Path(__file__).parent / "data" / "consensus"
+
+def generate_test_data_for_read_trimming_tests() -> None:
+    R:list[str] = generate_sequence(2000, seed=0) # 2 kb random DNA seq
+    R0 = R[100:500]
+    R1 = R[-500:-100]
+    x = reverse_complement(R[850:950])
+    r0 = generate_sequence(500, seed=1)
+    r1 = generate_sequence(100, seed=2)
+    # assemble the read sequence:
+    read0 = R0+r0+x+r1+R1
+    read1 = reverse_complement(read0)
+    path_test_ref = DATA_DIR / "test_trimming_ref.fasta"
+    path_test_reads = DATA_DIR / "test_trimming_reads.fasta"
+    # What is expected from this data:
+    # reads are 1500 bp long
+    # cutting on the reference happens at 100 and -100 (1900)
+    # which leaves the reads at a total length of 1500 bp
+    # and the first 400 bp and the last 400 bp should be aligned
+    # break ends should be at 500 and 1500 on the reference, and at 400 and -400 on the reads
+    # additional break ends should be at 850 and 950 on the reference, and at 900 and 1000 on the forward read,
+    # and at 600 and 700 on the reverse read.
+    write_sequences_to_fasta(
+        seqs=[R],
+        chrnames=True,
+        path=path_test_ref,
+        prefix="trimming_ref")
+    write_sequences_to_fasta(
+        seqs=[read0, read1],
+        chrnames=False,
+        path=path_test_reads,
+        prefix="trimming_reads"
+    )
+    align_reads_with_minimap(
+        reference=str(path_test_ref),
+        reads=str(path_test_reads),
+        bamout=DATA_DIR / "test_trimming_alignments.bam",
+        aln_args=" -z100,100 -r100,100"
+    )
 
 # insterted into create_padding_for_consensus
 # This is how I saved the data, then gzipped it:
@@ -165,8 +210,20 @@ def test_create_padding_for_consensus_forward_breakends() -> None:
             cutreads=cutreads,
             read_records=read_records,
         )
-        # I expect core at 430-1120
+        # write consensus_object.consensus_sequence to a file for debugging
+        path_debug_consensus = "/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/test/testme/debug_11.fasta"
+        with open(path_debug_consensus, "w") as f:
+            f.write(f">{consensus_object.ID}\n{consensus_object.consensus_sequence}")
         
+        # I expect core at 430-1120
+        #ConsensusPadding(sequence='AATGTTATTAGATTGCTTAAAGTAGCTATTATTTTAGAATATATTTAGAATACTGAACCAAATAACTTGTTGATAAACTACCTAGGAATAGACTTCTCATACTCATAAATCTTCACGATTTTATTTAATTTTTTGGAAAATAAAGCTAAGGAACATAGTTCATCTAGATTGGCTCATTGAGACTCAGATACTGGCAAAGCATAGATAACATCCTCTTTTCTCTAGTCCATTTCCCATAGGCCTATTTCTTAGCAATCATTGCTTTATGAGGCTTTTGTTTTGTAATTAGGTTGCATTTCCCTCGAGGCTAGAGCTTTGAATAAGAGGAAAAAAGAAAAAAGATATTACCTGGGAGGAAAATCCTATTGTACATGGACTAAGGTTAGCAACCTCAACATTCATCCTCTTTCATGCATTCTTCCTCTTTATTACTGTAAGAATGCTCTATAAGTGACAATGATTTTTTTAATAATATCTCACCTTCTGACTGAAATACCTTTGTTTCTGTTACACATTGAATTTTGTCCTTCCAAAAATATATGTCGAGGTGCTAATAAAACTCAGTGTCTCACAGTGTAACCATACCTGGAAATAGTCTTTACAGAGATAATGAAGTAAAAACGAGGTCATTAGGTTGGTTCCTAATCTGCTATGACTGGTGTTCTTACAGAAGGGGAAAGCTAGACCCAGGAAATAGACCTACACAACGCGTGTGTGAAAGACAATGTGGAGACACACGGAGAAAACTCCAATGTGAAGACAGAAGATTGGACTGATGTATTAAAAGCTAAGAAACACCTATGGCTAGCAGAAGACAGGGAAGTGGCATGGAATGGTTCTTTTCCCAGCACCTTCAGTGGGAGCATAGTCCTGACACACCTTGACCTTGGAAGTCTGGCCAGTAGAACTtagaactgcaagaccacacatttattttgttttaagtcaccctgtttgtggaactttgttaaggcagccctaagaaactctttaataatactgtttctcattacttctaaaatatatcttgtactctttaagatagatctcaggcctttcaggatcttggccccgcacaccttttcagctcctgcattactaacgtgttcctttacaccctgtcatgcaacaatagaagacacctttattcctcaaaatatcctgttttctctcacctatagccttctccattctcctccctgcaaagttagcattatccttttccctgacacaccgccatcccaaatcttcaaccgatgactcctaaccatcttttagacctgaacgtcaatattacttcatctttcagaaggactttcttgtttttctagtctcgcatgggaccctgctcttctgccttaaaagtcatttcaataatgtaatgtctatcttccttgcaagactgagcatttctttatgctttggctctagtacttattagatgccccacaaatatttatttaacaaataaacaactgaatggcagcatgtcatctgctcccttgcctgctctttcatctggacttgtactctgttataagtggtgtgtaactttgttagggctgctgcaaaacaacaacacagatttattctattacagttctggaggccaggggtctaacataaggctttggcagggcaatgctccctctcaaggctctagaggagaatgcctctttgcttcttttagcttctggtggctccttgcattcctTGTTTTATGGCAACATAACTTTAATCTCTGCCTCTGTCTTCATGCCTTTTTTCCTTGTATCTTTGTGTCTCAATTCTCCTTCTTCTTTTCTCTTATAAAGTTACCTGTTGTTGGACTTAGGGCCCACCCTAAATCTAGGGTGACCTCATTTTTAAATCCTTAATTTAATTATATCTGCAAAGACCTCTTTCCAAAGTAGGATCACATCTATAGGATCTAGGGATTAAGGCTTGAACATATTTTCAGAATCACTGTGTAACCTACTACAGAGTGAGGCTGATTAATTTGATAGATTTGTGGGACTACTGGTATAAACTAAGCTGCTTCGGGGTGAAGATGAAAAGTGTTGTGTGGAGTGAGAATTTTTTTTTCTACTGTTACATGGAATCCAGTAGTCATCTGGGGCTGGTGGCATTGCTGACATAAGGAGGTAATTGCCTTTGGTATGGACGTTGGTGTTCTTTCAGTGGCAGAAGCTGAAAACTCCTGATGTTCCTTTCAGCTGCTTCACAGGGAAGAGGACACGGGTGAACAAAAGTTTGAGTAGCGAGAAGACACCCGAGGAGACTGTAGCTGAGAGAGGTTTCTGTGGAGTTTCTGAAATGACAGGGTGACAGCTTGAATGAGGATATTGGTGAACTCAGATCCACTAGGGATGGAACAAATTTAAGGGTGAACCTAGTTTCATCCACAGCCTGGTAAGAACAGGTGACATTTAGGTTACAGCTATAATTCACATAAAAATGGAGCAATTCAATGTATTATATGAAATAAATATAAGGAATTTTCAATTAATCACATTAATGTGAGCAGGACAAGATGAATAGTTGAAGTTCACAGAATCTTCCACTTAATTTTAGCCTTAAATTCACCATTTTTTCCTCATTAACATTACTATAAAACAAAAAACGAGTGA',
+        # readname_left='21cada55-1cdc-4ce8-b105-20f67ec284c2',
+        # eadname_right='5e8d8c6c-69c8-460f-9bb1-34dd3c1a0132',
+        # padding_size_left=909,
+        # padding_size_right=916,
+        # consensus_interval_on_sequence_with_padding=(909, 1714))
+
+        # 3_82201219_82205219:2787-3087
         
     # TODO: continue
     
@@ -203,3 +260,49 @@ def test_create_padding_for_consensus_forward_breakends() -> None:
         f"Expected consensus end {expected.consensus_interval_on_sequence_with_padding[1]}, got {result.consensus_interval_on_sequence_with_padding[1]}"
     )
 # %%
+
+def test_trim_reads_INVDEL() -> None:
+    # test consensus.trim_reads
+    # Test data: 2 kb reference, two reads (forward and reverse complement).
+    # Each read has 3 alignments:
+    #   - primary at ref 100-501 (left anchor)
+    #   - supplementary at ref 849-955 (inverted segment)
+    #   - supplementary at ref 1500-1900 (right anchor)
+    # Expected: both reads are trimmed to full length (1500 bp, start=0, end=1500)
+    # since the outermost reference extent spans ref 100-1900.
+    bam_path = DATA_DIR / "test_trimming_alignments.bam"
+    reads_path = DATA_DIR / "test_trimming_reads.fasta"
+
+    # Load all alignments keyed by crID=0
+    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {0: []}
+    with pysam.AlignmentFile(str(bam_path), "rb") as f:
+        for aln in f.fetch(until_eof=True):
+            dict_alignments[0].append(aln)
+
+    # Load full read sequences from FASTA (original orientation)
+    read_records: dict[str, SeqRecord] = {
+        rec.id: rec for rec in SeqIO.parse(reads_path, "fasta")
+    }
+
+    # Compute per-read alignment intervals over the full reference (length 2000)
+    all_alns = [aln for alns in dict_alignments.values() for aln in alns]
+    dict_all_intervals = get_read_alignment_intervals_in_region(
+        region_start=0,
+        regions_end=2000,
+        alignments=all_alns,
+        buffer_clipped_length=0,
+    )
+    # Reduce to max extents: (read_start, read_end, ref_start_chr, ref_start, ref_end_chr, ref_end)
+    intervals = get_max_extents_of_read_alignments_on_cr(dict_all_intervals)
+
+    result = consensus.trim_reads(
+        dict_alignments=dict_alignments,
+        intervals=intervals,
+        read_records=read_records,
+    )
+    forward_read_name = "trimming_reads518f25de"
+    reverse_read_name = "trimming_reads6f83015b"
+
+    # {'trimming_reads518f25de': SeqRecord(seq=Seq('GATTAGGGATCTGATCTGTGTGTGCGACGAGCAAGGGGGCTCCTTTATTTATAG...TAT'), id='trimming_reads518f25de', name='trimming_reads518f25de', description='crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900', dbxrefs=[]),
+    #  'trimming_reads6f83015b': SeqRecord(seq=Seq('ATAACTAACACTATTATTGATCTTCGTGCACAAGGTGGTATACGTAGTGTGTCG...ATC'), id='trimming_reads6f83015b', name='trimming_reads6f83015b', description='crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=501,ref_end_chr=trimming_ref0,ref_end=1500', dbxrefs=[])}
+    # TODO: continue!
