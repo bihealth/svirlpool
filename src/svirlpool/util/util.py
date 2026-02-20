@@ -2246,4 +2246,24 @@ def logistic_weight(distance, scale=100.0, falloff=1.0):
     return 1.0 / (1.0 + np.exp(falloff * (distance - scale)))
 
 
-# we need a function to cut a pysam alignment to a shorter interval
+def seqRecord_to_json(
+    record: SeqRecord,
+) -> dict:
+    return {
+        "name": record.name,
+        "id": record.id,
+        "seq": str(record.seq),
+        "description": record.description,
+        "annotations": record.annotations,
+    }
+
+def json_to_seqRecord(
+    data: dict,
+) -> SeqRecord:
+    return SeqRecord(
+        id=data["id"],
+        name=data["name"],
+        seq=Seq(data["seq"]),
+        description=data["description"],
+        annotations=data["annotations"],
+    )

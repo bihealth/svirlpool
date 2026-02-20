@@ -1600,8 +1600,10 @@ def consensus_while_clustering_with_kmeans(
             )
 
         # For k=1, accept if variance is low (homogeneous pool)
+        # Apply a stricter threshold (half) so that a single cluster is only
+        # accepted when the reads are truly homogeneous.
         if k == 1:
-            if max_intra_variance <= variance_threshold:
+            if max_intra_variance <= variance_threshold / 2.0:
                 chosen_k = 1
                 chosen_labels = labels
                 break
@@ -2312,7 +2314,6 @@ def score_ras_from_alignments(
 #  consensus padding
 # =======================================================================================================================================================
 
-
 def parse_description(description: str) -> dict:
     result = {}
     for key_value in description.split(","):
@@ -2330,6 +2331,24 @@ def create_padding_for_consensus(
     read_records: dict[str, SeqRecord],
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
+
+    ## DEBUG START
+    # if the consensusID is 11.0, then serialize the data to json and write to a file for debugging
+    # if consensus_object.ID == "11.0":
+    #     debug_path = Path("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus/consensus_padding.forward_breakends.json.gz")
+    #     # use consensus_object.unstructure() to serialize the consensus object to json
+    #     debug_data = {
+    #         "consensus_object": consensus_object.unstructure(),
+    #         "cutreads": {
+    #             name: util.seqRecord_to_json(cutread) for name, cutread in cutreads.items()},
+    #         "read_records": {
+    #             name: util.seqRecord_to_json(read_record) for name, read_record in read_records.items()},
+    #     }
+    #     import gzip
+    #     import json
+    #     with gzip.open(debug_path, "wt", encoding="utf-8") as f:
+    #         json.dump(debug_data, f, indent=4)
+    # ## DEBUG END
 
     read_paddings_for_consensus = _get_all_read_padding_intervals(
         consensus_object=consensus_object, cutreads=cutreads, read_records=read_records
@@ -2540,7 +2559,15 @@ def load_crs_containers_from_db(
 
 def summed_indel_distribution(
     alns: dict[int, list[pysam.AlignedSegment]],
+    crs: dict[int, datatypes.CandidateRegion],
 ) -> dict[str, list[int]]:
+    # Build an IntervalTree from the candidate regions so we can quickly check
+    # whether a signal falls within any provided region.
+    cr_tree = IntervalTree()
+    for cr in crs.values():
+        if cr.referenceStart < cr.referenceEnd:
+            cr_tree.addi(cr.referenceStart, cr.referenceEnd)
+
     rafs: list[datatypes.ReadAlignmentFragment] = []
     for _crID, alnlist in alns.items():
         for aln in alnlist:
@@ -2560,9 +2587,18 @@ def summed_indel_distribution(
         for aln in [aln for alnlist in alns.values() for aln in alnlist]
     }
     # now add all summed insertions, if they exist
+    # only keep signals whose reference position overlaps a candidate region interval
     for raf in rafs:
-        insertions = [signal.size for signal in raf.SV_signals if signal.sv_type == 0]
-        deletions = [signal.size for signal in raf.SV_signals if signal.sv_type == 1]
+        insertions = [
+            signal.size
+            for signal in raf.SV_signals
+            if signal.sv_type == 0 and cr_tree.overlaps(signal.ref_start, max(signal.ref_start + 1, signal.ref_end))
+        ]
+        deletions = [
+            signal.size
+            for signal in raf.SV_signals
+            if signal.sv_type == 1 and cr_tree.overlaps(signal.ref_start, max(signal.ref_start + 1, signal.ref_end))
+        ]
         if len(insertions) > 0:
             read_sum_signals[raf.read_name][0] += sum(insertions)
         if len(deletions) > 0:
@@ -2675,7 +2711,7 @@ def process_consensus_container(
                         dict_unused_reads[crID].append(read_sequence_object)
         return {}, dict_unused_reads
 
-    alns, alns_wt = get_read_alignments_for_crs(
+    alns, _alns_wt = get_read_alignments_for_crs(
         crs=list(crs_dict.values()), alignments=path_alignments
     )
     dict_all_intervals = get_read_alignment_intervals_in_cr(
@@ -2701,7 +2737,7 @@ def process_consensus_container(
     # print the distribution of ins-dels of all alignments
     # parse all alignments to sv signals
 
-    dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(alns=alns)
+    dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(alns=alns, crs=crs_dict)
     if verbose:
         print_indel_distribution(dict_summed_indels)
 
@@ -2716,8 +2752,8 @@ def process_consensus_container(
         pool=cutreads,
         candidate_regions=crs_dict,
         max_k=max_copy_number,
-        variance_threshold=30.0,
-        distance_threshold=50.0,
+        variance_threshold=29.0,
+        distance_threshold=29.0,
         threads=threads,
         tmp_dir_path=tmp_dir_path,
         timeout=timeout,

@@ -281,6 +281,7 @@ def get_consensus_core_alignment_interval_on_reference(
 ) -> tuple[str, int, int]:
     if consensus.consensus_padding is None:
         raise ValueError("Consensus padding is None, cannot determine core interval.")
+    
     core_start: int = (
         consensus.consensus_padding.consensus_interval_on_sequence_with_padding[0]
     )

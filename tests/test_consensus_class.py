@@ -7,11 +7,8 @@ import cattrs
 
 from svirlpool.localassembly import consensus_class
 from svirlpool.util.datatypes import Alignment
-from svirlpool.util.util import (
-    Direction,
-    get_interval_on_ref_in_region,
-    get_read_position_on_ref,
-)
+from svirlpool.util.util import (Direction, get_interval_on_ref_in_region,
+                                 get_read_position_on_ref)
 
 # %%
 
@@ -56,13 +53,9 @@ def load_alignments(path: Path) -> list[Alignment]:
 
 def generate_simulated_test_data():
     """Generate simulated test data and save as gzipped JSON files."""
-    from svirlpool.util.util import (
-        create_alignments_to_reference,
-        delete_interval,
-        generate_sequence,
-        insertion,
-        reverse_complement,
-    )
+    from svirlpool.util.util import (create_alignments_to_reference,
+                                     delete_interval, generate_sequence,
+                                     insertion, reverse_complement)
 
     ref = generate_sequence(1000, seed=1)
     test_cases = {}
@@ -431,22 +424,20 @@ def test_get_read_position_on_ref_simulated():
 
 
 # %%
-
-
 def test_get_consensus_core_alignment_interval_on_reference_inv():
     alignments_path = DATA_DIR / "consensus_class" / "INV.15.alignments.json.gz"
 
     alignments = [aln.to_pysam() for aln in load_alignments(alignments_path)]
 
-    alignments_15 = [aln for aln in alignments if aln.query_name == "15.0"]
+    alignments = [aln for aln in alignments if aln.query_name == "15.0"]
 
-    cons1 = load_test_data("INV.15.consensus.json.gz")
+    cons = load_test_data("INV.15.consensus.json.gz")
     # for each alignment, find the core interval on reference
     results = {
         i: consensus_class.get_consensus_core_alignment_interval_on_reference(
-            consensus=cons1, alignment=alignments_15[i]
+            consensus=cons, alignment=alignments[i]
         )
-        for i in range(len(alignments_15))
+        for i in range(len(alignments))
     }
 
     expected = {
@@ -457,3 +448,30 @@ def test_get_consensus_core_alignment_interval_on_reference_inv():
 
     for i, res in results.items():
         assert res == expected[i], f"Alignment {i}: got {res}, expected {expected[i]}"
+
+#%%
+
+def test_get_consensus_core_alignment_interval_on_reference_inv_with_hop():
+    alignments_path = DATA_DIR / "consensus_class" / "consensus_padding.forward_breakends.json.gz"
+    alignments = [aln.to_pysam() for aln in load_alignments(alignments_path)]
+    cons = load_test_data("INV.11.consensus.json.gz")
+    results = {
+        i: consensus_class.get_consensus_core_alignment_interval_on_reference(
+            consensus=cons, alignment=alignments[i]
+        )
+        for i in range(len(alignments))
+    }
+    print(results)
+    expected = {
+        0: ("6", 169094647, 169095161),
+        1: ("6", 169093632, 169094647),
+        2: ("6", 169093075, 169093632),
+    }
+    for i, res in results.items():
+        assert res == expected[i], f"Alignment {i}: got {res}, expected {expected[i]}"
+
+test_get_consensus_core_alignment_interval_on_reference_inv_with_hop()
+
+{0: ('3_82201219_82205219', 729, 729), # core with padding is incorrect :o
+ 1: ('3_82201219_82205219', 2323, 2396),
+ 2: ('3_82201219_82205219', 2787, 3087)}

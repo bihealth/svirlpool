@@ -75,7 +75,7 @@ def _svcomposite_log_id(svc: SVcomposite) -> str:
     sv_type = svc.sv_type.get_sv_type() if svc.sv_type else "UNKNOWN"
     crIDs = sorted(_crIDs_from_svcomposite(svc))
     consensusIDs = sorted({svp.samplenamed_consensusID for svp in svc.svPatterns})
-    return f"{sv_type}|size={svc.get_size()} crIDs={{{','.join(map(str, crIDs))}}}|regions={svc.get_regions()}|consensusIDs={consensusIDs}, svPattern representative: {svc.get_representative_SVpattern()._log_id}"
+    return f"{sv_type}|size={svc.get_size()} crIDs={{{','.join(map(str, crIDs))}}}|regions={svc.get_regions()}|consensusIDs={consensusIDs}, svPattern representative: {svc.get_representative_SVpattern()._log_id()}"
 
 
 def _svcomposite_short_id(svc: SVcomposite) -> str:
@@ -3228,7 +3228,8 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import \
+        load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(
