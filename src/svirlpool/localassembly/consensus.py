@@ -2716,6 +2716,14 @@ def process_consensus_container(
     alns, _alns_wt = get_read_alignments_for_crs(
         crs=list(crs_dict.values()), alignments=path_alignments
     )
+    if verbose:
+        # print the qname and reference intervals of the alignments in alns for each alignment
+        for crID, alnlist in alns.items():
+            print(f"CR {crID} has {len(alnlist)} alignments:")
+            for aln in alnlist:
+                print(
+                    f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: {aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0}"
+                )
     dict_all_intervals = get_read_alignment_intervals_in_cr(
         crs=list(crs_dict.values()),
         dict_alignments=alns,
