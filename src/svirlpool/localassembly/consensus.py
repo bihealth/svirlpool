@@ -286,7 +286,7 @@ def get_read_alignment_intervals_in_region(
     regions_end: int,
     alignments: list[pysam.AlignedSegment],
     buffer_clipped_length: int,
-) -> dict[str, tuple[int, int, str, int, int]]:
+) -> dict[str, list[tuple[int, int, str, int, int]]]:
     """Extract read alignment intervals within a specific region."""
     # check if all elements in alignments are of type pysam.AlignedSegment
     for aln in alignments:
@@ -363,7 +363,7 @@ def get_read_alignment_intervals_in_cr(
         for readname in intervals.keys():
             if readname not in dict_all_intervals:
                 dict_all_intervals[readname] = []
-            dict_all_intervals[readname].append(intervals[readname])
+            dict_all_intervals[readname].extend(intervals[readname])
     return dict_all_intervals
 
 
