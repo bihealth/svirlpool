@@ -369,21 +369,23 @@ def get_max_extents_of_read_alignments_on_cr(
     dict_max_extents = {}
     for readname in dict_all_intervals.keys():
         intervals = dict_all_intervals[readname]
-        min_start = min(
-            (start, ref_start, ref_chr)
+        min_read_start = min(start for (start, end, ref_chr, ref_start, ref_end) in intervals)
+        max_read_end = max(end for (start, end, ref_chr, ref_start, ref_end) in intervals)
+        min_ref = min(
+            (ref_start, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
         )
-        max_end = max(
-            (end, ref_end, ref_chr)
+        max_ref = max(
+            (ref_end, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
         )
         dict_max_extents[readname] = (
-            min_start[0],
-            max_end[0],
-            min_start[2],
-            min_start[1],
-            max_end[2],
-            max_end[1],
+            min_read_start,
+            max_read_end,
+            min_ref[1],
+            min_ref[0],
+            max_ref[1],
+            max_ref[0],
         )
     return dict_max_extents
 

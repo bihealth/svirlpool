@@ -265,9 +265,9 @@ def test_trim_reads_INVDEL() -> None:
     # test consensus.trim_reads
     # Test data: 2 kb reference, two reads (forward and reverse complement).
     # Each read has 3 alignments:
-    #   - primary at ref 100-501 (left anchor)
-    #   - supplementary at ref 849-955 (inverted segment)
-    #   - supplementary at ref 1500-1900 (right anchor)
+    #   - ref 100-501 (left anchor)
+    #   - ref 849-955 (inverted segment)
+    #   - ref 1500-1900 (right anchor)
     # Expected: both reads are trimmed to full length (1500 bp, start=0, end=1500)
     # since the outermost reference extent spans ref 100-1900.
     bam_path = DATA_DIR / "test_trimming_alignments.bam"
@@ -303,6 +303,14 @@ def test_trim_reads_INVDEL() -> None:
     forward_read_name = "trimming_reads518f25de"
     reverse_read_name = "trimming_reads6f83015b"
 
-    # {'trimming_reads518f25de': SeqRecord(seq=Seq('GATTAGGGATCTGATCTGTGTGTGCGACGAGCAAGGGGGCTCCTTTATTTATAG...TAT'), id='trimming_reads518f25de', name='trimming_reads518f25de', description='crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900', dbxrefs=[]),
-    #  'trimming_reads6f83015b': SeqRecord(seq=Seq('ATAACTAACACTATTATTGATCTTCGTGCACAAGGTGGTATACGTAGTGTGTCG...ATC'), id='trimming_reads6f83015b', name='trimming_reads6f83015b', description='crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=501,ref_end_chr=trimming_ref0,ref_end=1500', dbxrefs=[])}
-    # TODO: continue!
+    expected_description_a = 'crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900'
+    expected_description_b = 'crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900'
+
+    assert result[forward_read_name].description == expected_description_a, (
+        f"Expected description for forward read: {expected_description_a}, got: {result[forward_read_name].description}"
+    )
+    assert result[reverse_read_name].description == expected_description_b, (
+        f"Expected description for reverse read: {expected_description_b}, got: {result[reverse_read_name].description}"
+    )
+
+# %%
