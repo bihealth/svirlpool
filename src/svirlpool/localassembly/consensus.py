@@ -320,16 +320,17 @@ def get_read_alignment_intervals_in_region(
     return dict_intervals
 
 
+# crs are connected candidate regions!
 def get_read_alignment_intervals_in_cr(
     crs: list[datatypes.CandidateRegion],
     buffer_clipped_length: int,
     dict_alignments: dict[int, list[pysam.AlignedSegment]],
-) -> dict[str, tuple[int, int, str, int, int]]:
+) -> dict[str, list[tuple[int, int, str, int, int]]]:
     """
     Extract read alignment intervals in candidate regions.
 
     dict_alignments is a dict of the form {crID:[pysam.AlignedSegment]}.
-    Returns a dict of the form {readname:(read_start,read_end,ref_chr,ref_start,ref_end)}
+    Returns a dict of the form {readname:[(read_start,read_end,ref_chr,ref_start,ref_end)]}.
     """
     # check form of dict_alignments. i.e. are all keys an integer?
     # are all values of dict_alignments a list of pysam.AlignedSegment?
@@ -343,7 +344,7 @@ def get_read_alignment_intervals_in_cr(
             assert isinstance(aln, pysam.AlignedSegment), (
                 f"aln {aln} is not a pysam.AlignedSegment"
             )
-    dict_all_intervals: dict[str, tuple[int, int, str, int, int]] = {}
+    dict_all_intervals: dict[str, list[tuple[int, int, str, int, int]]] = {}
     cr_extents = {cr.crID: (cr.referenceStart, cr.referenceEnd) for cr in crs}
     # get the maximum insertion size of all original alignments in the candidate regions
     max_insertion_size = max(
@@ -351,24 +352,27 @@ def get_read_alignment_intervals_in_cr(
     )
     used_buffer_clipped_length = max(buffer_clipped_length, max_insertion_size)
     for crID in dict_alignments.keys():
-        dict_all_intervals.update(
-            get_read_alignment_intervals_in_region(
-                alignments=dict_alignments[crID],
-                buffer_clipped_length=used_buffer_clipped_length,
-                region_start=cr_extents[crID][0],
-                regions_end=cr_extents[crID][1],
+        # error: update is not correct. it should be appending.
+        intervals = get_read_alignment_intervals_in_region(
+            alignments=dict_alignments[crID],
+            buffer_clipped_length=used_buffer_clipped_length,
+            region_start=cr_extents[crID][0],
+            regions_end=cr_extents[crID][1],
             )
-        )
+        # to each readname (key) append the according interval
+        for readname in intervals.keys():
+            if readname not in dict_all_intervals:
+                dict_all_intervals[readname] = []
+            dict_all_intervals[readname].append(intervals[readname])
     return dict_all_intervals
 
 
 def get_max_extents_of_read_alignments_on_cr(
-    dict_all_intervals: dict[str, tuple[int, int, str, int, int]],
+    dict_all_intervals: dict[str, list[tuple[int, int, str, int, int]]],
 ) -> dict[str, tuple[int, int, str, int, str, int]]:
     """Returns a dict of the form {readname:(read_start,read_end,ref_start,ref_end)}"""
     dict_max_extents = {}
-    for readname in dict_all_intervals.keys():
-        intervals = dict_all_intervals[readname]
+    for readname, intervals in dict_all_intervals.items():
         min_read_start = min(start for (start, end, ref_chr, ref_start, ref_end) in intervals)
         max_read_end = max(end for (start, end, ref_chr, ref_start, ref_end) in intervals)
         min_ref = min(
@@ -2731,6 +2735,7 @@ def process_consensus_container(
     )
     if verbose:
         print(f"dict_all_intervals: {dict_all_intervals}")
+    # TODO: continue!
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
