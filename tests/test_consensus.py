@@ -11,11 +11,16 @@ from Bio.SeqRecord import SeqRecord
 from svirlpool.localassembly import consensus, consensus_class
 from svirlpool.localassembly.consensus import (
     get_max_extents_of_read_alignments_on_cr,
-    get_read_alignment_intervals_in_region)
+    get_read_alignment_intervals_in_region,
+)
 from svirlpool.util.datatypes import Alignment
-from svirlpool.util.util import (align_reads_with_minimap, dict_to_seqrecord,
-                                 generate_sequence, reverse_complement,
-                                 write_sequences_to_fasta)
+from svirlpool.util.util import (
+    align_reads_with_minimap,
+    dict_to_seqrecord,
+    generate_sequence,
+    reverse_complement,
+    write_sequences_to_fasta,
+)
 
 # %%
 DATA_DIR = Path(__file__).parent / "data" / "consensus"
@@ -286,7 +291,9 @@ def test_trim_reads_INVDEL() -> None:
     with gzip_open(str(json_path), "rt") as f:
         _data = json.load(f)
     _loaded: list[Alignment] = cattrs.structure(_data["alignments"], list[Alignment])
-    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {0: [aln.to_pysam() for aln in _loaded]}
+    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {
+        0: [aln.to_pysam() for aln in _loaded]
+    }
 
     # Load full read sequences from FASTA (original orientation)
     read_records: dict[str, SeqRecord] = {
