@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import subprocess
 import tempfile
+import uuid
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from enum import Enum
@@ -859,9 +860,7 @@ def write_sequences_to_fasta(
     if chrnames:
         seqnames = [prefix + str(i) + suffix for i in range(len(seqs))]
     else:
-        seqnames = [
-            prefix + str(hash("".join(["".join(s) for s in seqs])))[:5] + suffix
-        ] * len(seqs)
+        seqnames = [prefix + uuid.uuid4().hex[:8] + suffix for _ in seqs]
     records = [
         SeqRecord(
             Seq("".join(seqs[i])),
@@ -2248,4 +2247,25 @@ def logistic_weight(distance, scale=100.0, falloff=1.0):
     return 1.0 / (1.0 + np.exp(falloff * (distance - scale)))
 
 
-# we need a function to cut a pysam alignment to a shorter interval
+def seqRecord_to_json(
+    record: SeqRecord,
+) -> dict:
+    return {
+        "name": record.name,
+        "id": record.id,
+        "seq": str(record.seq),
+        "description": record.description,
+        "annotations": record.annotations,
+    }
+
+
+def json_to_seqRecord(
+    data: dict,
+) -> SeqRecord:
+    return SeqRecord(
+        id=data["id"],
+        name=data["name"],
+        seq=Seq(data["seq"]),
+        description=data["description"],
+        annotations=data["annotations"],
+    )

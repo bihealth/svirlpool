@@ -33,10 +33,11 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
 from scipy.sparse import csr_matrix
-from sklearn.cluster import SpectralClustering
+from sklearn.cluster import KMeans, SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
+from ..util.signal_loss_logger import get_signal_loss_logger
 from . import consensus_class
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -190,11 +191,13 @@ def get_full_read_sequences_of_alignments(
                         if aln.is_reverse
                         else Seq(aln.query_sequence)
                     )
-                    qualities = (
-                        {"phred_quality": aln.query_qualities}
-                        if aln.query_qualities
-                        else None
-                    )
+                    qualities = {"phred_quality": None}
+                    if aln.query_qualities:
+                        qualities = (
+                            {"phred_quality": aln.query_qualities[::-1]}
+                            if aln.is_reverse
+                            else {"phred_quality": aln.query_qualities}
+                        )
                     dict_read_sequences[aln.query_name] = SeqRecord(
                         seq=seq,
                         letter_annotations=qualities,
@@ -280,7 +283,7 @@ def get_read_alignment_intervals_in_region(
     regions_end: int,
     alignments: list[pysam.AlignedSegment],
     buffer_clipped_length: int,
-) -> dict[str, tuple[int, int, str, int, int]]:
+) -> dict[str, list[tuple[int, int, str, int, int]]]:
     """Extract read alignment intervals within a specific region."""
     # check if all elements in alignments are of type pysam.AlignedSegment
     for aln in alignments:
@@ -314,16 +317,17 @@ def get_read_alignment_intervals_in_region(
     return dict_intervals
 
 
+# crs are connected candidate regions!
 def get_read_alignment_intervals_in_cr(
     crs: list[datatypes.CandidateRegion],
     buffer_clipped_length: int,
     dict_alignments: dict[int, list[pysam.AlignedSegment]],
-) -> dict[str, tuple[int, int, str, int, int]]:
+) -> dict[str, list[tuple[int, int, str, int, int]]]:
     """
     Extract read alignment intervals in candidate regions.
 
     dict_alignments is a dict of the form {crID:[pysam.AlignedSegment]}.
-    Returns a dict of the form {readname:(read_start,read_end,ref_chr,ref_start,ref_end)}
+    Returns a dict of the form {readname:[(read_start,read_end,ref_chr,ref_start,ref_end)]}.
     """
     # check form of dict_alignments. i.e. are all keys an integer?
     # are all values of dict_alignments a list of pysam.AlignedSegment?
@@ -337,7 +341,7 @@ def get_read_alignment_intervals_in_cr(
             assert isinstance(aln, pysam.AlignedSegment), (
                 f"aln {aln} is not a pysam.AlignedSegment"
             )
-    dict_all_intervals: dict[str, tuple[int, int, str, int, int]] = {}
+    dict_all_intervals: dict[str, list[tuple[int, int, str, int, int]]] = {}
     cr_extents = {cr.crID: (cr.referenceStart, cr.referenceEnd) for cr in crs}
     # get the maximum insertion size of all original alignments in the candidate regions
     max_insertion_size = max(
@@ -345,39 +349,48 @@ def get_read_alignment_intervals_in_cr(
     )
     used_buffer_clipped_length = max(buffer_clipped_length, max_insertion_size)
     for crID in dict_alignments.keys():
-        dict_all_intervals.update(
-            get_read_alignment_intervals_in_region(
-                alignments=dict_alignments[crID],
-                buffer_clipped_length=used_buffer_clipped_length,
-                region_start=cr_extents[crID][0],
-                regions_end=cr_extents[crID][1],
-            )
+        # error: update is not correct. it should be appending.
+        intervals = get_read_alignment_intervals_in_region(
+            alignments=dict_alignments[crID],
+            buffer_clipped_length=used_buffer_clipped_length,
+            region_start=cr_extents[crID][0],
+            regions_end=cr_extents[crID][1],
         )
+        # to each readname (key) append the according interval
+        for readname in intervals.keys():
+            if readname not in dict_all_intervals:
+                dict_all_intervals[readname] = []
+            dict_all_intervals[readname].extend(intervals[readname])
     return dict_all_intervals
 
 
 def get_max_extents_of_read_alignments_on_cr(
-    dict_all_intervals: dict[str, tuple[int, int, str, int, int]],
+    dict_all_intervals: dict[str, list[tuple[int, int, str, int, int]]],
 ) -> dict[str, tuple[int, int, str, int, str, int]]:
     """Returns a dict of the form {readname:(read_start,read_end,ref_start,ref_end)}"""
     dict_max_extents = {}
-    for readname in dict_all_intervals.keys():
-        intervals = dict_all_intervals[readname]
-        min_start = min(
-            (start, ref_start, ref_chr)
+    for readname, intervals in dict_all_intervals.items():
+        min_read_start = min(
+            start for (start, end, ref_chr, ref_start, ref_end) in intervals
+        )
+        max_read_end = max(
+            end for (start, end, ref_chr, ref_start, ref_end) in intervals
+        )
+        min_ref = min(
+            (ref_start, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
         )
-        max_end = max(
-            (end, ref_end, ref_chr)
+        max_ref = max(
+            (ref_end, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
         )
         dict_max_extents[readname] = (
-            min_start[0],
-            max_end[0],
-            min_start[2],
-            min_start[1],
-            max_end[2],
-            max_end[1],
+            min_read_start,
+            max_read_end,
+            min_ref[1],
+            min_ref[0],
+            max_ref[1],
+            max_ref[0],
         )
     return dict_max_extents
 
@@ -1512,6 +1525,282 @@ def consensus_while_clustering(
     return result
 
 
+def consensus_while_clustering_with_kmeans(
+    samplename: str,
+    dict_summed_indels: dict[str, list[int]],
+    lamassemble_mat: Path | str,
+    pool: dict[str, SeqRecord],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    max_k: int,
+    variance_threshold: float,
+    distance_threshold: float,
+    threads: int = 1,
+    tmp_dir_path: Path | None = None,
+    timeout: int = 120,
+    verbose: bool = False,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Cluster reads by their summed indel distribution using KMeans and assemble consensus per cluster.
+
+    If there is a very clear separation in dict_summed_indels (2 dimensions: sum insertions,
+    sum deletions), the all-vs-all alignment step can be skipped and reads can be directly
+    assembled per cluster.
+
+    The variance within a cluster should be low (below variance_threshold), and the distance
+    between the cluster centroids should be high (above distance_threshold).
+
+    Returns None if no good clustering is found (caller should fall back to
+    consensus_while_clustering).
+    """
+    crIDs = [cr.crID for cr in candidate_regions.values()]
+
+    # Need at least 2 reads for meaningful clustering
+    if len(dict_summed_indels) < 2:
+        log.debug("Not enough reads for KMeans clustering. Returning None.")
+        return None
+
+    # Build the feature matrix: each read has [sum_insertions, sum_deletions]
+    readnames = sorted(dict_summed_indels.keys())
+    X = np.array([dict_summed_indels[rn] for rn in readnames], dtype=np.float64)
+
+    # 1) Try KMeans clustering with k = 1 .. max_k
+    #    Greedily pick the first k where intra-cluster variance is low
+    #    and inter-cluster distance is high.
+    chosen_k: int | None = None
+    chosen_labels: np.ndarray | None = None
+
+    for k in range(1, max_k + 1):
+        if k > len(readnames):
+            break
+
+        kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
+        labels = kmeans.fit_predict(X)
+        centroids = kmeans.cluster_centers_
+
+        # Compute max intra-cluster variance (Euclidean distance from points to centroid)
+        max_intra_variance = 0.0
+        for cluster_id in range(k):
+            mask = labels == cluster_id
+            if mask.sum() == 0:
+                continue
+            cluster_points = X[mask]
+            distances = np.linalg.norm(cluster_points - centroids[cluster_id], axis=1)
+            cluster_variance = np.mean(distances)
+            max_intra_variance = max(max_intra_variance, cluster_variance)
+
+        # Compute min inter-cluster distance between centroids
+        min_inter_distance = float("inf")
+        if k > 1:
+            for i in range(k):
+                for j in range(i + 1, k):
+                    d = np.linalg.norm(centroids[i] - centroids[j])
+                    min_inter_distance = min(min_inter_distance, d)
+        else:
+            min_inter_distance = 0.0
+
+        if verbose:
+            log.info(
+                f"KMeans k={k}: max_intra_variance={max_intra_variance:.2f}, "
+                f"min_inter_distance={min_inter_distance:.2f}"
+            )
+
+        # For k=1, accept if variance is low (homogeneous pool)
+        # Apply a stricter threshold (half) so that a single cluster is only
+        # accepted when the reads are truly homogeneous.
+        if k == 1:
+            if max_intra_variance <= variance_threshold / 2.0:
+                chosen_k = 1
+                chosen_labels = labels
+                break
+            # variance too high with k=1 -> try splitting
+            continue
+
+        # For k>1, require low variance AND high inter-cluster separation
+        if (
+            max_intra_variance <= variance_threshold
+            and min_inter_distance >= distance_threshold
+        ):
+            chosen_k = k
+            chosen_labels = labels
+            break
+
+    if chosen_k is None or chosen_labels is None:
+        log.debug(
+            f"No suitable KMeans clustering found for k=1..{max_k}. Returning None."
+        )
+        return None
+
+    if verbose:
+        log.info(f"Chosen KMeans clustering with k={chosen_k}")
+        for i, rn in enumerate(readnames):
+            log.info(
+                f"  {rn}: cluster={chosen_labels[i]}, "
+                f"ins={dict_summed_indels[rn][0]}, del={dict_summed_indels[rn][1]}"
+            )
+
+    # 2) Assemble consensus for each cluster
+    result: dict[str, consensus_class.Consensus] | None = None
+    failed_reads: list[str] = []
+
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=tmp_dir_path, delete=False if tmp_dir_path else True
+        ) as tmp_dir:
+            for cluster_id in range(chosen_k):
+                chosen_reads = [
+                    rn
+                    for rn, label in zip(readnames, chosen_labels, strict=True)
+                    if label == cluster_id
+                ]
+                if len(chosen_reads) == 0:
+                    continue
+
+                # Filter to reads that are actually in the pool
+                chosen_reads = [rn for rn in chosen_reads if rn in pool]
+                if len(chosen_reads) == 0:
+                    continue
+
+                consensus_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix=f"consensus.kmeans.{cluster_id}.",
+                    suffix=".fasta",
+                    delete=False if tmp_dir_path else True,
+                )
+                reads_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix=f"reads.kmeans.{cluster_id}.",
+                    suffix=".fastq",
+                    delete=False if tmp_dir_path else True,
+                )
+                with open(reads_fasta.name, "w") as f:
+                    SeqIO.write(
+                        [pool[readname] for readname in chosen_reads], f, "fastq"
+                    )
+                consensus_name = f"{min(crIDs)}.{cluster_id}"
+
+                consensus_sequence: str | None = assemble_consensus(
+                    lamassemble_mat=lamassemble_mat,
+                    name=consensus_name,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    threads=threads,
+                    timeout=timeout,
+                    verbose=verbose,
+                )
+
+                if consensus_sequence is None:
+                    log.warning(
+                        f"consensus assembly failed for KMeans cluster {cluster_id} "
+                        f"with {len(chosen_reads)} reads. Skipping this cluster."
+                    )
+                    failed_reads.extend(chosen_reads)
+                    continue
+
+                if result is None:
+                    result = {}
+                consensus = final_consensus(
+                    samplename=samplename,
+                    min_indel_size=8,
+                    min_bnd_size=100,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    consensus_sequence=consensus_sequence,
+                    ID=consensus_name,
+                    crIDs=crIDs,
+                    original_regions=[
+                        (cr.chr, cr.referenceStart, cr.referenceEnd)
+                        for cr in candidate_regions.values()
+                    ],
+                    threads=threads,
+                    verbose=verbose,
+                    tmp_dir_path=Path(tmp_dir),
+                )
+                if consensus is not None:
+                    result[consensus_name] = consensus
+                else:
+                    log.warning(
+                        f"final consensus generation failed for KMeans cluster {cluster_id} "
+                        f"with {len(chosen_reads)} reads. Skipping this cluster."
+                    )
+                    failed_reads.extend(chosen_reads)
+                    continue
+
+            # Try to rescue failed reads by assembling them into one consensus
+            if len(failed_reads) > 0 and (result is None or len(result) == 0):
+                log.info(
+                    f"Trying to rescue {len(failed_reads)} failed reads from KMeans "
+                    f"clustering by creating one consensus from them."
+                )
+                consensus_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix="consensus.kmeans.rescue.",
+                    suffix=".fasta",
+                    delete=False if tmp_dir_path else True,
+                )
+                reads_fasta = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix="reads.kmeans.rescue.",
+                    suffix=".fastq",
+                    delete=False if tmp_dir_path else True,
+                )
+                rescue_reads = [rn for rn in failed_reads if rn in pool]
+                with open(reads_fasta.name, "w") as f:
+                    SeqIO.write(
+                        [pool[readname] for readname in rescue_reads], f, "fastq"
+                    )
+                consensus_name = f"{min(crIDs)}.rescue"
+
+                consensus_sequence = assemble_consensus(
+                    lamassemble_mat=lamassemble_mat,
+                    name=consensus_name,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    threads=threads,
+                    timeout=timeout,
+                    verbose=verbose,
+                )
+
+                if consensus_sequence is not None:
+                    if result is None:
+                        result = {}
+                    consensus = final_consensus(
+                        samplename=samplename,
+                        min_indel_size=8,
+                        min_bnd_size=100,
+                        reads_fasta=Path(reads_fasta.name),
+                        consensus_fasta_path=Path(consensus_fasta.name),
+                        consensus_sequence=consensus_sequence,
+                        ID=consensus_name,
+                        crIDs=crIDs,
+                        original_regions=[
+                            (cr.chr, cr.referenceStart, cr.referenceEnd)
+                            for cr in candidate_regions.values()
+                        ],
+                        threads=threads,
+                        verbose=verbose,
+                        tmp_dir_path=Path(tmp_dir),
+                    )
+                    if consensus is not None:
+                        result[consensus_name] = consensus
+                    else:
+                        log.warning(
+                            f"final consensus generation failed for rescue reads "
+                            f"with {len(rescue_reads)} reads. Returning None."
+                        )
+                else:
+                    log.warning(
+                        f"consensus assembly failed for rescue reads "
+                        f"with {len(rescue_reads)} reads. Returning None."
+                    )
+
+    except Exception as e:
+        log.warning(
+            f"consensus_while_clustering_with_kmeans failed with exception: {e}. Returning None."
+        )
+        return None
+
+    return result
+
+
 def add_unaligned_reads_to_consensuses_inplace(
     samplename: str,
     consensus_objects: dict[str, consensus_class.Consensus],
@@ -1934,6 +2223,7 @@ def filter_excessive_QC_ras_inplace(
     read_sequences: dict[str, SeqRecord],
     reference_sequence: str,
 ) -> None:
+    _loss_logger = get_signal_loss_logger()
     for ras in rass:
         filtered_signals = []
         for sv_signal in ras.SV_signals:
@@ -1946,8 +2236,28 @@ def filter_excessive_QC_ras_inplace(
             else:
                 filtered_signals.append(sv_signal)
                 continue
-            if 0.1 < SeqUtils.gc_fraction(Seq(dna_string)) <= 0.9:
+            gc_frac = SeqUtils.gc_fraction(Seq(dna_string))
+            if 0.1 < gc_frac <= 0.9:
                 filtered_signals.append(sv_signal)
+            else:
+                _loss_logger.log_filtered(
+                    stage="filter_excessive_QC_ras_inplace",
+                    reason="extreme_GC_fraction",
+                    details={
+                        "read_name": ras.read_name,
+                        "sv_type": sv_signal.sv_type,
+                        "size": sv_signal.size,
+                        "ref_start": sv_signal.ref_start,
+                        "ref_end": sv_signal.ref_end,
+                        "gc_fraction": round(gc_frac, 4),
+                    },
+                )
+        _n_removed = len(ras.SV_signals) - len(filtered_signals)
+        if _n_removed > 0:
+            log.info(
+                f"filter_excessive_QC_ras_inplace: read {ras.read_name}: "
+                f"filtered {_n_removed}/{len(ras.SV_signals)} signals with extreme GC content"
+            )
         ras.SV_signals = filtered_signals
 
 
@@ -2167,7 +2477,7 @@ def _create_padding_object(
         right_padding = right_padding.reverse_complement()
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
-        left_padding + cons.consensus_sequence + right_padding
+        left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
     )
 
     new_padding = consensus_class.ConsensusPadding(
@@ -2237,7 +2547,15 @@ def load_crs_containers_from_db(
 
 def summed_indel_distribution(
     alns: dict[int, list[pysam.AlignedSegment]],
+    crs: dict[int, datatypes.CandidateRegion],
 ) -> dict[str, list[int]]:
+    # Build an IntervalTree from the candidate regions so we can quickly check
+    # whether a signal falls within any provided region.
+    cr_tree = IntervalTree()
+    for cr in crs.values():
+        if cr.referenceStart < cr.referenceEnd:
+            cr_tree.addi(cr.referenceStart, cr.referenceEnd)
+
     rafs: list[datatypes.ReadAlignmentFragment] = []
     for _crID, alnlist in alns.items():
         for aln in alnlist:
@@ -2257,9 +2575,24 @@ def summed_indel_distribution(
         for aln in [aln for alnlist in alns.values() for aln in alnlist]
     }
     # now add all summed insertions, if they exist
+    # only keep signals whose reference position overlaps a candidate region interval
     for raf in rafs:
-        insertions = [signal.size for signal in raf.SV_signals if signal.sv_type == 0]
-        deletions = [signal.size for signal in raf.SV_signals if signal.sv_type == 1]
+        insertions = [
+            signal.size
+            for signal in raf.SV_signals
+            if signal.sv_type == 0
+            and cr_tree.overlaps(
+                signal.ref_start, max(signal.ref_start + 1, signal.ref_end)
+            )
+        ]
+        deletions = [
+            signal.size
+            for signal in raf.SV_signals
+            if signal.sv_type == 1
+            and cr_tree.overlaps(
+                signal.ref_start, max(signal.ref_start + 1, signal.ref_end)
+            )
+        ]
         if len(insertions) > 0:
             read_sum_signals[raf.read_name][0] += sum(insertions)
         if len(deletions) > 0:
@@ -2372,9 +2705,17 @@ def process_consensus_container(
                         dict_unused_reads[crID].append(read_sequence_object)
         return {}, dict_unused_reads
 
-    alns, alns_wt = get_read_alignments_for_crs(
+    alns, _alns_wt = get_read_alignments_for_crs(
         crs=list(crs_dict.values()), alignments=path_alignments
     )
+    if verbose:
+        # print the qname and reference intervals of the alignments in alns for each alignment
+        for crID, alnlist in alns.items():
+            print(f"CR {crID} has {len(alnlist)} alignments:")
+            for aln in alnlist:
+                print(
+                    f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: {aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0}"
+                )
     dict_all_intervals = get_read_alignment_intervals_in_cr(
         crs=list(crs_dict.values()),
         dict_alignments=alns,
@@ -2382,6 +2723,7 @@ def process_consensus_container(
     )
     if verbose:
         print(f"dict_all_intervals: {dict_all_intervals}")
+    # TODO: continue!
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
@@ -2398,27 +2740,42 @@ def process_consensus_container(
     # print the distribution of ins-dels of all alignments
     # parse all alignments to sv signals
 
-    # dict_summed_indels is of form readname:[sum_inss:int,sum_dels:int]
+    dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
+        alns=alns, crs=crs_dict
+    )
     if verbose:
-        dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(alns=alns)
         print_indel_distribution(dict_summed_indels)
 
     # =========================================== CONSENSUS BUILDING =========================================== #
 
-    consensus_objects: dict[str, consensus_class.Consensus] = {}
-
     res: dict[str, consensus_class.Consensus] | None = None
-    res = consensus_while_clustering(
+    consensus_objects: dict[str, consensus_class.Consensus] = {}
+    res = consensus_while_clustering_with_kmeans(
         samplename=samplename,
+        dict_summed_indels=dict_summed_indels,
         lamassemble_mat=lamassemble_mat,
         pool=cutreads,
         candidate_regions=crs_dict,
-        partitions=max_copy_number,
-        timeout=timeout,
+        max_k=max_copy_number,
+        variance_threshold=29.0,
+        distance_threshold=29.0,
         threads=threads,
         tmp_dir_path=tmp_dir_path,
+        timeout=timeout,
         verbose=verbose,
     )
+    if not res:
+        res = consensus_while_clustering(
+            samplename=samplename,
+            lamassemble_mat=lamassemble_mat,
+            pool=cutreads,
+            candidate_regions=crs_dict,
+            partitions=max_copy_number,
+            timeout=timeout,
+            threads=threads,
+            tmp_dir_path=tmp_dir_path,
+            verbose=verbose,
+        )
     if res is not None:
         consensus_objects.update(res)
 
@@ -2789,21 +3146,34 @@ def main():
     # Convert string log level to logging constant
     log_level = getattr(logging, args.log_level.upper())
 
+    # Configure logging formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    # Get the root logger to ensure all loggers in the hierarchy are configured
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # Remove any existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # Add console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # Add file handler if logfile is specified
     if args.logfile:
-        # Configure logging to file
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[logging.FileHandler(str(args.logfile)), logging.StreamHandler()],
-        )
-    else:
-        # Configure logging to console only
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[logging.StreamHandler()],
-        )
+        file_handler = logging.FileHandler(str(args.logfile), mode="w")
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+    log.info(f"Starting consensus generation with log level {args.log_level}")
     run_consensus_script(args)
+    log.info("Consensus generation completed")
     return
 
 

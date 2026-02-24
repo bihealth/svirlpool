@@ -431,22 +431,20 @@ def test_get_read_position_on_ref_simulated():
 
 
 # %%
-
-
 def test_get_consensus_core_alignment_interval_on_reference_inv():
     alignments_path = DATA_DIR / "consensus_class" / "INV.15.alignments.json.gz"
 
     alignments = [aln.to_pysam() for aln in load_alignments(alignments_path)]
 
-    alignments_15 = [aln for aln in alignments if aln.query_name == "15.0"]
+    alignments = [aln for aln in alignments if aln.query_name == "15.0"]
 
-    cons1 = load_test_data("INV.15.consensus.json.gz")
+    cons = load_test_data("INV.15.consensus.json.gz")
     # for each alignment, find the core interval on reference
     results = {
         i: consensus_class.get_consensus_core_alignment_interval_on_reference(
-            consensus=cons1, alignment=alignments_15[i]
+            consensus=cons, alignment=alignments[i]
         )
-        for i in range(len(alignments_15))
+        for i in range(len(alignments))
     }
 
     expected = {
@@ -457,3 +455,28 @@ def test_get_consensus_core_alignment_interval_on_reference_inv():
 
     for i, res in results.items():
         assert res == expected[i], f"Alignment {i}: got {res}, expected {expected[i]}"
+
+
+# %%
+
+
+def test_get_consensus_core_alignment_interval_on_reference_inv_with_hop():
+    alignments_path = DATA_DIR / "consensus_class" / "INV.11.alignments.json.gz"
+    alignments = [aln.to_pysam() for aln in load_alignments(alignments_path)]
+    cons = load_test_data("INV.11.consensus.json.gz")
+    results = {
+        i: consensus_class.get_consensus_core_alignment_interval_on_reference(
+            consensus=cons, alignment=alignments[i]
+        )
+        for i in range(len(alignments))
+    }
+    expected = {
+        0: ("3_82201219_82205219", 429, 729),
+        1: ("3_82201219_82205219", 2323, 2396),
+        2: ("3_82201219_82205219", 2787, 3087),
+    }
+    for i, res in results.items():
+        assert res == expected[i], f"Alignment {i}: got {res}, expected {expected[i]}"
+
+
+# %%
