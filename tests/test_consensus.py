@@ -11,15 +11,11 @@ from Bio.SeqRecord import SeqRecord
 from svirlpool.localassembly import consensus, consensus_class
 from svirlpool.localassembly.consensus import (
     get_max_extents_of_read_alignments_on_cr,
-    get_read_alignment_intervals_in_region,
-)
-from svirlpool.util.util import (
-    align_reads_with_minimap,
-    dict_to_seqrecord,
-    generate_sequence,
-    reverse_complement,
-    write_sequences_to_fasta,
-)
+    get_read_alignment_intervals_in_region)
+from svirlpool.util.datatypes import Alignment
+from svirlpool.util.util import (align_reads_with_minimap, dict_to_seqrecord,
+                                 generate_sequence, reverse_complement,
+                                 write_sequences_to_fasta)
 
 # %%
 DATA_DIR = Path(__file__).parent / "data" / "consensus"
@@ -60,6 +56,25 @@ def generate_test_data_for_read_trimming_tests() -> None:
         bamout=DATA_DIR / "test_trimming_alignments.bam",
         aln_args=" -z100,100 -r100,100",
     )
+
+
+def generate_test_trimming_alignments_json() -> None:
+    """Convert test_trimming_alignments.bam to a serialisable JSON.gz file.
+
+    Reads every alignment from the BAM, wraps it in a datatypes.Alignment
+    object (which is serialisable via cattrs), and writes the result to
+    ``DATA_DIR / "test_trimming_alignments.json.gz"``.
+    Call this once after regenerating the BAM with
+    ``generate_test_data_for_read_trimming_tests``.
+    """
+    bam_path = DATA_DIR / "test_trimming_alignments.bam"
+    json_path = DATA_DIR / "test_trimming_alignments.json.gz"
+    alignments: list[Alignment] = []
+    with pysam.AlignmentFile(str(bam_path), "rb") as f:
+        for aln in f.fetch(until_eof=True):
+            alignments.append(Alignment.from_pysam(aln))
+    with gzip_open(str(json_path), "wt") as f:
+        json.dump({"alignments": [aln.unstructure() for aln in alignments]}, f)
 
 
 # insterted into create_padding_for_consensus
@@ -263,14 +278,15 @@ def test_trim_reads_INVDEL() -> None:
     #   - ref 1500-1900 (right anchor)
     # Expected: both reads are trimmed to full length (1500 bp, start=0, end=1500)
     # since the outermost reference extent spans ref 100-1900.
-    bam_path = DATA_DIR / "test_trimming_alignments.bam"
+    json_path = DATA_DIR / "test_trimming_alignments.json.gz"
     reads_path = DATA_DIR / "test_trimming_reads.fasta"
 
-    # Load all alignments keyed by crID=0
-    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {0: []}
-    with pysam.AlignmentFile(str(bam_path), "rb") as f:
-        for aln in f.fetch(until_eof=True):
-            dict_alignments[0].append(aln)
+    # Load all alignments keyed by crID=0 from the serialised JSON.gz file
+    # (avoids pysam BAM parsing issues in automated testing)
+    with gzip_open(str(json_path), "rt") as f:
+        _data = json.load(f)
+    _loaded: list[Alignment] = cattrs.structure(_data["alignments"], list[Alignment])
+    dict_alignments: dict[int, list[pysam.AlignedSegment]] = {0: [aln.to_pysam() for aln in _loaded]}
 
     # Load full read sequences from FASTA (original orientation)
     read_records: dict[str, SeqRecord] = {
