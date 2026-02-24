@@ -1,4 +1,4 @@
-#%%
+# %%
 import json
 from gzip import open as gzip_open
 from pathlib import Path
@@ -11,23 +11,29 @@ from Bio.SeqRecord import SeqRecord
 from svirlpool.localassembly import consensus, consensus_class
 from svirlpool.localassembly.consensus import (
     get_max_extents_of_read_alignments_on_cr,
-    get_read_alignment_intervals_in_region)
-from svirlpool.util.util import (align_reads_with_minimap, dict_to_seqrecord,
-                                 generate_sequence, reverse_complement,
-                                 write_sequences_to_fasta)
+    get_read_alignment_intervals_in_region,
+)
+from svirlpool.util.util import (
+    align_reads_with_minimap,
+    dict_to_seqrecord,
+    generate_sequence,
+    reverse_complement,
+    write_sequences_to_fasta,
+)
 
-#%%
+# %%
 DATA_DIR = Path(__file__).parent / "data" / "consensus"
 
+
 def generate_test_data_for_read_trimming_tests() -> None:
-    R:list[str] = generate_sequence(2000, seed=0) # 2 kb random DNA seq
+    R: list[str] = generate_sequence(2000, seed=0)  # 2 kb random DNA seq
     R0 = R[100:500]
     R1 = R[-500:-100]
     x = reverse_complement(R[850:950])
     r0 = generate_sequence(500, seed=1)
     r1 = generate_sequence(100, seed=2)
     # assemble the read sequence:
-    read0 = R0+r0+x+r1+R1
+    read0 = R0 + r0 + x + r1 + R1
     read1 = reverse_complement(read0)
     path_test_ref = DATA_DIR / "test_trimming_ref.fasta"
     path_test_reads = DATA_DIR / "test_trimming_reads.fasta"
@@ -40,22 +46,21 @@ def generate_test_data_for_read_trimming_tests() -> None:
     # additional break ends should be at 850 and 950 on the reference, and at 900 and 1000 on the forward read,
     # and at 600 and 700 on the reverse read.
     write_sequences_to_fasta(
-        seqs=[R],
-        chrnames=True,
-        path=path_test_ref,
-        prefix="trimming_ref")
+        seqs=[R], chrnames=True, path=path_test_ref, prefix="trimming_ref"
+    )
     write_sequences_to_fasta(
         seqs=[read0, read1],
         chrnames=False,
         path=path_test_reads,
-        prefix="trimming_reads"
+        prefix="trimming_reads",
     )
     align_reads_with_minimap(
         reference=str(path_test_ref),
         reads=str(path_test_reads),
         bamout=DATA_DIR / "test_trimming_alignments.bam",
-        aln_args=" -z100,100 -r100,100"
+        aln_args=" -z100,100 -r100,100",
     )
+
 
 # insterted into create_padding_for_consensus
 # This is how I saved the data, then gzipped it:
@@ -193,6 +198,7 @@ def test_create_padding_for_consensus() -> None:
         f"Expected consensus end {expected_2.consensus_interval_on_sequence_with_padding[1]}, got {result2.consensus_interval_on_sequence_with_padding[1]}"
     )
 
+
 def test_create_padding_for_consensus_forward_breakends() -> None:
     with gzip_open(DATA_DIR / "consensus_padding.forward_breakends.json.gz", "rt") as f:
         data = json.load(f)
@@ -210,30 +216,14 @@ def test_create_padding_for_consensus_forward_breakends() -> None:
             cutreads=cutreads,
             read_records=read_records,
         )
-        # write consensus_object.consensus_sequence to a file for debugging
-        path_debug_consensus = "/data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/development/HG/giab/test/testme/debug_11.fasta"
-        with open(path_debug_consensus, "w") as f:
-            f.write(f">{consensus_object.ID}\n{consensus_object.consensus_sequence}")
-        
-        # I expect core at 430-1120
-        #ConsensusPadding(sequence='AATGTTATTAGATTGCTTAAAGTAGCTATTATTTTAGAATATATTTAGAATACTGAACCAAATAACTTGTTGATAAACTACCTAGGAATAGACTTCTCATACTCATAAATCTTCACGATTTTATTTAATTTTTTGGAAAATAAAGCTAAGGAACATAGTTCATCTAGATTGGCTCATTGAGACTCAGATACTGGCAAAGCATAGATAACATCCTCTTTTCTCTAGTCCATTTCCCATAGGCCTATTTCTTAGCAATCATTGCTTTATGAGGCTTTTGTTTTGTAATTAGGTTGCATTTCCCTCGAGGCTAGAGCTTTGAATAAGAGGAAAAAAGAAAAAAGATATTACCTGGGAGGAAAATCCTATTGTACATGGACTAAGGTTAGCAACCTCAACATTCATCCTCTTTCATGCATTCTTCCTCTTTATTACTGTAAGAATGCTCTATAAGTGACAATGATTTTTTTAATAATATCTCACCTTCTGACTGAAATACCTTTGTTTCTGTTACACATTGAATTTTGTCCTTCCAAAAATATATGTCGAGGTGCTAATAAAACTCAGTGTCTCACAGTGTAACCATACCTGGAAATAGTCTTTACAGAGATAATGAAGTAAAAACGAGGTCATTAGGTTGGTTCCTAATCTGCTATGACTGGTGTTCTTACAGAAGGGGAAAGCTAGACCCAGGAAATAGACCTACACAACGCGTGTGTGAAAGACAATGTGGAGACACACGGAGAAAACTCCAATGTGAAGACAGAAGATTGGACTGATGTATTAAAAGCTAAGAAACACCTATGGCTAGCAGAAGACAGGGAAGTGGCATGGAATGGTTCTTTTCCCAGCACCTTCAGTGGGAGCATAGTCCTGACACACCTTGACCTTGGAAGTCTGGCCAGTAGAACTtagaactgcaagaccacacatttattttgttttaagtcaccctgtttgtggaactttgttaaggcagccctaagaaactctttaataatactgtttctcattacttctaaaatatatcttgtactctttaagatagatctcaggcctttcaggatcttggccccgcacaccttttcagctcctgcattactaacgtgttcctttacaccctgtcatgcaacaatagaagacacctttattcctcaaaatatcctgttttctctcacctatagccttctccattctcctccctgcaaagttagcattatccttttccctgacacaccgccatcccaaatcttcaaccgatgactcctaaccatcttttagacctgaacgtcaatattacttcatctttcagaaggactttcttgtttttctagtctcgcatgggaccctgctcttctgccttaaaagtcatttcaataatgtaatgtctatcttccttgcaagactgagcatttctttatgctttggctctagtacttattagatgccccacaaatatttatttaacaaataaacaactgaatggcagcatgtcatctgctcccttgcctgctctttcatctggacttgtactctgttataagtggtgtgtaactttgttagggctgctgcaaaacaacaacacagatttattctattacagttctggaggccaggggtctaacataaggctttggcagggcaatgctccctctcaaggctctagaggagaatgcctctttgcttcttttagcttctggtggctccttgcattcctTGTTTTATGGCAACATAACTTTAATCTCTGCCTCTGTCTTCATGCCTTTTTTCCTTGTATCTTTGTGTCTCAATTCTCCTTCTTCTTTTCTCTTATAAAGTTACCTGTTGTTGGACTTAGGGCCCACCCTAAATCTAGGGTGACCTCATTTTTAAATCCTTAATTTAATTATATCTGCAAAGACCTCTTTCCAAAGTAGGATCACATCTATAGGATCTAGGGATTAAGGCTTGAACATATTTTCAGAATCACTGTGTAACCTACTACAGAGTGAGGCTGATTAATTTGATAGATTTGTGGGACTACTGGTATAAACTAAGCTGCTTCGGGGTGAAGATGAAAAGTGTTGTGTGGAGTGAGAATTTTTTTTTCTACTGTTACATGGAATCCAGTAGTCATCTGGGGCTGGTGGCATTGCTGACATAAGGAGGTAATTGCCTTTGGTATGGACGTTGGTGTTCTTTCAGTGGCAGAAGCTGAAAACTCCTGATGTTCCTTTCAGCTGCTTCACAGGGAAGAGGACACGGGTGAACAAAAGTTTGAGTAGCGAGAAGACACCCGAGGAGACTGTAGCTGAGAGAGGTTTCTGTGGAGTTTCTGAAATGACAGGGTGACAGCTTGAATGAGGATATTGGTGAACTCAGATCCACTAGGGATGGAACAAATTTAAGGGTGAACCTAGTTTCATCCACAGCCTGGTAAGAACAGGTGACATTTAGGTTACAGCTATAATTCACATAAAAATGGAGCAATTCAATGTATTATATGAAATAAATATAAGGAATTTTCAATTAATCACATTAATGTGAGCAGGACAAGATGAATAGTTGAAGTTCACAGAATCTTCCACTTAATTTTAGCCTTAAATTCACCATTTTTTCCTCATTAACATTACTATAAAACAAAAAACGAGTGA',
-        # readname_left='21cada55-1cdc-4ce8-b105-20f67ec284c2',
-        # eadname_right='5e8d8c6c-69c8-460f-9bb1-34dd3c1a0132',
-        # padding_size_left=909,
-        # padding_size_right=916,
-        # consensus_interval_on_sequence_with_padding=(909, 1714))
 
-        # 3_82201219_82205219:2787-3087
-        
-    # TODO: continue
-    
     expected = consensus_class.ConsensusPadding(
         sequence="",
-        readname_left="3_82201219_82205219",
-        readname_right="3_82201219_82205219",
-        padding_size_left=729,
-        padding_size_right=36191,
-        consensus_interval_on_sequence_with_padding=(729, 41744),
+        readname_left="read_left",
+        readname_right="read_right",
+        padding_size_left=432,
+        padding_size_right=916,
+        consensus_interval_on_sequence_with_padding=(432, 1708),
     )
     assert abs(result.padding_size_left - expected.padding_size_left) < 5, (
         f"Expected left padding {expected.padding_size_left}, got {result.padding_size_left}"
@@ -259,7 +249,10 @@ def test_create_padding_for_consensus_forward_breakends() -> None:
     ), (
         f"Expected consensus end {expected.consensus_interval_on_sequence_with_padding[1]}, got {result.consensus_interval_on_sequence_with_padding[1]}"
     )
+
+
 # %%
+
 
 def test_trim_reads_INVDEL() -> None:
     # test consensus.trim_reads
@@ -303,8 +296,8 @@ def test_trim_reads_INVDEL() -> None:
     forward_read_name = "trimming_reads518f25de"
     reverse_read_name = "trimming_reads6f83015b"
 
-    expected_description_a = 'crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900'
-    expected_description_b = 'crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900'
+    expected_description_a = "crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900"
+    expected_description_b = "crID=0,start=0,end=1500,ref_start_chr=trimming_ref0,ref_start=100,ref_end_chr=trimming_ref0,ref_end=1900"
 
     assert result[forward_read_name].description == expected_description_a, (
         f"Expected description for forward read: {expected_description_a}, got: {result[forward_read_name].description}"
@@ -312,5 +305,6 @@ def test_trim_reads_INVDEL() -> None:
     assert result[reverse_read_name].description == expected_description_b, (
         f"Expected description for reverse read: {expected_description_b}, got: {result[reverse_read_name].description}"
     )
+
 
 # %%

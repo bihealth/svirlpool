@@ -358,7 +358,7 @@ def get_read_alignment_intervals_in_cr(
             buffer_clipped_length=used_buffer_clipped_length,
             region_start=cr_extents[crID][0],
             regions_end=cr_extents[crID][1],
-            )
+        )
         # to each readname (key) append the according interval
         for readname in intervals.keys():
             if readname not in dict_all_intervals:
@@ -373,8 +373,12 @@ def get_max_extents_of_read_alignments_on_cr(
     """Returns a dict of the form {readname:(read_start,read_end,ref_start,ref_end)}"""
     dict_max_extents = {}
     for readname, intervals in dict_all_intervals.items():
-        min_read_start = min(start for (start, end, ref_chr, ref_start, ref_end) in intervals)
-        max_read_end = max(end for (start, end, ref_chr, ref_start, ref_end) in intervals)
+        min_read_start = min(
+            start for (start, end, ref_chr, ref_start, ref_end) in intervals
+        )
+        max_read_end = max(
+            end for (start, end, ref_chr, ref_start, ref_end) in intervals
+        )
         min_ref = min(
             (ref_start, ref_chr)
             for (start, end, ref_chr, ref_start, ref_end) in intervals
@@ -2320,6 +2324,7 @@ def score_ras_from_alignments(
 #  consensus padding
 # =======================================================================================================================================================
 
+
 def parse_description(description: str) -> dict:
     result = {}
     for key_value in description.split(","):
@@ -2337,24 +2342,6 @@ def create_padding_for_consensus(
     read_records: dict[str, SeqRecord],
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
-
-    # DEBUG START
-    # if the consensusID is 11.0, then serialize the data to json and write to a file for debugging
-    if consensus_object.ID == "11.0":
-        debug_path = Path("/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus/consensus_padding.forward_breakends.json.gz")
-        # use consensus_object.unstructure() to serialize the consensus object to json
-        debug_data = {
-            "consensus_object": consensus_object.unstructure(),
-            "cutreads": {
-                name: util.seqRecord_to_json(cutread) for name, cutread in cutreads.items()},
-            "read_records": {
-                name: util.seqRecord_to_json(read_record) for name, read_record in read_records.items()},
-        }
-        import gzip
-        import json
-        with gzip.open(debug_path, "wt", encoding="utf-8") as f:
-            json.dump(debug_data, f, indent=4)
-    ## DEBUG END
 
     read_paddings_for_consensus = _get_all_read_padding_intervals(
         consensus_object=consensus_object, cutreads=cutreads, read_records=read_records
@@ -2598,12 +2585,18 @@ def summed_indel_distribution(
         insertions = [
             signal.size
             for signal in raf.SV_signals
-            if signal.sv_type == 0 and cr_tree.overlaps(signal.ref_start, max(signal.ref_start + 1, signal.ref_end))
+            if signal.sv_type == 0
+            and cr_tree.overlaps(
+                signal.ref_start, max(signal.ref_start + 1, signal.ref_end)
+            )
         ]
         deletions = [
             signal.size
             for signal in raf.SV_signals
-            if signal.sv_type == 1 and cr_tree.overlaps(signal.ref_start, max(signal.ref_start + 1, signal.ref_end))
+            if signal.sv_type == 1
+            and cr_tree.overlaps(
+                signal.ref_start, max(signal.ref_start + 1, signal.ref_end)
+            )
         ]
         if len(insertions) > 0:
             read_sum_signals[raf.read_name][0] += sum(insertions)
@@ -2752,7 +2745,9 @@ def process_consensus_container(
     # print the distribution of ins-dels of all alignments
     # parse all alignments to sv signals
 
-    dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(alns=alns, crs=crs_dict)
+    dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
+        alns=alns, crs=crs_dict
+    )
     if verbose:
         print_indel_distribution(dict_summed_indels)
 

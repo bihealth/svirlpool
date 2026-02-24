@@ -3228,8 +3228,7 @@ def load_copynumber_tracks_from_svirltiles(
     Returns:
         Dictionary mapping samplename -> chromosome -> IntervalTree with CN data
     """
-    from ..signalprocessing.copynumber_tracks import \
-        load_copynumber_trees_from_db
+    from ..signalprocessing.copynumber_tracks import load_copynumber_trees_from_db
 
     cn_tracks = {}
     for _i, (path, samplename) in enumerate(

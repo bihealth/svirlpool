@@ -884,7 +884,9 @@ def _process_alignment_file_for_core_intervals(
     worker_log.setLevel(worker_log_level)
 
     # core ref chr, core ref start, core ref end, core read start, core read end
-    core_intervals_on_reference: dict[str, list[tuple[int, str, int, int, int, int]]] = {}
+    core_intervals_on_reference: dict[
+        str, list[tuple[int, str, int, int, int, int]]
+    ] = {}
 
     worker_log.debug(f"Worker {file_idx}: Processing {padded_alignments_path}")
 
@@ -925,34 +927,6 @@ def _process_alignment_file_for_core_intervals(
             # Sort alignments by (qstart, qend) to ensure consistent ordering
             alignments_list.sort(key=lambda x: (x[0], x[1]))
 
-            # DEBUG START
-            # --- write alignment(s) using the same container format the test loader expects ---
-            if consensus_obj.ID == "11.0":
-                import gzip as _gzip
-                import json as _json
-
-                path_debug_save = Path(
-                    "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.11.alignments.json.gz"
-                )
-                # convert the pysam AlignedSegment -> datatypes.Alignment -> plain dict
-                alns_unstructured = [aln[2].unstructure() for aln in alignments_list]
-                # append to existing alignments if the file already exists
-                if path_debug_save.exists():
-                    with _gzip.open(path_debug_save, "rt") as f:
-                        existing = _json.load(f)
-                    alns_unstructured = existing["alignments"] + alns_unstructured
-                with _gzip.open(path_debug_save, "wt") as f:
-                    _json.dump({"alignments": alns_unstructured}, f, indent=2)
-
-                # write the consensus object exactly as the test loader expects
-                path_debug_save_consensus = Path(
-                    "/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_class/INV.11.consensus.json.gz"
-                )
-                with _gzip.open(path_debug_save_consensus, "wt") as f:
-                    _json.dump(consensus_obj.unstructure(), f, indent=2)
-            # DEBUG END
-
-
             # Process each alignment with its index
             for aln_idx, (_qstart, _qend, alignment) in enumerate(alignments_list):
                 # Convert to pysam for processing
@@ -975,7 +949,10 @@ def _process_alignment_file_for_core_intervals(
                     core_intervals_on_reference[consensusID] = []
 
                 # Store with alignment index for matching
-                if consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding is None:
+                if (
+                    consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding
+                    is None
+                ):
                     raise ValueError(
                         f"_process_alignment_file_for_core_intervals::process_batch: Consensus {consensusID} has no consensus_interval_on_sequence_with_padding."
                     )
@@ -984,8 +961,12 @@ def _process_alignment_file_for_core_intervals(
                     ref_name,
                     min(core_start_on_ref, core_end_on_ref),
                     max(core_start_on_ref, core_end_on_ref),
-                    consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding[0],
-                    consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding[1],
+                    consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding[
+                        0
+                    ],
+                    consensus_obj.consensus_padding.consensus_interval_on_sequence_with_padding[
+                        1
+                    ],
                 ))
 
     # Read serialized alignments from TSV file
@@ -1038,7 +1019,14 @@ def _process_alignment_file_for_core_intervals(
     )
     if worker_log.isEnabledFor(logging.DEBUG):
         for consensusID, intervals in core_intervals_on_reference.items():
-            for aln_idx, ref_name, core_start_on_ref, core_end_on_ref, core_read_start, core_read_end in intervals:
+            for (
+                aln_idx,
+                ref_name,
+                core_start_on_ref,
+                core_end_on_ref,
+                core_read_start,
+                core_read_end,
+            ) in intervals:
                 worker_log.debug(
                     f"Worker {file_idx}: consensusID {consensusID}, alignment_idx {aln_idx}: core interval on reference/ region={ref_name}:{core_start_on_ref}-{core_end_on_ref}, core interval on read={core_read_start}-{core_read_end}"
                 )
@@ -1113,12 +1101,18 @@ def generate_core_intervals_on_reference(
     if log.isEnabledFor(logging.DEBUG):
         for partition_idx, consensus_intervals in partitioned_core_intervals.items():
             for consensusID, intervals in consensus_intervals.items():
-                for aln_idx, ref_name, core_start_on_ref, core_end_on_ref, core_read_start, core_read_end in intervals:
+                for (
+                    aln_idx,
+                    ref_name,
+                    core_start_on_ref,
+                    core_end_on_ref,
+                    core_read_start,
+                    core_read_end,
+                ) in intervals:
                     log.debug(
                         f"TRANSFORMED::generate_core_intervals_on_reference: Partition {partition_idx}, consensusID {consensusID}, crID={consensusID.split('.')[0]}, alignment_idx {aln_idx}: core interval on reference/ region={ref_name}:{core_start_on_ref}-{core_end_on_ref}, core interval on read={core_read_start}-{core_read_end}"
                     )
-    
-    
+
     # to log every case of data loss, we can compare the consensusIDs for which we generated core intervals with the consensusIDs in the consensus_json_index_partitioned
     # and log any consensusID for which we generated core intervals but is not present in the consensus_json_index_partitioned
     # (which means we won't be able to find the consensus object for that consensusID later.
@@ -1241,7 +1235,9 @@ def _process_partition_for_trf_overlaps(
 
 
 def find_trf_overlaps_for_core_intervals(
-    core_intervals_on_reference: dict[int, dict[str, list[tuple[int, str, int, int, int, int]]]],
+    core_intervals_on_reference: dict[
+        int, dict[str, list[tuple[int, str, int, int, int, int]]]
+    ],
     input_trf: Path,
     reference: Path,
     threads: int,
@@ -1756,7 +1752,13 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                     consensusID, []
                 )
                 core_interval_by_idx = {
-                    aln_idx: (ref_name, core_start, core_end, core_read_start, core_read_end)
+                    aln_idx: (
+                        ref_name,
+                        core_start,
+                        core_end,
+                        core_read_start,
+                        core_read_end,
+                    )
                     for aln_idx, ref_name, core_start, core_end, core_read_start, core_read_end in core_intervals_with_idx
                 }
 
@@ -1771,7 +1773,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                             f"\ncore intervals on reference: {' '.join([f'region={ci[1]}:{ci[2]}-{ci[3]} (core interval={ci[4]}-{ci[5]})' for ci in core_intervals_with_idx])}"
                         )
                         continue
-                    
+
                     # Filter trf intervals to those overlapping with this alignment's reference
                     filtered_trf_overlaps = [
                         (trf[1], trf[2], trf[3])

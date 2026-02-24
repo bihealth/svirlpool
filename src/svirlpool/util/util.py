@@ -859,10 +859,7 @@ def write_sequences_to_fasta(
     if chrnames:
         seqnames = [prefix + str(i) + suffix for i in range(len(seqs))]
     else:
-        seqnames = [
-            prefix + uuid.uuid4().hex[:8] + suffix
-            for _ in seqs
-        ]
+        seqnames = [prefix + uuid.uuid4().hex[:8] + suffix for _ in seqs]
     records = [
         SeqRecord(
             Seq("".join(seqs[i])),
@@ -2258,6 +2255,7 @@ def seqRecord_to_json(
         "description": record.description,
         "annotations": record.annotations,
     }
+
 
 def json_to_seqRecord(
     data: dict,

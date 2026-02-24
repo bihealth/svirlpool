@@ -7,14 +7,15 @@ from pathlib import Path
 
 import pysam
 from Bio import SeqIO
-from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from intervaltree import Interval, IntervalTree
+from intervaltree import Interval
 
 from ..localassembly.consensus import (
     get_full_read_sequences_of_alignments,
     get_max_extents_of_read_alignments_on_cr,
-    get_read_alignment_intervals_in_region, trim_reads)
+    get_read_alignment_intervals_in_region,
+    trim_reads,
+)
 from ..util import util
 
 log = logging.getLogger(__name__)
