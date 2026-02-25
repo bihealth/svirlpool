@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2](https://github.com/bihealth/svirlpool/compare/v0.1.1...v0.1.2) (2026-02-25)
+
+
+### Bug Fixes
+
+* candidate regions clumping ([#57](https://github.com/bihealth/svirlpool/issues/57)) ([6aadd92](https://github.com/bihealth/svirlpool/commit/6aadd92e84863f84bb191f353afeb3861a3738d4))
+* move release-PR guard to step level and drop --no-install ([#61](https://github.com/bihealth/svirlpool/issues/61)) ([0405e71](https://github.com/bihealth/svirlpool/commit/0405e71a0671ab6c165310dc8092e795e9b755bd))
+* skip implicit pixi install before lockfile regeneration ([#59](https://github.com/bihealth/svirlpool/issues/59)) ([c8c8787](https://github.com/bihealth/svirlpool/commit/c8c878749d01c2e4b7c27d4a6792c580060c6cc4))
+
 ## [0.1.1](https://github.com/bihealth/svirlpool/compare/v0.1.0...v0.1.1) (2026-02-05)
 
 
