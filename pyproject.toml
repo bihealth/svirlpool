@@ -6,7 +6,7 @@ requires = ["hatchling"]
 name = "svirlpool"
 authors = [{ name = "Vinzenz May", email = "vinzenz.may@bih-charite.de" }]
 description = "Svirlpool: structural variant detection from long read sequencing by local assembly"
-version = "0.1.1"
+version = "0.1.2"
 readme = "README.md"
 keywords = ["bioinformatics"]
 license = "MIT"
