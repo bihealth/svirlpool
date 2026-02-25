@@ -6,7 +6,6 @@ on:
 
 jobs:
   update-lock:
-    if: startsWith(github.head_ref, 'release-please--')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,8 +19,11 @@ jobs:
           run-install: false
 
       - name: Update lockfile
+        run: pixi update --no-install
+
+      - name: Commit and push (release PRs only)
+        if: startsWith(github.head_ref, 'release-please--')
         run: |
-          pixi update --no-install
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pixi.lock
