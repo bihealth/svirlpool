@@ -44,7 +44,7 @@ jobs:
       - name: Update lockfile
         if: ${{ steps.release.outputs.pr }}
         run: |
-          pixi update --no-install
+          pixi update
           if git diff --quiet pixi.lock 2>/dev/null; then
             echo "No lockfile changes needed"
           else
