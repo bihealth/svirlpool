@@ -17,6 +17,7 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: latest
+          run-install: false
 
       - name: Update lockfile
         run: |
