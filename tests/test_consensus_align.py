@@ -38,14 +38,14 @@ def test_process_partition_for_trf_overlaps_basic():
         # Core intervals: consensusID mapped to list of (alignment_idx, chrom, start, end)
         core_intervals = {
             "consensus1": [
-                (0, "chr1", 50, 150),  # Overlaps TRF at 100-200
-                (1, "chr1", 1000, 2000),  # Overlaps TRF at 1500-1600
+                (0, "chr1", 50, 150, 0, 0),  # Overlaps TRF at 100-200
+                (1, "chr1", 1000, 2000, 0, 0),  # Overlaps TRF at 1500-1600
             ],
             "consensus2": [
-                (0, "chr1", 450, 650)  # Overlaps TRF at 500-600
+                (0, "chr1", 450, 650, 0, 0)  # Overlaps TRF at 500-600
             ],
             "consensus3": [
-                (0, "chr1", 3000, 4000)  # No overlaps
+                (0, "chr1", 3000, 4000, 0, 0)  # No overlaps
             ],
         }
 
@@ -102,7 +102,7 @@ def test_process_partition_for_trf_overlaps_multiple_overlaps():
         # Core interval that overlaps all three TRFs
         core_intervals = {
             "consensus1": [
-                (0, "chr1", 50, 600)  # Overlaps all three TRFs
+                (0, "chr1", 50, 600, 0, 0)  # Overlaps all three TRFs
             ]
         }
 
@@ -148,7 +148,9 @@ def test_process_partition_for_trf_overlaps_no_overlaps():
             f.write("chr1\t2000\t2100\n")
 
         # Core intervals that don't overlap any TRFs
-        core_intervals = {"consensus1": [(0, "chr1", 100, 200), (1, "chr1", 300, 400)]}
+        core_intervals = {
+            "consensus1": [(0, "chr1", 100, 200, 0, 0), (1, "chr1", 300, 400, 0, 0)]
+        }
 
         # Run the function
         result = consensus_align._process_partition_for_trf_overlaps(
@@ -192,8 +194,8 @@ def test_process_partition_for_trf_overlaps_multiple_chromosomes():
         # Core intervals on different chromosomes
         core_intervals = {
             "consensus1": [
-                (0, "chr1", 50, 150),  # Overlaps chr1 TRF
-                (1, "chr2", 450, 650),  # Overlaps chr2 TRF
+                (0, "chr1", 50, 150, 0, 0),  # Overlaps chr1 TRF
+                (1, "chr2", 450, 650, 0, 0),  # Overlaps chr2 TRF
             ]
         }
 

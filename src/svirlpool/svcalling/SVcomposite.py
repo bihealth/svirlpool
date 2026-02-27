@@ -384,3 +384,10 @@ class SVcomposite:
                 comp_track = svPattern.get_sequence_complexity()
                 complexity_tracks.append(comp_track)
         return complexity_tracks
+
+    def _log_id(self) -> str:
+        """Get a string identifier for logging purposes"""
+        svtype = self.sv_type.__name__
+        size = self.get_size()
+        svPatterns_descriptions = [svp._log_id() for svp in self.svPatterns]
+        return f"SVcomposite|type={svtype}|size={size}|svPatterns=[{', '.join(svPatterns_descriptions)}]"

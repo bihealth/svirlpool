@@ -13,6 +13,7 @@ from pysam import AlignedSegment
 
 from ..localassembly import consensus
 from ..util import datastructures, datatypes
+from ..util.signal_loss_logger import get_signal_loss_logger
 from . import consensus_class
 
 log = logging.getLogger(__name__)
@@ -316,6 +317,30 @@ def merge_svs_in_dict_alignments(
                     and sv.size <= max_low_complexity_ignored_size
                 )
             ]
+            # Log filtered low-complexity signals
+            _loss_logger = get_signal_loss_logger()
+            for _fi in filtered_sv_indeces:
+                if _fi < len(svs) and svs[_fi].sv_type < 3:
+                    _loss_logger.log_filtered(
+                        stage="merge_svs_in_dict_alignments",
+                        consensusID=_consensusID,
+                        reason="low_complexity_or_extreme_GC_small_signal",
+                        details={
+                            "sv_type": svs[_fi].sv_type,
+                            "size": svs[_fi].size,
+                            "ref_start": svs[_fi].ref_start,
+                            "ref_end": svs[_fi].ref_end,
+                            "gc_content": dict_gc_content.get(_fi, None),
+                            "max_low_complexity_ignored_size": max_low_complexity_ignored_size,
+                            "minmax_GC_tolerance": minmax_GC_tolerance,
+                        },
+                    )
+            if len(filtered_sv_indeces) > 0:
+                log.info(
+                    f"merge_svs_in_dict_alignments: consensus {_consensusID}: "
+                    f"filtered {len([i for i in filtered_sv_indeces if i < len(svs) and svs[i].sv_type < 3])} "
+                    f"low-complexity/extreme-GC signals out of {len(svs)} total"
+                )
             uf = datastructures.UnionFind(range(len(svs)))
             for i in range(len(svs)):
                 if i in filtered_sv_indeces:
@@ -363,13 +388,39 @@ def merge_svs_in_dict_alignments(
             # start new SVs with all bnds
             # This doesn't make sense right now!
             new_svs = []
+            _n_merged_groups = 0
             for indices in cc:
                 signals_to_merge = [
                     svs[i] for i in indices if i not in filtered_sv_indeces
                 ]
+                if len(signals_to_merge) > 1:
+                    _n_merged_groups += 1
+                    _loss_logger.log_merged(
+                        stage="merge_svs_in_dict_alignments",
+                        consensusID=_consensusID,
+                        reason="horizontal_merge_by_repeatID_or_proximity",
+                        count=len(signals_to_merge),
+                        details={
+                            "merged_from": [
+                                {
+                                    "sv_type": s.sv_type,
+                                    "size": s.size,
+                                    "ref_start": s.ref_start,
+                                    "ref_end": s.ref_end,
+                                }
+                                for s in signals_to_merge
+                            ]
+                        },
+                    )
                 if len(signals_to_merge) > 0:
                     new_svs.append(merge_merged_svs(signals_to_merge))
             bnds = [sv for sv in svs if sv.sv_type >= 3]
+            if _n_merged_groups > 0:
+                log.info(
+                    f"merge_svs_in_dict_alignments: consensus {_consensusID}: "
+                    f"horizontally merged {_n_merged_groups} groups of signals into single signals; "
+                    f"{len(svs)} input -> {len(new_svs)} + {len(bnds)} BNDs output"
+                )
             consensusAlignment.proto_svs = sorted(
                 new_svs + bnds, key=lambda x: x.ref_start
             )
@@ -595,36 +646,6 @@ def parse_sv_signals_from_consensus(
     """
     Parse SV signals from consensus alignment. Returned items are sorted by their position on the consensus.
     """
-    # DEBUG START
-    # save all input parameters to a json file for testing and debugging.
-    # serialize the alignment to a datatypes.Alignment object with unstructure()
-    # if pysam_alignment.query_name == "15.0":
-    #     log.info(
-    #         f"parsing sv signals for samplename: {samplename}, reference_name: {reference_name}, consensus_sequence length: {len(consensus_sequence)}, pysam_alignment: {pysam_alignment.to_string()}, interval_core: {interval_core}, trf_intervals: {trf_intervals}, min_signal_size: {min_signal_size}, min_bnd_size: {min_bnd_size}"
-    #     )
-    #     alignment_string = datatypes.Alignment.from_pysam(
-    #         pysam_alignment
-    #     ).unstructure()
-    #     # save to json
-    #     input_data = {
-    #         "samplename": samplename,
-    #         "reference_name": reference_name,
-    #         "consensus_sequence": consensus_sequence,
-    #         "alignment": alignment_string,
-    #         "interval_core": interval_core,
-    #         "trf_intervals": trf_intervals,
-    #         "min_signal_size": min_signal_size,
-    #         "min_bnd_size": min_bnd_size,
-    #     }
-    #     import gzip
-    #     import json
-    #     alignment_id = pysam_alignment.reference_start
-    #     save_path = Path(f"/data/cephfs-1/work/groups/cubi/users/mayv_c/production/svirlpool/tests/data/consensus_align/parse_sv_signals_from_consensus_INV15.{alignment_id}.json.gz")
-    #     with gzip.open(save_path, "wt", encoding="utf-8") as f:
-    #         json.dump(input_data, f)
-    #     log.info(f"Saved input data to {save_path}")
-    # DEBUG END
-
     # parse sv signals from alignments
     sv_signals: list[datatypes.SVsignal] = (
         consensus.parse_ReadAlignmentSignals_from_alignment(
@@ -634,22 +655,34 @@ def parse_sv_signals_from_consensus(
             min_bnd_size=min_bnd_size,
         ).SV_signals
     )
-    # DEBUG START print parsed sv signals if consensusID is 15.0
-    # if pysam_alignment.query_name == "15.0":
-    #     for sv_signal in sv_signals:
-    #         print("======================================================================================================================")
-    #         print(f"parsed sv signal:: type:{sv_signal.sv_type} ref_start:{sv_signal.ref_start} ref_end:{sv_signal.ref_end} read_start:{sv_signal.read_start} read_end:{sv_signal.read_end} size:{sv_signal.size}")
-    #         print("======================================================================================================================")
-    # DEBUG END
-    # if interval_core is given: this describes the actual start and end of the consensus sequence
-    # filter any signals whose read_start and read_end are not fully inside interval_core
+
     if interval_core is not None:
+        _filtered_outside_core = [
+            sv_signal
+            for sv_signal in sv_signals
+            if not (
+                sv_signal.read_start > interval_core[0]
+                and sv_signal.read_end < interval_core[1]
+            )
+        ]
         sv_signals = [
             sv_signal
             for sv_signal in sv_signals
             if sv_signal.read_start > interval_core[0]
             and sv_signal.read_end < interval_core[1]
         ]
+        # also log the signals that were taken
+        for signal in sv_signals:
+            _consensusID = str(pysam_alignment.query_name)
+            log.debug(
+                f"TRANSFORMED::parse_sv_signals_from_consensus:(keeping signals inside of interval_core {interval_core}): consensusID={_consensusID} description={signal._get_description(reference_name)}"
+            )
+
+        if _filtered_outside_core:
+            _consensusID = str(pysam_alignment.query_name)
+            log.debug(
+                f"DROPPED::parse_sv_signals_from_consensus:(dropping signals outside of interval_core {interval_core}): consensusID={_consensusID} description={[sv_signal._get_description(reference_name) for sv_signal in _filtered_outside_core]}"
+            )
 
     # transform all SVsignals to MergedSVSignals
     merged_sv_signals = [

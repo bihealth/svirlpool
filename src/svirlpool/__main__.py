@@ -202,6 +202,14 @@ def get_parser():
         required=False,
         action="store_true",
     )
+    parser_run_wf.add_argument(
+        "--log-level",
+        help="Set the logging level for all workflow modules that support it.",
+        required=False,
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+    )
 
     parser_run_wf.set_defaults(fast=False, func=run_wf.run_wf)
 

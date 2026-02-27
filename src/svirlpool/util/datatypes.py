@@ -67,6 +67,9 @@ class SVsignal:
             self.sv_type,
         ))
 
+    def _get_description(self, chr: str):
+        return f"region={chr}:{self.ref_start}-{self.ref_end}, type={SV_TYPE_DICT.get(self.sv_type, 'UNK')}, size={self.size}, read_span={self.read_start}-{self.read_end}"
+
 
 @attrs.define
 class ExtendedSVsignal(SVsignal):

@@ -6,6 +6,7 @@ from pysam import AlignedSegment
 
 from ..svcalling import genotyping
 from ..util import datatypes
+from ..util.signal_loss_logger import get_signal_loss_logger
 from ..util.util import Direction, get_read_position_on_ref
 from . import consensus_class
 
@@ -100,6 +101,14 @@ class SVprimitive(datatypes.MergedSVSignal):  # can be ins,del,bndl,bndr
                 else 0
             ),
         )
+
+    def _get_description(self) -> str:
+        # get description from superclass
+        str_super = super()._get_description(
+            self.chr
+        )  # defines the region, type, size, read_span
+
+        return f"{str_super}, samplename={self.samplename}, consensusID={self.consensusID}, crID={self.consensusID.split('.')[0]}, alignmentID={self.alignmentID}, svID={self.svID}, aln_is_reverse={self.aln_is_reverse}, consensus_aln_interval={self.consensus_aln_interval}, genotypeMeasurement={self.genotypeMeasurement}"
 
     # def get_total_coverage(self) -> int:
     #     if self.genotypeMeasurement is None:
@@ -300,12 +309,40 @@ def generate_SVprimitives(
         core_interval_start=consensus.consensus_padding.padding_size_left,
     )
     # filter svp_cache for all svps that have no supporting reads
+    _all_svp_count = len(svp_cache)
+    _filtered_no_support = [
+        svp
+        for svp in svp_cache
+        if svp.genotypeMeasurement is None
+        or len(svp.genotypeMeasurement.supporting_reads_start) == 0
+    ]
     svp_cache = [
         svp
         for svp in svp_cache
         if svp.genotypeMeasurement is not None
         and len(svp.genotypeMeasurement.supporting_reads_start) > 0
     ]
+    if _filtered_no_support:
+        _loss_logger = get_signal_loss_logger()
+        for _fsvp in _filtered_no_support:
+            _loss_logger.log_no_support(
+                stage="generate_SVprimitives",
+                consensusID=consensus.ID,
+                reason="no_supporting_reads",
+                details={
+                    "sv_type": _fsvp.sv_type,
+                    "size": _fsvp.size,
+                    "ref_start": _fsvp.ref_start,
+                    "ref_end": _fsvp.ref_end,
+                    "chr": _fsvp.chr,
+                    "alignmentID": _fsvp.alignmentID,
+                    "svID": _fsvp.svID,
+                },
+            )
+        log.info(
+            f"generate_SVprimitives: consensus {consensus.ID}: "
+            f"filtered {len(_filtered_no_support)}/{_all_svp_count} SVprimitives with no supporting reads"
+        )
     return svp_cache
 
 

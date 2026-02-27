@@ -86,6 +86,9 @@ min_signal_size = config["min_signal_size"]
 # copy number parameters
 cn_dispersion   = config.get("cn_dispersion", 0.1)  # Default to 0.1 if not provided
 
+# logging
+log_level       = config.get("log_level", "INFO")
+
 # consensus alignments to proto svs parameters
 merge_horizontally = config["cores_per_consensus"]
 
@@ -319,7 +322,8 @@ rule signalprocessing_generate_copynumber_tracks:
         regions=regions,
         reference_fai=reference + ".fai",
         chr_filterlist=[],  # Can be configured via config if needed
-        dispersion=cn_dispersion
+        dispersion=cn_dispersion,
+        log_level=log_level
     threads:
         cores
     resources:
@@ -343,7 +347,7 @@ rule signalprocessing_generate_copynumber_tracks:
         --reference-fai {params.reference_fai} \
         --regions {params.regions} \
         --dispersion {params.dispersion} \
-        --log-level INFO 2>&1 | tee {log}"""
+        --log-level {params.log_level} 2>&1 | tee {log}"""
 
 
 # rule compute_coverage:
@@ -470,7 +474,8 @@ rule candidate_regions_signalstrength_to_crs:
         min_cr_size=min_cr_size,
         bedgraph='QC/crs',
         buffer=cr_merge_buffer,
-        dropped='crs.dropped.tsv.gz'
+        dropped='crs.dropped.tsv.gz',
+        log_level=log_level
     resources:
         mem_mb=cores*2*1024,
         runtime=60
@@ -493,7 +498,8 @@ rule candidate_regions_signalstrength_to_crs:
         --bedgraph {params.bedgraph} \
         --filter-absolute {params.filter_absolute} \
         --filter-normalized {params.filter_normalized} \
-        --min-cr-size {params.min_cr_size}"""
+        --min-cr-size {params.min_cr_size} \
+        --log-level {params.log_level}"""
 
 rule candidate_regions_QC_crs_to_bed:
     input:
@@ -522,6 +528,8 @@ checkpoint candidate_regions_crs_to_containers:
         containers='crs_containers.db',
         #hist='QC/crs.hist.png',
         crIDs_file='crIDs.txt'
+    params:
+        log_level=log_level
     resources:
         mem_mb=cores*8*1024,
         runtime=40
@@ -535,7 +543,8 @@ checkpoint candidate_regions_crs_to_containers:
         """python3 -m svirlpool.candidateregions.crs_to_containers_db \
         -i {input.crs} \
         -o {output.containers} \
-        --crIDs {output.crIDs_file}"""
+        --crIDs {output.crIDs_file} \
+        --log-level {params.log_level}"""
 
 # # -----------------------------------------------------------------------------
 # # CONSENSUS
@@ -553,6 +562,7 @@ rule consensus_consensus:
         alignments=alignments,
         samplename=samplename,
         lamassemble_mat=lamassemble_mat,
+        log_level=log_level,
     threads:
         cores_per_consensus
     conda:
@@ -573,7 +583,8 @@ rule consensus_consensus:
         -o {output.container} \
         -t {threads} \
         -c {wildcards.crID} \
-        --logfile {output.log}"""
+        --logfile {output.log} \
+        --log-level {params.log_level}"""
         # --verbose"""
 
 
@@ -605,7 +616,9 @@ rule consensus_align:
     params:
         ref=reference,
         repeats=trf,
-        samplename=samplename
+        samplename=samplename,
+        data_loss_log="consensus_signal_loss.log",
+        log_level=log_level
     threads:
         cores
     resources:
@@ -626,6 +639,9 @@ rule consensus_align:
             --output-consensus-fasta {output.consensus_fasta} \
             --output-consensus-alignments {output.consensus_alignments} \
             --output-svpatterns {output.svpatterns} \
+            --signal-loss-log {params.data_loss_log} \
+            --logfile {log} \
+            --log-level {params.log_level} \
             --threads {threads}"""
 
 
@@ -636,7 +652,8 @@ rule to_svirltile:
         consensus="consensus.fasta",
         copynumber="copy_number_tracks.db"
     params:
-        samplename=samplename
+        samplename=samplename,
+        log_level=log_level
     output:
         svirltile_db=output_db,
     threads:
@@ -659,4 +676,4 @@ rule to_svirltile:
         --copynumber-db {input.copynumber} \
         --output-db {output.svirltile_db} \
         --log-file {log} \
-        --log-level INFO """
+        --log-level {params.log_level} """

@@ -2,6 +2,7 @@
 # !/usr/bin/env python
 import argparse
 import csv
+import gzip
 import json
 import logging
 import multiprocessing as mp
@@ -132,7 +133,10 @@ windowingFunction=mean smoothingWindow=off"
 
 def yield_unstructured_crs_from_tsv(tsv_file: Path):
     """Yield unstructured CandidateRegion dicts from a TSV file."""
-    with open(tsv_file, "r") as f:
+    # Handle both gzipped and non-gzipped files
+    open_func = gzip.open if str(tsv_file).endswith(".gz") else open
+    mode = "rt" if str(tsv_file).endswith(".gz") else "r"
+    with open_func(tsv_file, mode) as f:
         reader = csv.reader(f, delimiter="\t", quotechar='"')
         for row in reader:
             cr_json = row[3]
@@ -370,8 +374,10 @@ def split_tandem_repeats_by_chromosome(
         chr_repeat_files[chr_name] = chr_file
         chr_file_handles[chr_name] = open(chr_file, "w")
 
-    # Read and distribute repeats
-    with open(tandem_repeats, "r") as trf:
+    # Read and distribute repeats (handle both gzipped and non-gzipped files)
+    open_func = gzip.open if str(tandem_repeats).endswith(".gz") else open
+    mode = "rt" if str(tandem_repeats).endswith(".gz") else "r"
+    with open_func(tandem_repeats, mode) as trf:
         reader = csv.reader(trf, delimiter="\t", quotechar='"')
         for row in reader:
             chr_name = row[0]
@@ -580,8 +586,12 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
             {"chr": chr_name, "n_kept": 0, "n_filtered": 0, "n_merged": 0},
         )
 
+    # Handle both gzipped and non-gzipped files
+    open_func = gzip.open if str(proto_crs_file).endswith(".gz") else open
+    mode = "rt" if str(proto_crs_file).endswith(".gz") else "r"
+
     with (
-        open(proto_crs_file, "r") as pcf,
+        open_func(proto_crs_file, mode) as pcf,
         open(final_crs_file, "w") as fcf,
         open(dropped_crs_file, "w") as dcf,
     ):
