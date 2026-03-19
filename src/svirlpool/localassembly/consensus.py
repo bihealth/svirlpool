@@ -128,7 +128,9 @@ read aligner so we can fix it."
 
 
 def get_full_read_sequences_of_alignments(
-    dict_alignments: dict[int, list[pysam.AlignedSegment]], path_alignments: Path
+    dict_alignments: dict[int, list[pysam.AlignedSegment]],
+    path_alignments: Path,
+    reference: Path | None = None,
 ) -> dict[str, SeqRecord]:
     """Retrieves all DNA sequences of all given read alignments. The read DNA is in original orientation, as it was given in the original fasta file."""
     # iterate all alignments of a sampleID across all crIDs
@@ -178,9 +180,14 @@ def get_full_read_sequences_of_alignments(
         for chrom in dict_positions.keys()
         for start, end in dict_positions[chrom]
     ]
-    with pysam.AlignmentFile(path_alignments, "rb") as f:
+    is_cram = str(path_alignments).endswith(".cram")
+    open_mode = "rc" if is_cram else "rb"
+    open_kwargs = {}
+    if is_cram and reference is not None:
+        open_kwargs["reference_filename"] = str(reference)
+    with pysam.AlignmentFile(path_alignments, open_mode, **open_kwargs) as f:
         for region in regions:
-            for aln in f.fetch(region[0], region[1], region[2]):
+            for aln in f.fetch(contig=region[0], start=region[1], stop=region[2]):
                 if aln.query_name in dict_supplementary_positions.keys():
                     if not aln.query_sequence or not aln.infer_read_length() == len(
                         aln.query_sequence
@@ -246,7 +253,9 @@ def get_full_read_sequences_of_alignments(
 
 
 def get_read_alignments_for_crs(
-    crs: list[datatypes.CandidateRegion], alignments: Path
+    crs: list[datatypes.CandidateRegion],
+    alignments: Path,
+    reference: Path | None = None,
 ) -> tuple[
     dict[int, list[pysam.AlignedSegment]], dict[int, list[pysam.AlignedSegment]]
 ]:
@@ -263,8 +272,13 @@ def get_read_alignments_for_crs(
             f"cr {cr} is not of type datatypes.CandidateRegion"
         )
         # crate a dict of sampleID:aug_readname
-        with pysam.AlignmentFile(alignments, "rb") as f:
-            for aln in f.fetch(cr.chr, max(cr.referenceStart, 0), cr.referenceEnd):
+        is_cram = str(alignments).endswith(".cram")
+        open_mode = "rc" if is_cram else "rb"
+        open_kwargs = {}
+        if is_cram and reference is not None:
+            open_kwargs["reference_filename"] = str(reference)
+        with pysam.AlignmentFile(alignments, open_mode, **open_kwargs) as f:
+            for aln in f.fetch(contig=cr.chr, start=max(cr.referenceStart, 0), stop=cr.referenceEnd):
                 if aln.is_secondary:
                     continue
                 if aln.query_name in readnames_in_signals:
@@ -2651,31 +2665,43 @@ def process_consensus_container(
     crs_dict: dict[int, datatypes.CandidateRegion],
     path_alignments: Path,
     copy_number_tracks: Path,
+    cn_override: int,
     lamassemble_mat: Path | str,
     timeout: int,
     threads: int = 1,
     buffer_clipped_length: int = 10000,
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
+    reference: Path | None = None,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
     # alns: dict[crID:list[AlignedSegment]]
     # compute max_copy_number from the intervals of the candidate regions and by querying the bgzipped and tabix indexed copy number tracks
+    # unless cn_override is provided (> 0), in which case the override is used.
     regions_for_cn_query = [
         (cr.chr, cr.referenceStart, cr.referenceEnd) for cr in crs_dict.values()
     ]
     if verbose:
         for cr in crs_dict.values():
             print(f"CR region on ref: {cr.chr}:{cr.referenceStart}-{cr.referenceEnd}")
-    max_copy_number = copynumber_tracks.query_copynumber_from_regions(
-        bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
-    )
-    log.info(f"Maximum copy number for this container: {max_copy_number}")
-    if max_copy_number > 4:
+    if cn_override > 0:
+        effective_copy_number = cn_override
+        log.info(
+            f"Using copy number override for this container: {effective_copy_number}"
+        )
+    else:
+        effective_copy_number = copynumber_tracks.query_copynumber_from_regions(
+            bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
+        )
+        log.info(
+            f"Estimated maximum copy number for this container: {effective_copy_number}"
+        )
+
+    if effective_copy_number > 4:
         # don't process this container. Too complex.
         log.warning(
-            f"Maximum copy number {max_copy_number} exceeds threshold of 4. Skipping consensus building for this container."
+            f"Maximum copy number {effective_copy_number} exceeds threshold of 4. Skipping consensus building for this container."
         )
         # parse unused reads to datatypes.SequenceObject
         dict_unused_read_names: dict[int, set[str]] = {
@@ -2688,7 +2714,12 @@ def process_consensus_container(
         for crID, readnames in dict_unused_read_names.items():
             for readname in readnames:
                 # get the read sequence from the alignment file
-                with pysam.AlignmentFile(str(path_alignments), "rb") as samfile:
+                _is_cram = str(path_alignments).endswith(".cram")
+                _open_mode = "rc" if _is_cram else "rb"
+                _open_kwargs = {}
+                if _is_cram and reference is not None:
+                    _open_kwargs["reference_filename"] = str(reference)
+                with pysam.AlignmentFile(str(path_alignments), _open_mode, **_open_kwargs) as samfile:
                     read_seqRecord = samfile.fetch(contig=readname)
                     for read in read_seqRecord:
                         read_sequence_object = datatypes.SequenceObject(
@@ -2706,7 +2737,7 @@ def process_consensus_container(
         return {}, dict_unused_reads
 
     alns, _alns_wt = get_read_alignments_for_crs(
-        crs=list(crs_dict.values()), alignments=path_alignments
+        crs=list(crs_dict.values()), alignments=path_alignments, reference=reference
     )
     if verbose:
         # print the qname and reference intervals of the alignments in alns for each alignment
@@ -2730,7 +2761,7 @@ def process_consensus_container(
     if verbose:
         print(f"max_intervals: {max_intervals}")
     read_records: dict[str, SeqRecord] = get_full_read_sequences_of_alignments(
-        dict_alignments=alns, path_alignments=path_alignments
+        dict_alignments=alns, path_alignments=path_alignments, reference=reference
     )
     log.info("cutting reads from alignments")
     cutreads: dict[str, SeqRecord] = trim_reads(
@@ -2756,7 +2787,7 @@ def process_consensus_container(
         lamassemble_mat=lamassemble_mat,
         pool=cutreads,
         candidate_regions=crs_dict,
-        max_k=max_copy_number,
+        max_k=effective_copy_number,
         variance_threshold=29.0,
         distance_threshold=29.0,
         threads=threads,
@@ -2770,7 +2801,7 @@ def process_consensus_container(
             lamassemble_mat=lamassemble_mat,
             pool=cutreads,
             candidate_regions=crs_dict,
-            partitions=max_copy_number,
+            partitions=effective_copy_number,
             timeout=timeout,
             threads=threads,
             tmp_dir_path=tmp_dir_path,
@@ -2906,6 +2937,7 @@ def crs_containers_to_consensus(
     samplename: str,
     input: Path,
     copy_number_tracks: Path,
+    cn_override: int,
     output: Path,
     lamassemble_mat: Path | str,
     path_alignments: Path,
@@ -2915,6 +2947,7 @@ def crs_containers_to_consensus(
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
     verbose: bool = False,
+    reference: Path | None = None,
 ) -> None:
     if not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -2932,6 +2965,8 @@ def crs_containers_to_consensus(
         )
     if threads <= 0:
         raise ValueError("threads must be greater than 0.")
+    if cn_override < 0:
+        raise ValueError("cn_override must be >= 0.")
     if crIDs is not None:
         if not isinstance(crIDs, list):
             raise TypeError("crIDs must be a list of integers.")
@@ -2966,11 +3001,13 @@ def crs_containers_to_consensus(
             tmp_dir_path=tmp_dir_path,
             path_alignments=path_alignments,
             copy_number_tracks=copy_number_tracks,
+            cn_override=cn_override,
             threads=1,
             buffer_clipped_length=buffer_clipped_sequence,
             lamassemble_mat=lamassemble_mat,
             timeout=timeout,
             verbose=verbose,
+            reference=reference,
         )
         all_unused_reads.update(unused_reads)
         if not consensuses:
@@ -3018,11 +3055,14 @@ def crs_containers_to_consensus(
 
 
 def run_consensus_script(args, **kwargs):
+    if args.ref_cache_dir is not None:
+        os.environ["REF_CACHE"] = str(args.ref_cache_dir)
     crs_containers_to_consensus(
         samplename=args.samplename,
         input=args.input,
         path_alignments=args.alignments,
         copy_number_tracks=args.copy_number_tracks,
+        cn_override=args.cn_override,
         output=args.output,
         lamassemble_mat=args.lamassemble_mat,
         threads=args.threads,
@@ -3031,6 +3071,7 @@ def run_consensus_script(args, **kwargs):
         timeout=args.timeout,
         tmp_dir_path=args.tmp_dir_path,
         verbose=args.verbose,
+        reference=args.reference,
     )
 
 
@@ -3069,6 +3110,13 @@ def get_consensus_parser(
         type=Path,
         required=True,
         help="Path to the copy number track file in bgzipped and indexed bed format.",
+    )
+    parser.add_argument(
+        "--cn-override",
+        type=int,
+        default=0,
+        required=False,
+        help="Override copy-number estimation from copy-number tracks. Use 0 to disable override.",
     )
     parser.add_argument(
         "-o",
@@ -3129,6 +3177,20 @@ def get_consensus_parser(
         action="store_true",
         default=False,
         help="prints the alignments in each clustering iteration to the terminal.",
+    )
+    parser.add_argument(
+        "--reference",
+        type=Path,
+        default=None,
+        required=False,
+        help="Path to the reference FASTA file. Required when processing CRAM files.",
+    )
+    parser.add_argument(
+        "--ref-cache-dir",
+        type=Path,
+        default=None,
+        required=False,
+        help="Directory to use as the htslib reference cache (sets REF_CACHE). Avoids writing to ~/.cache/hts-ref.",
     )
     return parser
 

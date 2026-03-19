@@ -69,6 +69,9 @@ mononucleotides = config["mononucleotides"]
 # signal extraction
 max_coverage_per_region = config.get("max_coverage_per_region", 400)
 
+# optional htslib reference cache directory (avoids writing to ~/.cache/hts-ref)
+ref_cache_dir_flag = f"--ref-cache-dir {wdir}/hts-ref-cache"
+
 # candidate regions
 filter_absolute=config["filter_absolute"]
 filter_normalized=config["filter_normalized"]
@@ -163,6 +166,8 @@ rule signalprocessing_alignments_to_rafs:
         min_segment_size=250,
         min_mapq=min_mapq,
         max_coverage_per_region=max_coverage_per_region,
+        reference=reference,
+        ref_cache_dir_flag=ref_cache_dir_flag,
     resources:
         mem_mb=cores*1024,
         runtime=240
@@ -186,6 +191,8 @@ rule signalprocessing_alignments_to_rafs:
         --min-bnd-size {params.min_bnd_size} \
         --min-segment-size {params.min_segment_size} \
         --min-mapq {params.min_mapq} \
+        --reference {params.reference} \
+        {params.ref_cache_dir_flag} \
         -t {threads}"""
 
 
@@ -563,6 +570,8 @@ rule consensus_consensus:
         samplename=samplename,
         lamassemble_mat=lamassemble_mat,
         log_level=log_level,
+        reference=reference,
+        ref_cache_dir_flag=ref_cache_dir_flag,
     threads:
         cores_per_consensus
     conda:
@@ -584,7 +593,9 @@ rule consensus_consensus:
         -t {threads} \
         -c {wildcards.crID} \
         --logfile {output.log} \
-        --log-level {params.log_level}"""
+        --log-level {params.log_level} \
+        --reference {params.reference} \
+        {params.ref_cache_dir_flag}"""
         # --verbose"""
 
 

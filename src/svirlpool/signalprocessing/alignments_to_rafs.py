@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import multiprocessing as mp
+import os
 import subprocess
 import tempfile
 from math import floor
@@ -375,6 +376,7 @@ def process_region(
     filter_nonseparated__min_fragment_size: int,
     filter_nonseparated__max_inversion_coverage: float,
     max_coverage: int = 400,
+    reference: Path | None = None,
 ) -> list[datatypes.ReadAlignmentFragment]:
     """parse all alignments in a region and create from each alignment a ReadAlignmentFragment"""
     chrom, start, end = region
@@ -391,11 +393,16 @@ def process_region(
             min_fragment_size=filter_nonseparated__min_fragment_size,
             max_inversion_coverage=filter_nonseparated__max_inversion_coverage,
         )
+    is_cram = str(path_alignments).endswith(".cram")
+    open_mode = "rc" if is_cram else "rb"
+    open_kwargs = {}
+    if is_cram and reference is not None:
+        open_kwargs["reference_filename"] = str(reference)
     lines = []
-    with pysam.AlignmentFile(path_alignments, "rb") as file:
+    with pysam.AlignmentFile(path_alignments, open_mode, **open_kwargs) as file:
         current_coverage = 0
         ending = []  # keeps track of alignment end positions in ascending sorted order
-        for alignment in file.fetch(chrom, start, end):
+        for alignment in file.fetch(contig=chrom, start=start, stop=end):
             N_alignments += 1
             if alignment.query_name in non_separated_reads:
                 continue
@@ -490,6 +497,7 @@ def process_bam(
     threads: int = 1,
     tmp_dir_path: Path | None = None,
     max_coverage: int = 400,
+    reference: Path | None = None,
 ):
     if threads < 1:
         threads = mp.cpu_count()
@@ -498,6 +506,21 @@ def process_bam(
             f"threads {threads} > cpu_count {mp.cpu_count}. Setting threads to {mp.cpu_count()}"
         )
         threads = mp.cpu_count()
+
+    if str(path_alignments).endswith(".cram"):
+        if not Path(str(path_alignments) + ".crai").exists():
+            raise FileNotFoundError(
+                f"Index file {path_alignments}.crai not found. CRAM files require a .crai index."
+            )
+        if reference is None:
+            raise ValueError(
+                "A reference file must be provided when processing CRAM files (--reference)."
+            )
+    else:
+        if not Path(str(path_alignments) + ".bai").exists():
+            raise FileNotFoundError(
+                f"Index file {path_alignments}.bai not found. BAM files require a .bai index."
+            )
 
     log.info(f"parse regions from {path_regions}")
     regions = parse_and_split_regions(path_regions=path_regions)
@@ -524,6 +547,7 @@ def process_bam(
                 filter_nonseparated__max_inversion_coverage
             ),
             "max_coverage": max_coverage,
+            "reference": reference,
         }
         for i, region in enumerate(regions)
     ]
@@ -659,6 +683,8 @@ def display_ascii_alignments(
 
 
 def run(args, **kwargs):
+    if args.ref_cache_dir is not None:
+        os.environ["REF_CACHE"] = str(args.ref_cache_dir)
     process_bam(
         path_alignments=args.alignments,
         path_regions=args.regions,
@@ -677,6 +703,7 @@ def run(args, **kwargs):
         filter_nonseparated__max_inversion_coverage=args.filter_nonseparated__max_inversion_coverage,
         tmp_dir_path=args.tmp_dir_path,
         max_coverage=args.max_coverage,
+        reference=args.reference,
     )
 
     # path_alignments:Path,
@@ -811,6 +838,18 @@ def get_parser():
         "--tmp-dir-path",
         default=None,
         help="Path to a temporary directory to store intermediate results. Default is ''.",
+    )
+    parser.add_argument(
+        "--reference",
+        type=Path,
+        default=None,
+        help="Path to the reference FASTA file. Required when processing CRAM files.",
+    )
+    parser.add_argument(
+        "--ref-cache-dir",
+        type=Path,
+        default=None,
+        help="Directory to use as the htslib reference cache (sets REF_CACHE). Avoids writing to ~/.cache/hts-ref.",
     )
     return parser
 

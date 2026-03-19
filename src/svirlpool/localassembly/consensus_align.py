@@ -691,13 +691,13 @@ def write_partitioned_alignments(
             if consensusID not in consensusID_to_index:
                 raise ValueError(
                     f"consensusID {consensusID} not found in index_consensusIDs. "
-                    "This should not happen. Please check the input data."
+                    f"This should not happen. Please check the input data. The alignment is: {datatypes.Alignment.from_pysam(aln=pysam_aln, samplename=samplename).unstructure()}"
                 )
 
             if pysam_aln.reference_end is None:
                 raise ValueError(
                     f"Alignment for consensusID {consensusID} has no reference_end. "
-                    "This should not happen. Please check the input data."
+                    f"This should not happen. Please check the input data. The alignment is: {datatypes.Alignment.from_pysam(aln=pysam_aln, samplename=samplename).unstructure()}"
                 )
 
             qstart, qend = util.get_interval_on_read_in_region(
@@ -1982,7 +1982,7 @@ def svPatterns_from_consensus_sequences(
             ],
             tech="map-ont",
             threads=threads,
-            aln_args=" --secondary=no",
+            aln_args=" --secondary=no --sam-hit-only",
         )
 
         # Parse alignments and write partitioned datatypes.Alignment objects to TSV files

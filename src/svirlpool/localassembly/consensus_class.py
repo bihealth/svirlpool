@@ -121,6 +121,14 @@ class Consensus:
             for signal in ras.SV_signals
             if signal.sv_type in (0, 1)
         ]
+    
+    def has_clipped_trimmed_reads(self) -> bool:
+        """Check if there are any clipped or trimmed reads in the consensus."""
+        for ras in self.cut_read_alignment_signals:
+            for signal in ras.SV_signals:
+                if signal.sv_type in (3, 4):
+                    return True
+        return False
 
     def get_max_cutread_coverage(self) -> int:
         # compute the maximum depth of overlaps of cut reads on the consensus
