@@ -1243,6 +1243,191 @@ def handle_isolated_reads(
     return well_connected, isolated
 
 
+# =============================================================================
+# SHARED CLUSTER → CONSENSUS ASSEMBLY HELPER
+# =============================================================================
+
+
+def assemble_clusters_to_consensuses(
+    cluster_assignments: dict[str, int],
+    isolated_reads: list[str],
+    pool: dict[str, SeqRecord],
+    crIDs: list[int],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    samplename: str,
+    lamassemble_mat: Path | str,
+    timeout: int,
+    threads: int,
+    tmp_dir: str,
+    tmp_dir_path: Path | None,
+    verbose: bool,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Assemble a consensus per cluster and return all Consensus objects.
+
+    Given a clustering assignment (readname → cluster_id) and a read pool,
+    this function assembles one consensus per cluster, rescuing isolated /
+    failed reads when all proper clusters fail.
+
+    Args:
+        cluster_assignments: Mapping from read name to cluster id.
+        isolated_reads: Reads not assigned to any cluster (e.g. disconnected
+            in a graph-based clustering).
+        pool: Read name → SeqRecord mapping for all available reads.
+        crIDs: Candidate region IDs for naming.
+        candidate_regions: CandidateRegion objects.
+        samplename: Sample identifier.
+        lamassemble_mat: Path to the lamassemble scoring matrix.
+        timeout: Assembly timeout in seconds.
+        threads: Number of threads for alignment / assembly.
+        tmp_dir: Path to the current temporary directory (already created).
+        tmp_dir_path: If not None, temp files are kept for debugging.
+        verbose: Enable verbose output.
+
+    Returns:
+        A dict mapping consensus name → Consensus, or None if everything
+        failed.
+    """
+    result: dict[str, consensus_class.Consensus] = {}
+    failed_reads: list[str] = list(isolated_reads)
+
+    for cluster_id in sorted(set(cluster_assignments.values())):
+        chosen_reads = [
+            r for r, cid in cluster_assignments.items() if cid == cluster_id
+        ]
+        chosen_reads = [r for r in chosen_reads if r in pool]
+        if not chosen_reads:
+            continue
+
+        consensus_fasta = tempfile.NamedTemporaryFile(
+            dir=tmp_dir,
+            prefix=f"consensus.{cluster_id}.",
+            suffix=".fasta",
+            delete=False if tmp_dir_path else True,
+        )
+        reads_fasta = tempfile.NamedTemporaryFile(
+            dir=tmp_dir,
+            prefix=f"reads.{cluster_id}.",
+            suffix=".fastq",
+            delete=False if tmp_dir_path else True,
+        )
+        with open(reads_fasta.name, "w") as f:
+            SeqIO.write([pool[readname] for readname in chosen_reads], f, "fastq")
+        consensus_name = f"{min(crIDs)}.{cluster_id}"
+
+        consensus_sequence: str | None = assemble_consensus(
+            lamassemble_mat=lamassemble_mat,
+            name=consensus_name,
+            reads_fasta=Path(reads_fasta.name),
+            consensus_fasta_path=Path(consensus_fasta.name),
+            threads=threads,
+            timeout=timeout,
+            verbose=verbose,
+        )
+
+        if consensus_sequence is None:
+            log.warning(
+                f"consensus assembly failed for cluster {cluster_id} with "
+                f"{len(chosen_reads)} reads. Skipping this cluster."
+            )
+            failed_reads.extend(chosen_reads)
+            continue
+
+        consensus = final_consensus(
+            samplename=samplename,
+            min_indel_size=8,
+            min_bnd_size=100,
+            reads_fasta=Path(reads_fasta.name),
+            consensus_fasta_path=Path(consensus_fasta.name),
+            consensus_sequence=consensus_sequence,
+            ID=consensus_name,
+            crIDs=crIDs,
+            original_regions=[
+                (cr.chr, cr.referenceStart, cr.referenceEnd)
+                for cr in candidate_regions.values()
+            ],
+            threads=threads,
+            verbose=verbose,
+            tmp_dir_path=Path(tmp_dir),
+        )
+        if consensus is not None:
+            result[consensus_name] = consensus
+        else:
+            log.warning(
+                f"final consensus generation failed for cluster {cluster_id} with "
+                f"{len(chosen_reads)} reads. Skipping this cluster."
+            )
+            failed_reads.extend(chosen_reads)
+
+    # Rescue: if all clusters failed, try assembling failed reads as one consensus
+    if not result and failed_reads:
+        log.info(
+            f"Trying to rescue {len(failed_reads)} failed/isolated reads by "
+            f"creating one consensus from them."
+        )
+        rescue_reads = [rn for rn in failed_reads if rn in pool]
+        if rescue_reads:
+            consensus_fasta = tempfile.NamedTemporaryFile(
+                dir=tmp_dir,
+                prefix="consensus.rescue.",
+                suffix=".fasta",
+                delete=False if tmp_dir_path else True,
+            )
+            reads_fasta = tempfile.NamedTemporaryFile(
+                dir=tmp_dir,
+                prefix="reads.rescue.",
+                suffix=".fastq",
+                delete=False if tmp_dir_path else True,
+            )
+            with open(reads_fasta.name, "w") as f:
+                SeqIO.write(
+                    [pool[readname] for readname in rescue_reads], f, "fastq"
+                )
+            consensus_name = f"{min(crIDs)}.rescue"
+
+            consensus_sequence = assemble_consensus(
+                lamassemble_mat=lamassemble_mat,
+                name=consensus_name,
+                reads_fasta=Path(reads_fasta.name),
+                consensus_fasta_path=Path(consensus_fasta.name),
+                threads=threads,
+                timeout=timeout,
+                verbose=verbose,
+            )
+
+            if consensus_sequence is not None:
+                consensus = final_consensus(
+                    samplename=samplename,
+                    min_indel_size=8,
+                    min_bnd_size=100,
+                    reads_fasta=Path(reads_fasta.name),
+                    consensus_fasta_path=Path(consensus_fasta.name),
+                    consensus_sequence=consensus_sequence,
+                    ID=consensus_name,
+                    crIDs=crIDs,
+                    original_regions=[
+                        (cr.chr, cr.referenceStart, cr.referenceEnd)
+                        for cr in candidate_regions.values()
+                    ],
+                    threads=threads,
+                    verbose=verbose,
+                    tmp_dir_path=Path(tmp_dir),
+                )
+                if consensus is not None:
+                    result[consensus_name] = consensus
+                else:
+                    log.warning(
+                        f"final consensus generation failed for rescue reads "
+                        f"with {len(rescue_reads)} reads."
+                    )
+            else:
+                log.warning(
+                    f"consensus assembly failed for rescue reads "
+                    f"with {len(rescue_reads)} reads."
+                )
+
+    return result if result else None
+
+
 def consensus_while_clustering(
     samplename: str,
     lamassemble_mat: Path | str,
@@ -1254,10 +1439,13 @@ def consensus_while_clustering(
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
 ) -> dict[str, consensus_class.Consensus] | None:
-    # all-vs-all alignments with minimap2
-    # calculate penalties (called score_ras_from_alignments, but its really not a score, but a penalty)
-    # construct a graph of reads with edges between reads given by the alignment penalties. If no penalty is found, there is no edge.
-    # find a partition of the graph given N clusters that minimizes the sum of edge weights between clusters and contains all reads (min coverage set)
+    """Cluster reads via spectral graph partitioning and assemble consensus per cluster.
+
+    Performs all-vs-all read alignment, scores pairwise penalties, builds a
+    similarity graph, partitions it into *partitions* clusters using spectral
+    clustering, and delegates per-cluster assembly to
+    ``assemble_clusters_to_consensuses``.
+    """
     crIDs = [cr.crID for cr in candidate_regions.values()]
     result: dict[str, consensus_class.Consensus] | None = None
     try:
@@ -1304,8 +1492,6 @@ def consensus_while_clustering(
                 return None
             # 4) score alignments
             penalty_matrix: dict[tuple[str, str], float] = {}
-            #  - find all reference names in the alignments
-            #  - for each reference name in the alignments, do scoring
             all_raf_scores: dict[str, dict[str, float]] = {}
             for reference_name in {
                 aln.reference_name
@@ -1355,7 +1541,6 @@ def consensus_while_clustering(
                 })
 
             if verbose:
-                # print penalty matrix as a matrix with rows and columns sorted by read names
                 sorted_reads = sorted(pool.keys())
                 log.info("Penalty matrix:")
                 log.info("\t" + "\t".join(sorted_reads))
@@ -1372,20 +1557,18 @@ def consensus_while_clustering(
 
             all_reads = list(pool.keys())
 
-            # 1. Handle isolated reads first - they will end up in the unused reads
+            # 5) Handle isolated reads
             well_connected, isolated = handle_isolated_reads(penalty_matrix, all_reads)
             log.debug(
                 f"Well-connected reads: {len(well_connected)}, Isolated reads: {len(isolated)}"
             )
 
             if len(well_connected) < partitions:
-                # Not enough well-connected reads for desired partitions
-                # Fall back to simple clustering or adjust partition count
                 effective_partitions = max(1, len(well_connected))
             else:
                 effective_partitions = partitions
 
-            # 2. Cluster well-connected reads
+            # 6) Cluster well-connected reads
             if len(well_connected) > 1:
                 clustering_result = partition_reads_spectral(
                     penalty_matrix=penalty_matrix,
@@ -1395,142 +1578,21 @@ def consensus_while_clustering(
             else:
                 clustering_result = {well_connected[0]: 0} if well_connected else {}
 
-            # 3. Proceed with consensus generation for each cluster
-            for cluster_id in set(clustering_result.values()):
-                chosen_reads = [
-                    read for read, cid in clustering_result.items() if cid == cluster_id
-                ]
-                consensus_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix="consensus.",
-                    suffix=".fasta",
-                    delete=False if tmp_dir else True,
-                )
-                reads_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix="reads.",
-                    suffix=".fastq",
-                    delete=False if tmp_dir else True,
-                )
-                with open(reads_fasta.name, "w") as f:
-                    SeqIO.write(
-                        [pool[readname] for readname in chosen_reads], f, "fastq"
-                    )
-                consensus_name = f"{min(crIDs)}.{cluster_id}"
-
-                consensus_sequence: str | None = assemble_consensus(
-                    lamassemble_mat=lamassemble_mat,
-                    name=consensus_name,
-                    reads_fasta=Path(reads_fasta.name),
-                    consensus_fasta_path=Path(consensus_fasta.name),
-                    threads=threads,
-                    timeout=timeout,
-                    verbose=verbose,
-                )
-
-                if consensus_sequence is None:
-                    log.warning(
-                        f"consensus assembly failed for cluster {cluster_id} with {len(chosen_reads)} reads. Skipping this cluster."
-                    )
-                    # add the chosen reads to the isolated reads
-                    isolated.extend(chosen_reads)
-                    continue
-
-                if result is None:
-                    result = {}
-                consensus = final_consensus(
-                    samplename=samplename,
-                    min_indel_size=8,
-                    min_bnd_size=100,
-                    reads_fasta=Path(reads_fasta.name),
-                    consensus_fasta_path=Path(consensus_fasta.name),
-                    consensus_sequence=consensus_sequence,
-                    ID=consensus_name,
-                    crIDs=crIDs,
-                    original_regions=[
-                        (cr.chr, cr.referenceStart, cr.referenceEnd)
-                        for cr in candidate_regions.values()
-                    ],
-                    threads=threads,
-                    verbose=verbose,
-                    tmp_dir_path=Path(tmp_dir),
-                )
-                if consensus is not None:
-                    result[consensus_name] = consensus
-                else:
-                    log.warning(
-                        f"final consensus generation failed for cluster {cluster_id} with {len(chosen_reads)} reads. Skipping this cluster."
-                    )
-                    # add the chosen reads to the isolated reads
-                    isolated.extend(chosen_reads)
-                    continue
-            # if there is no cluster, but only isolated reads, try to rescue them by trying to create a consensus from them
-            # write all isolated reads to one fasta file
-            # create a tmp consensus fasta file
-            if len(isolated) > 0 and result is None or len(result) == 0:
-                log.info(
-                    f"Trying to rescue {len(isolated)} isolated reads by creating one consensus from them."
-                )
-                consensus_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix="consensus.isolated.",
-                    suffix=".fasta",
-                    delete=False if tmp_dir else True,
-                )
-                reads_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix="reads.isolated.",
-                    suffix=".fastq",
-                    delete=False if tmp_dir else True,
-                )
-                with open(reads_fasta.name, "w") as f:
-                    SeqIO.write(
-                        [pool[readname] for readname in isolated if readname in pool],
-                        f,
-                        "fastq",
-                    )
-                consensus_name = f"{min(crIDs)}.isolated"
-
-                consensus_sequence: str | None = assemble_consensus(
-                    lamassemble_mat=lamassemble_mat,
-                    name=consensus_name,
-                    reads_fasta=Path(reads_fasta.name),
-                    consensus_fasta_path=Path(consensus_fasta.name),
-                    threads=threads,
-                    timeout=timeout,
-                    verbose=verbose,
-                )
-
-                if consensus_sequence is not None:
-                    if result is None:
-                        result = {}
-                    consensus = final_consensus(
-                        samplename=samplename,
-                        min_indel_size=8,
-                        min_bnd_size=100,
-                        reads_fasta=Path(reads_fasta.name),
-                        consensus_fasta_path=Path(consensus_fasta.name),
-                        consensus_sequence=consensus_sequence,
-                        ID=consensus_name,
-                        crIDs=crIDs,
-                        original_regions=[
-                            (cr.chr, cr.referenceStart, cr.referenceEnd)
-                            for cr in candidate_regions.values()
-                        ],
-                        threads=threads,
-                        verbose=verbose,
-                        tmp_dir_path=Path(tmp_dir),
-                    )
-                    if consensus is not None:
-                        result[consensus_name] = consensus
-                    else:
-                        log.warning(
-                            f"final consensus generation failed for isolated reads with {len(isolated)} reads. Returning None."
-                        )
-                else:
-                    log.warning(
-                        f"consensus assembly failed for isolated reads with {len(isolated)} reads. Returning None."
-                    )
+            # 7) Assemble consensus per cluster (shared helper)
+            result = assemble_clusters_to_consensuses(
+                cluster_assignments=clustering_result,
+                isolated_reads=isolated,
+                pool=pool,
+                crIDs=crIDs,
+                candidate_regions=candidate_regions,
+                samplename=samplename,
+                lamassemble_mat=lamassemble_mat,
+                timeout=timeout,
+                threads=threads,
+                tmp_dir=tmp_dir,
+                tmp_dir_path=tmp_dir_path,
+                verbose=verbose,
+            )
 
     except Exception as e:
         log.warning(
@@ -1651,161 +1713,30 @@ def consensus_while_clustering_with_kmeans(
                 f"ins={dict_summed_indels[rn][0]}, del={dict_summed_indels[rn][1]}"
             )
 
-    # 2) Assemble consensus for each cluster
-    result: dict[str, consensus_class.Consensus] | None = None
-    failed_reads: list[str] = []
+    # 2) Build cluster assignments dict and delegate to shared assembly helper
+    cluster_assignments: dict[str, int] = {
+        rn: int(chosen_labels[i])
+        for i, rn in enumerate(readnames)
+    }
 
     try:
         with tempfile.TemporaryDirectory(
             dir=tmp_dir_path, delete=False if tmp_dir_path else True
         ) as tmp_dir:
-            for cluster_id in range(chosen_k):
-                chosen_reads = [
-                    rn
-                    for rn, label in zip(readnames, chosen_labels, strict=True)
-                    if label == cluster_id
-                ]
-                if len(chosen_reads) == 0:
-                    continue
-
-                # Filter to reads that are actually in the pool
-                chosen_reads = [rn for rn in chosen_reads if rn in pool]
-                if len(chosen_reads) == 0:
-                    continue
-
-                consensus_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix=f"consensus.kmeans.{cluster_id}.",
-                    suffix=".fasta",
-                    delete=False if tmp_dir_path else True,
-                )
-                reads_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix=f"reads.kmeans.{cluster_id}.",
-                    suffix=".fastq",
-                    delete=False if tmp_dir_path else True,
-                )
-                with open(reads_fasta.name, "w") as f:
-                    SeqIO.write(
-                        [pool[readname] for readname in chosen_reads], f, "fastq"
-                    )
-                consensus_name = f"{min(crIDs)}.{cluster_id}"
-
-                consensus_sequence: str | None = assemble_consensus(
-                    lamassemble_mat=lamassemble_mat,
-                    name=consensus_name,
-                    reads_fasta=Path(reads_fasta.name),
-                    consensus_fasta_path=Path(consensus_fasta.name),
-                    threads=threads,
-                    timeout=timeout,
-                    verbose=verbose,
-                )
-
-                if consensus_sequence is None:
-                    log.warning(
-                        f"consensus assembly failed for KMeans cluster {cluster_id} "
-                        f"with {len(chosen_reads)} reads. Skipping this cluster."
-                    )
-                    failed_reads.extend(chosen_reads)
-                    continue
-
-                if result is None:
-                    result = {}
-                consensus = final_consensus(
-                    samplename=samplename,
-                    min_indel_size=8,
-                    min_bnd_size=100,
-                    reads_fasta=Path(reads_fasta.name),
-                    consensus_fasta_path=Path(consensus_fasta.name),
-                    consensus_sequence=consensus_sequence,
-                    ID=consensus_name,
-                    crIDs=crIDs,
-                    original_regions=[
-                        (cr.chr, cr.referenceStart, cr.referenceEnd)
-                        for cr in candidate_regions.values()
-                    ],
-                    threads=threads,
-                    verbose=verbose,
-                    tmp_dir_path=Path(tmp_dir),
-                )
-                if consensus is not None:
-                    result[consensus_name] = consensus
-                else:
-                    log.warning(
-                        f"final consensus generation failed for KMeans cluster {cluster_id} "
-                        f"with {len(chosen_reads)} reads. Skipping this cluster."
-                    )
-                    failed_reads.extend(chosen_reads)
-                    continue
-
-            # Try to rescue failed reads by assembling them into one consensus
-            if len(failed_reads) > 0 and (result is None or len(result) == 0):
-                log.info(
-                    f"Trying to rescue {len(failed_reads)} failed reads from KMeans "
-                    f"clustering by creating one consensus from them."
-                )
-                consensus_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix="consensus.kmeans.rescue.",
-                    suffix=".fasta",
-                    delete=False if tmp_dir_path else True,
-                )
-                reads_fasta = tempfile.NamedTemporaryFile(
-                    dir=tmp_dir,
-                    prefix="reads.kmeans.rescue.",
-                    suffix=".fastq",
-                    delete=False if tmp_dir_path else True,
-                )
-                rescue_reads = [rn for rn in failed_reads if rn in pool]
-                with open(reads_fasta.name, "w") as f:
-                    SeqIO.write(
-                        [pool[readname] for readname in rescue_reads], f, "fastq"
-                    )
-                consensus_name = f"{min(crIDs)}.rescue"
-
-                consensus_sequence = assemble_consensus(
-                    lamassemble_mat=lamassemble_mat,
-                    name=consensus_name,
-                    reads_fasta=Path(reads_fasta.name),
-                    consensus_fasta_path=Path(consensus_fasta.name),
-                    threads=threads,
-                    timeout=timeout,
-                    verbose=verbose,
-                )
-
-                if consensus_sequence is not None:
-                    if result is None:
-                        result = {}
-                    consensus = final_consensus(
-                        samplename=samplename,
-                        min_indel_size=8,
-                        min_bnd_size=100,
-                        reads_fasta=Path(reads_fasta.name),
-                        consensus_fasta_path=Path(consensus_fasta.name),
-                        consensus_sequence=consensus_sequence,
-                        ID=consensus_name,
-                        crIDs=crIDs,
-                        original_regions=[
-                            (cr.chr, cr.referenceStart, cr.referenceEnd)
-                            for cr in candidate_regions.values()
-                        ],
-                        threads=threads,
-                        verbose=verbose,
-                        tmp_dir_path=Path(tmp_dir),
-                    )
-                    if consensus is not None:
-                        result[consensus_name] = consensus
-                    else:
-                        log.warning(
-                            f"final consensus generation failed for rescue reads "
-                            f"with {len(rescue_reads)} reads. Returning None."
-                        )
-                else:
-                    log.warning(
-                        f"consensus assembly failed for rescue reads "
-                        f"with {len(rescue_reads)} reads. Returning None."
-                    )
-
+            result = assemble_clusters_to_consensuses(
+                cluster_assignments=cluster_assignments,
+                isolated_reads=[],
+                pool=pool,
+                crIDs=crIDs,
+                candidate_regions=candidate_regions,
+                samplename=samplename,
+                lamassemble_mat=lamassemble_mat,
+                timeout=timeout,
+                threads=threads,
+                tmp_dir=tmp_dir,
+                tmp_dir_path=tmp_dir_path,
+                verbose=verbose,
+            )
     except Exception as e:
         log.warning(
             f"consensus_while_clustering_with_kmeans failed with exception: {e}. Returning None."
@@ -2660,6 +2591,132 @@ def can_stop_meta_iteration(
     return True
 
 
+# Maximum number of extra partition bumps when clipped trimmed reads are detected
+_MAX_CLIPPED_READ_RETRIES = 2
+
+
+def build_consensus_with_clipping_retry(
+    partitions: int,
+    max_extra_partitions: int,
+    cutreads: dict[str, SeqRecord],
+    dict_summed_indels: dict[str, list[int]],
+    samplename: str,
+    lamassemble_mat: Path | str,
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    timeout: int,
+    threads: int,
+    tmp_dir_path: Path | None,
+    verbose: bool,
+    variance_threshold: float = 29.0,
+    distance_threshold: float = 29.0,
+) -> dict[str, consensus_class.Consensus]:
+    """Build consensus objects, retrying with more partitions if clipped trimmed reads are found.
+
+    When a Consensus object has clipped trimmed reads (detected via
+    ``has_clipped_trimmed_reads()``), it means reads from different
+    haplotypes ended up in the same cluster.  Re-clustering with an
+    increased partition count splits those reads apart, reducing the
+    probability of clipped alignments.
+
+    The function first tries the fast KMeans path, falling back to
+    spectral clustering.  If any resulting consensus has clipped
+    trimmed reads, the partition count is bumped by 1 and the whole
+    clustering + assembly is retried (up to *max_extra_partitions*
+    times).
+
+    Args:
+        partitions: Initial (copy-number-derived) partition count.
+        max_extra_partitions: How many times partitions may be bumped.
+        cutreads: Trimmed read pool.
+        dict_summed_indels: Per-read summed indel distributions (for KMeans).
+        samplename: Sample identifier.
+        lamassemble_mat: Lamassemble scoring matrix path.
+        candidate_regions: CandidateRegion objects.
+        timeout: Assembly timeout in seconds.
+        threads: Number of threads.
+        tmp_dir_path: If set, temp files are kept for debugging.
+        verbose: Enable verbose output.
+        variance_threshold: KMeans intra-cluster variance threshold.
+        distance_threshold: KMeans inter-cluster distance threshold.
+
+    Returns:
+        A dict of consensus name → Consensus (possibly empty).
+    """
+    best_result: dict[str, consensus_class.Consensus] = {}
+
+    for attempt in range(max_extra_partitions + 1):
+        current_partitions = partitions + attempt
+        log.info(
+            f"Consensus building attempt {attempt + 1}/{max_extra_partitions + 1} "
+            f"with {current_partitions} partition(s)."
+        )
+
+        # Fast path: KMeans on indel distributions
+        res = consensus_while_clustering_with_kmeans(
+            samplename=samplename,
+            dict_summed_indels=dict_summed_indels,
+            lamassemble_mat=lamassemble_mat,
+            pool=cutreads,
+            candidate_regions=candidate_regions,
+            max_k=current_partitions,
+            variance_threshold=variance_threshold,
+            distance_threshold=distance_threshold,
+            threads=threads,
+            tmp_dir_path=tmp_dir_path,
+            timeout=timeout,
+            verbose=verbose,
+        )
+
+        # Fallback: spectral graph partitioning
+        if not res:
+            res = consensus_while_clustering(
+                samplename=samplename,
+                lamassemble_mat=lamassemble_mat,
+                pool=cutreads,
+                candidate_regions=candidate_regions,
+                partitions=current_partitions,
+                timeout=timeout,
+                threads=threads,
+                tmp_dir_path=tmp_dir_path,
+                verbose=verbose,
+            )
+
+        if not res:
+            log.warning(
+                f"No consensus objects produced with {current_partitions} partition(s)."
+            )
+            # No point retrying with more partitions if we got nothing
+            break
+
+        best_result = res
+
+        # Check for clipped trimmed reads
+        clipped_ids = {
+            cid for cid, c in best_result.items() if (c.has_clipped_trimmed_reads() or c.has_large_signals(threshold=50))
+        }
+        if not clipped_ids:
+            log.info(
+                f"No clipped trimmed reads or large signals detected in {len(best_result)} "
+                f"consensus object(s) — accepting result."
+            )
+            return best_result
+
+        if attempt < max_extra_partitions:
+            log.info(
+                f"{len(clipped_ids)} consensus object(s) have clipped trimmed reads or large signals "
+                f"({', '.join(clipped_ids)}). Retrying with "
+                f"{current_partitions + 1} partition(s)."
+            )
+        else:
+            log.warning(
+                f"{len(clipped_ids)} consensus object(s) still have clipped trimmed "
+                f"reads or large signals after {max_extra_partitions + 1} attempts. Returning "
+                f"best-effort result."
+            )
+
+    return best_result
+
+
 def process_consensus_container(
     samplename: str,
     crs_dict: dict[int, datatypes.CandidateRegion],
@@ -2779,40 +2836,22 @@ def process_consensus_container(
 
     # =========================================== CONSENSUS BUILDING =========================================== #
 
-    res: dict[str, consensus_class.Consensus] | None = None
-    consensus_objects: dict[str, consensus_class.Consensus] = {}
-    res = consensus_while_clustering_with_kmeans(
-        samplename=samplename,
-        dict_summed_indels=dict_summed_indels,
-        lamassemble_mat=lamassemble_mat,
-        pool=cutreads,
-        candidate_regions=crs_dict,
-        max_k=effective_copy_number,
-        variance_threshold=29.0,
-        distance_threshold=29.0,
-        threads=threads,
-        tmp_dir_path=tmp_dir_path,
-        timeout=timeout,
-        verbose=verbose,
-    )
-    if not res:
-        res = consensus_while_clustering(
+    consensus_objects: dict[str, consensus_class.Consensus] = (
+        build_consensus_with_clipping_retry(
+            partitions=effective_copy_number,
+            max_extra_partitions=_MAX_CLIPPED_READ_RETRIES,
+            cutreads=cutreads,
+            dict_summed_indels=dict_summed_indels,
             samplename=samplename,
             lamassemble_mat=lamassemble_mat,
-            pool=cutreads,
             candidate_regions=crs_dict,
-            partitions=effective_copy_number,
             timeout=timeout,
             threads=threads,
             tmp_dir_path=tmp_dir_path,
             verbose=verbose,
         )
-    if res is not None:
-        consensus_objects.update(res)
+    )
 
-    # TODO: check if the number of clusters is satisfying the expected number of alleles
-    # via check_clustering_consensus_results
-    # if not, then re-run consensus_while_clustering_with_racon with a higher separation_threshold (relaxation)
     # =========================================== CONSENSUS BUILDING END =========================================== #
 
     if len(consensus_objects) == 0:

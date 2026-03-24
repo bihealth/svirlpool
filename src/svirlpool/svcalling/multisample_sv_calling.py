@@ -12,7 +12,7 @@ import tempfile
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
-from itertools import groupby
+from itertools import combinations_with_replacement, groupby
 from math import ceil, floor
 from pathlib import Path
 from shlex import split
@@ -21,7 +21,7 @@ import attrs
 import numpy as np
 from intervaltree import Interval, IntervalTree
 from pandas import read_csv
-from scipy.stats import binom
+from scipy.stats import binom, multinomial
 from tqdm import tqdm
 
 from ..localassembly import SVpatterns, svirltile
@@ -2024,6 +2024,44 @@ def merge_svComposites(
 
 
 @attrs.define
+class LocusGroup:
+    """A set of SVcomposites that occupy the same genomic locus and compete for reads.
+    Allele 0 is the implicit reference. Alleles 1..n correspond to svComposites[0..n-1].
+    Singletons (no overlap with other composites) are passed through unchanged.
+    """
+
+    svComposites: list[SVcomposite]
+
+
+def build_locus_groups(
+    svComposites: list[SVcomposite],
+    near: int,
+) -> list[LocusGroup]:
+    """Group SVcomposites that overlap (at genotype-resolution `near`) into LocusGroups.
+
+    Uses an O(n log n) interval-tree sweep identical to the merge step: each
+    composite's regions are inserted into per-chromosome IntervalTrees, overlapping
+    intervals are merged, and the resulting clusters are connected via UnionFind.
+    Composites should be pre-filtered to a single chromosome before calling here.
+    """
+    overlaptrees: dict[str, IntervalTree] = defaultdict(IntervalTree)
+    for idx, svc in enumerate(svComposites):
+        for chrname, start, end in svc.get_regions(tolerance_radius=near):
+            overlaptrees[chrname].addi(start, end, {idx})
+    uf = UnionFind(range(len(svComposites)))
+    for tree in overlaptrees.values():
+        tree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
+        for interval in tree:
+            idxs = list(interval.data)
+            for k in range(1, len(idxs)):
+                uf.union(idxs[0], idxs[k])
+    return [
+        LocusGroup([svComposites[idx] for idx in cc])
+        for cc in uf.get_connected_components(allow_singletons=True)
+    ]
+
+
+@attrs.define
 class Genotype:
     samplename: str
     genotype: str  # e.g. "0/0", "0/1", "1/1"
@@ -2303,14 +2341,282 @@ def genotype_of_sample(
     return genotype
 
 
+# ---- Joint multi-allelic genotyping ---- #
+
+
+def _query_copy_number(
+    samplename: str,
+    chrname: str,
+    start: int,
+    end: int,
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+) -> int:
+    """Return the most common copy number in the overlapping CN-track bins.
+    Falls back to 2 (diploid) when no CN data is available."""
+    if samplename not in cn_tracks or chrname not in cn_tracks[samplename]:
+        return 2
+    try:
+        overlapping = cn_tracks[samplename][chrname][start:end]
+        if overlapping:
+            cn_values = [interval.data for interval in overlapping]
+            cn = max(set(cn_values), key=cn_values.count)
+            return max(1, int(cn)) # forcing to 1 might be incorrect, idk
+    except Exception as e:
+        log.warning(
+            f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
+        )
+    return 2
+
+
+def _locus_group_interval(locus_group: LocusGroup) -> tuple[str, int, int]:
+    """Return the bounding box (chrname, start, end) that spans all composites in the group.
+
+    All composites in a LocusGroup share at least one overlapping region by construction,
+    so taking the chromosome of the first composite's reference start is safe.
+    """
+    all_regions: list[tuple[str, int, int]] = []
+    for svc in locus_group.svComposites:
+        all_regions.extend(svc.get_regions(tolerance_radius=1))
+    chrname = all_regions[0][0]
+    start = min(r[1] for r in all_regions if r[0] == chrname)
+    end = max(r[2] for r in all_regions if r[0] == chrname)
+    return chrname, start, end
+
+
+def _assign_reads_to_alleles(
+    all_reads: set[int],
+    alt_reads_per_allele: list[set[int]],
+) -> list[int]:
+    """Assign reads to [ref, alt_0, alt_1, ...] count buckets.
+
+    Reads that unambiguously support exactly one alt allele are fully assigned to it.
+    Reads that support multiple alt alleles (e.g. because the alt sequences are similar)
+    are split equally among those alleles using fractional counts rounded at the end.
+    Reads supporting no alt allele are assigned to the implicit ref bucket.
+
+    Returns a list of integers: [n_ref, n_alt_0, n_alt_1, ...].
+    """
+    counts = [0.0] * (len(alt_reads_per_allele) + 1)
+    for read_id in all_reads:
+        supporting = [i for i, s in enumerate(alt_reads_per_allele) if read_id in s]
+        if not supporting:
+            counts[0] += 1.0  # ref
+        elif len(supporting) == 1:
+            counts[supporting[0] + 1] += 1.0  # unambiguous alt
+        else:
+            share = 1.0 / len(supporting)  # split ambiguous reads equally
+            for idx in supporting:
+                counts[idx + 1] += share
+    return [round(c) for c in counts]
+
+
+def _gt_string_for_allele(
+    gt_tuple: tuple[int, ...],
+    allele_idx: int,
+) -> str:
+    """Project a joint multi-allelic genotype tuple to a biallelic GT string for one allele.
+
+    allele_idx is 1-based (1 = first alt allele, 2 = second alt allele, ...).
+    Copies of allele_idx in gt_tuple become '1'; everything else becomes '0'.
+
+    Examples:
+        (1, 2), allele_idx=1  →  '0/1'   (het for allele 1)
+        (1, 2), allele_idx=2  →  '0/1'   (het for allele 2)
+        (1, 1), allele_idx=1  →  '1/1'   (hom alt for allele 1)
+        (0, 2), allele_idx=1  →  '0/0'   (allele 1 absent)
+    """
+    alleles = sorted("1" if a == allele_idx else "0" for a in gt_tuple)
+    return "/".join(alleles)
+
+
+def genotype_likelihood_multiallelic(
+    n_reads_per_allele: list[int],
+    n_total: int,
+    cn: int = 2,
+    epsilon: float = 0.01,
+) -> dict[tuple[int, ...], float]:
+    """Compute posterior genotype likelihoods for a multi-allelic locus.
+
+    Args:
+        n_reads_per_allele: Observed read counts [n_ref, n_alt_0, n_alt_1, ...].
+            Length = 1 (ref) + number of alt alleles.
+        n_total: Total reads at the locus (should equal sum(n_reads_per_allele)).
+        cn: Haploid copy number at this locus (default 2 = diploid).
+        epsilon: Small fraction used to avoid exact 0 and 1 expected frequencies,
+            which collapse the multinomial to zero likelihood everywhere.
+
+    Returns:
+        Posterior probability dict keyed by genotype tuples, e.g.:
+            (0, 0) → hom ref
+            (0, 1) → het ref/alt_0
+            (1, 2) → compound het alt_0/alt_1
+            (1, 1) → hom alt_0
+    """
+    # Guard: cn must be at least 1; cn==0 can arrive from a homozygous-deletion CN track.
+    if cn <= 0:
+        log.warning(
+            f"genotype_likelihood_multiallelic received cn={cn}; clamping to 1."
+        )
+        cn = 1 # clamping to 1 might be incorrect, idk.
+
+    n_states = len(n_reads_per_allele)  # ref + all alt alleles
+    # All ordered genotypes of length cn drawn from n_states alleles (with replacement)
+    genotypes: list[tuple[int, ...]] = list(
+        combinations_with_replacement(range(n_states), cn)
+    )
+
+    likelihoods: dict[tuple[int, ...], float] = {}
+    for gt in genotypes:
+        # Expected fraction for each allele state
+        fracs = [gt.count(state) / cn for state in range(n_states)]
+        # Clamp away exact 0s and 1s to avoid degenerate PMF
+        fracs = [max(epsilon, min(1.0 - epsilon, f)) for f in fracs]
+        # Re-normalise after clamping
+        total_frac = sum(fracs)
+        fracs = [f / total_frac for f in fracs]
+        likelihoods[gt] = float(multinomial.pmf(n_reads_per_allele, n=n_total, p=fracs))
+
+    total = sum(likelihoods.values())
+    if total <= 0.0:
+        log.warning(
+            f"Total multiallelic likelihood is zero for n_reads_per_allele={n_reads_per_allele}, "
+            f"n_total={n_total}, CN={cn}. Returning uniform probabilities."
+        )
+        u = 1.0 / len(genotypes)
+        return {gt: u for gt in genotypes}
+
+    posteriors = {gt: v / total for gt, v in likelihoods.items()}
+    # Replace NaN (can arise with very unusual inputs)
+    for gt in posteriors:
+        if np.isnan(posteriors[gt]):
+            posteriors[gt] = 0.0
+    return posteriors
+
+
+def joint_genotype_locus_group(
+    locus_group: LocusGroup,
+    covtrees: dict[str, dict[str, IntervalTree]],
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+    near: int,
+) -> list[dict[str, Genotype]]:
+    """Compute genotypes jointly for all composites in a LocusGroup.
+
+    Singleton locus groups (only one composite) fall through to a biallelic
+    multinomial call that is equivalent to the existing genotype_likelihood logic.
+
+    Returns one dict[samplename → Genotype] per composite, in the same order
+    as locus_group.svComposites.
+    """
+    composites = locus_group.svComposites
+    n_alleles = len(composites)
+
+    # Collect alt reads per allele, per sample
+    raw_alt_reads: list[dict[str, set[int]]] = [
+        svc.get_alt_readnamehashes_per_sample() for svc in composites
+    ]
+    all_samplenames: set[str] = {
+        samplename
+        for per_sample in raw_alt_reads
+        for samplename in per_sample
+    }
+
+    # Per-composite representative intervals — tight, no union bounding box (Fix 3).
+    # get_svComposite_interval_on_reference picks the best-supported region per composite.
+    comp_intervals: list[tuple[str, int, int]] = [
+        get_svComposite_interval_on_reference(svc, find_leftmost_reference_position=False)
+        for svc in composites
+    ]
+    # Use first composite's interval for CN lookup and log messages.
+    cn_chrname, cn_start, cn_end = comp_intervals[0]
+
+    # One result dict per composite
+    result: list[dict[str, Genotype]] = [{} for _ in composites]
+
+    for samplename in all_samplenames:
+        # Union read sets from each composite's own representative interval.
+        # This avoids the huge bounding-box query that arose from _locus_group_interval.
+        all_reads: set[int] = set()
+        for chrname, start, end in comp_intervals:
+            if chrname in covtrees.get(samplename, {}):
+                all_reads.update(
+                    get_ref_reads_from_covtrees(
+                        samplename=samplename,
+                        chrname=chrname,
+                        start=start,
+                        end=end,
+                        covtrees=covtrees,
+                        min_radius=1,
+                    )
+                )
+        n_total = len(all_reads)
+
+        if n_total == 0:
+            for i in range(n_alleles):
+                result[i][samplename] = create_wild_type_genotype(samplename, 0)
+            continue
+
+        # Intersect per-allele alt reads with the reads at this locus
+        alt_reads_per_allele: list[set[int]] = [
+            all_reads.intersection(raw_alt_reads[i].get(samplename, set()))
+            for i in range(n_alleles)
+        ]
+
+        # If no allele has any alt reads for this sample, assign wildtype to all
+        if not any(alt_reads_per_allele):
+            for i in range(n_alleles):
+                result[i][samplename] = create_wild_type_genotype(samplename, n_total)
+            continue
+
+        # Fractional read assignment to [ref, alt_0, alt_1, ...]
+        read_counts = _assign_reads_to_alleles(all_reads, alt_reads_per_allele)
+
+        # Single CN query per sample using first composite's representative interval
+        cn = _query_copy_number(samplename, cn_chrname, cn_start, cn_end, cn_tracks)
+
+        gt_likelihoods = genotype_likelihood_multiallelic(
+            n_reads_per_allele=read_counts,
+            n_total=n_total,
+            cn=cn,
+        )
+        best_gt = max(gt_likelihoods, key=gt_likelihoods.__getitem__)
+        best_prob = gt_likelihoods[best_gt]
+        gq = int(-10 * np.log10(1.0 - best_prob)) if best_prob < 1.0 else 60
+        n_ref = read_counts[0]
+
+        log.debug(
+            f"JOINT_GENOTYPE|sample={samplename}|locus={cn_chrname}:{cn_start}-{cn_end}|"
+            f"n_alleles={n_alleles}|read_counts={read_counts}|CN={cn}|"
+            f"best_gt={best_gt}|GP={best_prob:.6f}|GQ={gq}"
+        )
+
+        for i in range(n_alleles):
+            allele_idx = i + 1  # 1-based
+            gt_str = _gt_string_for_allele(best_gt, allele_idx)
+            result[i][samplename] = Genotype(
+                samplename=samplename,
+                genotype=gt_str,
+                gt_likelihood=best_prob,
+                genotype_quality=gq,
+                total_coverage=n_total,
+                ref_reads=n_ref,
+                var_reads=len(alt_reads_per_allele[i]),
+            )
+
+    return result
+
+
+# ---- End joint multi-allelic genotyping ---- #
+
+
 def SVcalls_from_SVcomposite(
     svComposite: SVcomposite,
     covtrees: dict[str, dict[str, IntervalTree]],
     cn_tracks: dict[
         str, dict[str, IntervalTree]
-    ],  # saplename -> chrname -> IntervalTree with copy number
+    ],  # samplename -> chrname -> IntervalTree with copy number
     find_leftmost_reference_position: bool,
     symbolic_threshold: int,
+    precomputed_genotypes: dict[str, Genotype] | None = None,
 ) -> list[SVcall]:
     # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
     #   have one chr, start, end on the reference
@@ -2339,6 +2645,7 @@ def SVcalls_from_SVcomposite(
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
             all_alt_reads=all_alt_reads,
+            precomputed_genotypes=precomputed_genotypes,
         )
         log.debug(
             f"TRANSFORMED::SVcalls_from_SVcomposite::svcall_object_from_svcomposite:(to DEL, INS, INV, BND) {composite_id}; TRANSFORMED TO: {res.to_log_id()}",
@@ -2354,6 +2661,7 @@ def SVcalls_from_SVcomposite(
             cn_tracks=cn_tracks,
             all_alt_reads=all_alt_reads,
             symbolic_threshold=symbolic_threshold,
+            precomputed_genotypes=precomputed_genotypes,
         )
         # log each res
         for _res in res:
@@ -2374,6 +2682,7 @@ def svcall_object_from_svcomposite(
     cn_tracks: dict[str, dict[str, IntervalTree]],
     find_leftmost_reference_position: bool,
     all_alt_reads: dict[str, set[int]],
+    precomputed_genotypes: dict[str, Genotype] | None = None,
 ) -> SVcall:
     chrname, start, end = get_svComposite_interval_on_reference(
         svComposite=svComposite,
@@ -2385,19 +2694,21 @@ def svcall_object_from_svcomposite(
         svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
     })
 
-    #
-    genotypes: dict[str, Genotype] = {
-        samplename: genotype_of_sample(
-            samplename=samplename,
-            chrname=chrname,
-            start=start,
-            end=end,
-            raw_alt_reads=all_alt_reads[samplename],
-            covtrees=covtrees,
-            cn_tracks=cn_tracks,
-        )
-        for samplename in all_alt_reads.keys()
-    }
+    if precomputed_genotypes is not None:
+        genotypes: dict[str, Genotype] = precomputed_genotypes
+    else:
+        genotypes = {
+            samplename: genotype_of_sample(
+                samplename=samplename,
+                chrname=chrname,
+                start=start,
+                end=end,
+                raw_alt_reads=all_alt_reads[samplename],
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+            )
+            for samplename in all_alt_reads.keys()
+        }
     # start and end need to be adjusted based on sv_type and need to be determined for the whole sv composite
 
     if issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion):
@@ -2550,6 +2861,7 @@ def svcall_objects_from_Adjacencies(
     cn_tracks: dict[str, dict[str, IntervalTree]],
     all_alt_reads: dict[str, set[int]],
     symbolic_threshold: int,
+    precomputed_genotypes: dict[str, Genotype] | None = None,
 ) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
@@ -2650,32 +2962,37 @@ def svcall_objects_from_Adjacencies(
 
     # Generate genotypes for all samples
     # For break end 0
-    genotypes_0: dict[str, Genotype] = {
-        samplename: genotype_of_sample(
-            samplename=samplename,
-            chrname=chr0,
-            start=start0,
-            end=end0,
-            raw_alt_reads=all_alt_reads[samplename],
-            covtrees=covtrees,
-            cn_tracks=cn_tracks,
-        )
-        for samplename in all_alt_reads.keys()
-    }
+    if precomputed_genotypes is not None:
+        # Both breakends belong to the same adjacency event: share the precomputed genotype
+        genotypes_0: dict[str, Genotype] = precomputed_genotypes
+        genotypes_1: dict[str, Genotype] = precomputed_genotypes
+    else:
+        genotypes_0 = {
+            samplename: genotype_of_sample(
+                samplename=samplename,
+                chrname=chr0,
+                start=start0,
+                end=end0,
+                raw_alt_reads=all_alt_reads[samplename],
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+            )
+            for samplename in all_alt_reads.keys()
+        }
 
-    # For break end 1
-    genotypes_1: dict[str, Genotype] = {
-        samplename: genotype_of_sample(
-            samplename=samplename,
-            chrname=chr1,
-            start=start1,
-            end=end1,
-            raw_alt_reads=all_alt_reads[samplename],
-            covtrees=covtrees,
-            cn_tracks=cn_tracks,
-        )
-        for samplename in all_alt_reads.keys()
-    }
+        # For break end 1
+        genotypes_1 = {
+            samplename: genotype_of_sample(
+                samplename=samplename,
+                chrname=chr1,
+                start=start1,
+                end=end1,
+                raw_alt_reads=all_alt_reads[samplename],
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+            )
+            for samplename in all_alt_reads.keys()
+        }
 
     # Quality filters (same logic as svcall_object_from_svcomposite)
     # We use the maximum of both break ends for pass_altreads
@@ -3466,16 +3783,61 @@ def multisample_sv_calling(
             data=merged, output_path=Path(tmp_dir_path) / "merged_svComposites.json.gz"
         )
     data.clear()  # free memory
-    log.info(f"Generating SVcalls from {len(merged)} merged SVcomposites...")
+
+    # ---- Joint multi-allelic genotyping ---- #
+    # Group overlapping composites per chromosome into LocusGroups, then call genotypes
+    # jointly so that two alleles at the same locus are always seen in the same model.
+    log.info(
+        f"Building locus groups for joint genotyping from {len(merged)} merged SVcomposites..."
+    )
+    # Group composites by chromosome first (same as merge step) so the O(n²) overlap
+    # check in build_locus_groups stays within each chromosome.
+    chr_buckets: dict[str, list[tuple[int, SVcomposite]]] = defaultdict(list)
+    cpx_bucket: list[tuple[int, SVcomposite]] = []
+    for idx, svc in enumerate(merged):
+        if issubclass(svc.sv_type, SVpatterns.SVpatternAdjacency):
+            cpx_bucket.append((idx, svc))
+        else:
+            chr_buckets[svc.svPatterns[0].SVprimitives[0].chr].append((idx, svc))
+
+    # Map from composite index to (locus_group, allele_index_within_group, precomputed genotypes)
+    precomputed: dict[int, dict[str, Genotype]] = {}
+
+    for _chr, bucket in tqdm(chr_buckets.items(), desc="Building locus groups per chr"):
+        idxs = [t[0] for t in bucket]
+        svcs = [t[1] for t in bucket]
+        locus_groups = build_locus_groups(svcs, near=near)
+        for lg in locus_groups:
+            if len(lg.svComposites) == 1:
+                # Singleton — skip joint genotyping; falls back to genotype_of_sample.
+                continue
+            genotype_dicts = joint_genotype_locus_group(
+                locus_group=lg,
+                covtrees=covtrees,
+                cn_tracks=cn_tracks,
+                near=near,
+            )
+            for allele_i, svc in enumerate(lg.svComposites):
+                # Find the original index in `merged`
+                orig_idx = idxs[svcs.index(svc)]
+                precomputed[orig_idx] = genotype_dicts[allele_i]
+
+    # cpx / adjacency composites span chromosomes and are all singletons — they
+    # fall back gracefully to genotype_of_sample via precomputed.get(idx) = None.
+
+    log.info(
+        f"Joint genotyping complete. Generating SVcalls from {len(merged)} merged SVcomposites..."
+    )
     svCalls: list[SVcall] = [
         svcall
-        for svComposite in merged
+        for idx, svComposite in enumerate(merged)
         for svcall in SVcalls_from_SVcomposite(
             svComposite,
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
             symbolic_threshold=symbolic_threshold,
+            precomputed_genotypes=precomputed.get(idx),
         )
     ]
     if tmp_dir_path is not None:

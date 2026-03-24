@@ -122,6 +122,16 @@ class Consensus:
             if signal.sv_type in (0, 1)
         ]
     
+    def has_large_signals(self, threshold: int = 50) -> bool:
+        """Check if there are any large SV signals in the consensus."""
+        if threshold <= 0:
+            raise ValueError("Threshold must be a positive integer.")
+        for ras in self.cut_read_alignment_signals:
+            for signal in ras.SV_signals:
+                if signal.size >= threshold:  # Threshold for large signals (e.g., 50 bp)
+                    return True
+        return False
+    
     def has_clipped_trimmed_reads(self) -> bool:
         """Check if there are any clipped or trimmed reads in the consensus."""
         for ras in self.cut_read_alignment_signals:
