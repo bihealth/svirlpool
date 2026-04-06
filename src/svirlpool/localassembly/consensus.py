@@ -32,15 +32,15 @@ from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import Interval, IntervalTree
-from scipy.sparse import csr_matrix
 from sklearn.cluster import KMeans, SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
-from . import consensus_class
+from . import consensus_class, consensus_lib
 
 matplotlib.use("Agg")  # Use non-interactive backend
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
@@ -267,14 +267,17 @@ def get_read_alignments_for_crs(
             for aln in f.fetch(cr.chr, max(cr.referenceStart, 0), cr.referenceEnd):
                 if aln.is_secondary:
                     continue
-                if aln.query_name in readnames_in_signals:
-                    if cr.crID not in dict_alignments:
-                        dict_alignments[cr.crID] = []
-                    dict_alignments[cr.crID].append(aln)
-                else:  # add reads as wt if they don't appear in the signals
-                    if cr.crID not in dict_alignments_wt:
-                        dict_alignments_wt[cr.crID] = []
-                    dict_alignments_wt[cr.crID].append(aln)
+                if cr.crID not in dict_alignments:
+                    dict_alignments[cr.crID] = []
+                dict_alignments[cr.crID].append(aln)
+                # if aln.query_name in readnames_in_signals:
+                #     if cr.crID not in dict_alignments:
+                #         dict_alignments[cr.crID] = []
+                #     dict_alignments[cr.crID].append(aln)
+                # else:  # add reads as wt if they don't appear in the signals
+                #     if cr.crID not in dict_alignments_wt:
+                #         dict_alignments_wt[cr.crID] = []
+                #     dict_alignments_wt[cr.crID].append(aln)
     return dict_alignments, dict_alignments_wt
 
 
@@ -1156,77 +1159,27 @@ def assemble_consensus(
 
 
 def partition_reads_spectral(
-    penalty_matrix: dict[tuple[str, str], float], all_reads: list[str], n_clusters: int
+    similarity_matrix: np.ndarray, read_names: list[str], n_clusters: int
 ) -> dict[str, int]:
+    """Cluster reads via spectral clustering on a precomputed similarity matrix.
+
+    Args:
+        similarity_matrix: Symmetric (n, n) similarity matrix with values in [0, 1].
+        read_names: Ordered list of read names corresponding to matrix rows/columns.
+        n_clusters: Number of clusters to produce.
+
+    Returns:
+        Dict mapping each read name to its cluster label (0-indexed).
     """
-    Use spectral clustering for graph partitioning.
-    Works well for finding balanced clusters with minimum cut.
-    """
-    # Create adjacency matrix (convert penalties to similarities)
-    max_penalty = max(penalty_matrix.values()) if penalty_matrix else 1.0
-
-    # Build sparse similarity matrix
-    n_reads = len(all_reads)
-    read_to_idx = {read: i for i, read in enumerate(all_reads)}
-
-    # Convert penalties to similarities: similarity = max_penalty - penalty
-    similarities = []
-    row_indices = []
-    col_indices = []
-
-    for (read1, read2), penalty in penalty_matrix.items():
-        if read1 in read_to_idx and read2 in read_to_idx:
-            similarity = max_penalty - penalty
-            i, j = read_to_idx[read1], read_to_idx[read2]
-
-            similarities.extend([similarity, similarity])  # symmetric
-            row_indices.extend([i, j])
-            col_indices.extend([j, i])
-
-    # Create sparse matrix
-    similarity_matrix = csr_matrix(
-        (similarities, (row_indices, col_indices)), shape=(n_reads, n_reads)
-    )
-
-    # Apply spectral clustering
     clustering = SpectralClustering(
         n_clusters=n_clusters,
         affinity="precomputed",
-        assign_labels="kmeans",  # or 'discretize'
+        assign_labels="kmeans",
         random_state=42,
     )
 
     labels = clustering.fit_predict(similarity_matrix)
-    return {read: int(label) for read, label in zip(all_reads, labels, strict=True)}
-
-
-def handle_isolated_reads(
-    penalty_matrix: dict[tuple[str, str], float],
-    all_reads: list[str],
-    connectivity_threshold: float = 0.1,
-) -> tuple[list[str], list[str]]:
-    """
-    Separate well-connected reads from isolated ones.
-    """
-    # Count connections per read
-    read_connections = dict.fromkeys(all_reads, 0)
-
-    for (read1, read2), penalty in penalty_matrix.items():
-        # Consider connected if penalty is below threshold
-        if penalty < connectivity_threshold:
-            read_connections[read1] += 1
-            read_connections[read2] += 1
-
-    # Separate based on connectivity
-    min_connections = 1  # Adjust based on your needs
-    well_connected = [
-        read for read, count in read_connections.items() if count >= min_connections
-    ]
-    isolated = [
-        read for read, count in read_connections.items() if count < min_connections
-    ]
-
-    return well_connected, isolated
+    return {read: int(label) for read, label in zip(read_names, labels, strict=True)}
 
 
 def consensus_while_clustering(
@@ -1238,7 +1191,10 @@ def consensus_while_clustering(
     timeout: int,
     threads: int = 1,
     tmp_dir_path: Path | None = None,
+    figures_dir: Path | None = None,
     verbose: bool = False,
+    densities_weight: float = 1.0,
+    max_intra_distance: float = -1.0,
 ) -> dict[str, consensus_class.Consensus] | None:
     # all-vs-all alignments with minimap2
     # calculate penalties (called score_ras_from_alignments, but its really not a score, but a penalty)
@@ -1263,7 +1219,7 @@ def consensus_while_clustering(
             tmp_all_vs_all_sam = tempfile.NamedTemporaryFile(
                 dir=tmp_dir,
                 prefix="all_vs_all.",
-                suffix=".sam",
+                suffix=".bam",
                 delete=False if tmp_dir_path else True,
             )
             try:
@@ -1288,98 +1244,120 @@ def consensus_while_clustering(
                     "no alignments found in all-vs-all alignment of reads. Returning None."
                 )
                 return None
-            # 4) score alignments
-            penalty_matrix: dict[tuple[str, str], float] = {}
-            #  - find all reference names in the alignments
-            #  - for each reference name in the alignments, do scoring
-            all_raf_scores: dict[str, dict[str, float]] = {}
-            for reference_name in {
-                aln.reference_name
-                for aln in all_vs_all_alignments
-                if not aln.is_unmapped
-            }:
-                raf_alignments = [
-                    aln
-                    for aln in all_vs_all_alignments
-                    if aln.reference_name == reference_name and not aln.is_unmapped
-                ]
-                raf_scores = score_ras_from_alignments(
-                    samplename=samplename,
-                    alignments=raf_alignments,
-                    read_sequences=pool,
-                    reference_sequence=(
-                        str(pool[reference_name].seq) if reference_name in pool else ""
-                    ),
-                    min_signal_size=12,
-                    min_bnd_size=100,
-                    reflen=len(pool[reference_name].seq),
-                    verbose=False,
-                )
-                all_raf_scores[reference_name] = raf_scores
 
-            percentile_values = [
-                float(np.percentile(list(raf_scores.values()), 100 / partitions))
-                for raf_scores in all_raf_scores.values()
-                if len(raf_scores) > 0
-            ]
-            dynamic_cutoff = float(np.median(percentile_values))
-            dynamic_cutoff = max(dynamic_cutoff, 3.0)  # at least 3.0
-            if verbose:
-                print(
-                    f"    DYNAMIC CUTOFF across all reference reads: {dynamic_cutoff:.2f}"
-                )
-
-            for reference_name, raf_scores in all_raf_scores.items():
-                if verbose:
-                    print(f"+++ {reference_name} +++")
-                    for read, value in raf_scores.items():
-                        print(read, value, sep="\t")
-                penalty_matrix.update({
-                    (reference_name, read): score
-                    for read, score in raf_scores.items()
-                    if score <= dynamic_cutoff
-                })
-
-            if verbose:
-                # print penalty matrix as a matrix with rows and columns sorted by read names
-                sorted_reads = sorted(pool.keys())
-                log.info("Penalty matrix:")
-                log.info("\t" + "\t".join(sorted_reads))
-                for read1 in sorted_reads:
-                    row = [
-                        (
-                            f"{penalty_matrix.get((read1, read2), float('inf')):.2f}"
-                            if (read1, read2) in penalty_matrix
-                            else "inf"
-                        )
-                        for read2 in sorted_reads
-                    ]
-                    log.info(f"{read1}\t" + "\t".join(row))
-
+            # 4) Build similarity matrix via consensus_lib pipeline
+            ava_path = Path(tmp_all_vs_all_sam.name)
             all_reads = list(pool.keys())
+            read_lengths = {name: len(rec.seq) for name, rec in pool.items()}
+            if verbose:
+                # print all read lengths
+                for name, length in read_lengths.items():
+                    log.info(f"Read {name} has length {length}")
 
-            # 1. Handle isolated reads first - they will end up in the unused reads
-            well_connected, isolated = handle_isolated_reads(penalty_matrix, all_reads)
+            if figures_dir is not None:
+                figures_dir.mkdir(parents=True, exist_ok=True)
+                consensus_lib.visualize_ava_alignments(
+                    ava_path, figures_dir / "ava_alignment_lengths.png"
+                )
+                consensus_lib.visualize_alignment_presence(
+                    ava_path, figures_dir / "alignment_presence.png"
+                )
+
+            ava_signals = consensus_lib.parse_sv_signals_from_ava_alignments(
+                ava_alignments=ava_path,
+                min_signal_size=12,
+                min_bnd_size=100,
+            )
+            size_densities = consensus_lib.sv_size_densities_from_ava_signals(
+                ava_signals, figures_dir=figures_dir
+            )
+            densities = consensus_lib.importance_densities_from_ava_signals(
+                ava_signals=ava_signals,
+                size_densities=size_densities,
+            )
+            directed_signals = consensus_lib.parse_directed_signals_from_ava(
+                ava_alignments=ava_path,
+                min_signal_size=12,
+                min_bnd_size=100,
+            )
+
+            similarity_matrix, sim_read_names = consensus_lib.pairwise_similarity_matrix(
+                directed_signals=directed_signals,
+                densities=densities,
+                read_lengths=read_lengths,
+                all_read_names=all_reads,
+                densities_weight=densities_weight
+            )
+
+            if figures_dir is not None:
+                consensus_lib.visualize_importance_densities(
+                    densities=densities,
+                    output=figures_dir / "importance_densities.png",
+                )
+                consensus_lib.visualize_size_similarity(
+                    read_lengths=read_lengths,
+                    output=figures_dir / "size_similarity.png",
+                )
+                consensus_lib.visualize_raw_signal_matrix(
+                    directed_signals=directed_signals,
+                    all_read_names=sim_read_names,
+                    output=figures_dir / "raw_signal_matrix.png",
+                )
+                consensus_lib.visualize_normalized_similarity_matrix(
+                    similarity_matrix=similarity_matrix,
+                    read_names=sim_read_names,
+                    output=figures_dir / "normalized_similarity_matrix.png",
+                )
+
+            # Detect outlier reads
+            outliers = consensus_lib.detect_outlier_reads(
+                similarity=similarity_matrix,
+                read_names=sim_read_names,
+                read_lengths=read_lengths,
+                n_clusters=partitions,
+            )
+            isolated = list(outliers)
+            outlier_set = set(outliers)
+            well_connected = [r for r in sim_read_names if r not in outlier_set]
             log.debug(
-                f"Well-connected reads: {len(well_connected)}, Isolated reads: {len(isolated)}"
+                f"Well-connected reads: {len(well_connected)}, Outlier reads: {len(isolated)}"
             )
 
             if len(well_connected) < partitions:
-                # Not enough well-connected reads for desired partitions
-                # Fall back to simple clustering or adjust partition count
                 effective_partitions = max(1, len(well_connected))
             else:
                 effective_partitions = partitions
+            log.debug(f"Effective number of clusters for spectral clustering: {effective_partitions}. Original requested partitions: {partitions}")
 
-            # 2. Cluster well-connected reads
+            # Cluster well-connected reads using their sub-matrix
             if len(well_connected) > 1:
+                wc_indices = [i for i, name in enumerate(sim_read_names) if name not in outlier_set]
+                wc_similarity = similarity_matrix[np.ix_(wc_indices, wc_indices)]
                 clustering_result = partition_reads_spectral(
-                    penalty_matrix=penalty_matrix,
-                    all_reads=well_connected,
+                    similarity_matrix=wc_similarity,
+                    read_names=well_connected,
                     n_clusters=effective_partitions,
                 )
             else:
                 clustering_result = {well_connected[0]: 0} if well_connected else {}
+
+            if figures_dir is not None:
+                _cluster_palette = [
+                    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
+                    "#ff7f00", "#a65628", "#f781bf",
+                ]
+                node_colors: dict[str, str] = {
+                    name: _cluster_palette[cid % len(_cluster_palette)]
+                    for name, cid in clustering_result.items()
+                }
+                for name in isolated:
+                    node_colors[name] = "#aaaaaa"
+                consensus_lib.visualize_similarity_graph(
+                    similarity_matrix=similarity_matrix,
+                    read_names=sim_read_names,
+                    output=figures_dir / "similarity_graph.png",
+                    node_colors=node_colors,
+                )
 
             # 3. Proceed with consensus generation for each cluster
             for cluster_id in set(clustering_result.values()):
@@ -2607,44 +2585,62 @@ def print_indel_distribution(read_sum_signals: dict[str, list[int]]) -> None:
         print(f"{readname}: {sum_inss} insertions, {sum_dels} deletions")
 
 
-def can_stop_meta_iteration(
-    consensus_objects: dict[str, consensus_class.Consensus] | None,
-    expected_clusters: int,
-    initial_pool_readnames: set[str],
-) -> bool:
-    if consensus_objects is None:
-        return False
-    n_results = (
-        0
-        if (consensus_objects is None or len(consensus_objects.keys()) == 0)
-        else len(consensus_objects)
+# a function to cluster reads based on a MSA with kalign
+# kalign-python somehow is not possible to import although we installed wit with pip.
+# so we use the subprocess fallback here.
+def kalign(
+        sequences: list[SeqRecord]
+) -> list[str]:
+    input_str = "\n".join([f">{seq.id}\n{str(seq.seq)}" for seq in sequences])
+    result = subprocess.run(
+        ["kalign", "-f", "fasta"],
+        input=input_str,
+        text=True,
+        capture_output=True,
+        check=True,
     )
-    if n_results < expected_clusters:
-        return True
-    # if many reads are unused, then a re-run is necessary
-    used_reads: set[str] = set()
-    for co in consensus_objects.values():
-        used_reads.update(co.get_used_readnames())
-    if len(used_reads) < 0.9 * len(initial_pool_readnames):
-        return False
-    # the number of resulting objects can also be higher, but the surplus objects should
-    # be outliers that have just very few reads
-    # to check this, fill a list with the maximum coverage of each consenus
-    # and sort it
-    # count the number of consensus objects that have less than 25% of the expected reads per haplotype
-    # those are outliers. There should only be as many outliers as the number of expected clusters
-    outlier_count = sum(
-        1
-        for co in consensus_objects.values()
-        if co.get_max_cutread_coverage() < 0.15 * len(used_reads)
-    )
-    real_count = len(consensus_objects) - outlier_count
-    if real_count > expected_clusters:
-        return False
-    if outlier_count > expected_clusters * int(round(0.51)):
-        return False
-    return True
+    # parse the output fasta format into a list of strings (the MSA)
+    msa = []
+    for line in result.stdout.splitlines():
+        if line.startswith(">"):
+            continue
+        msa.append(line.strip())
+    return msa
 
+
+def distances_from_msa(
+    cutreads: dict[str, SeqRecord],
+    threads:int=1,
+    verbose:bool=False,
+    terminal_width:int=280,
+) -> np.ndarray:
+    # create a MSA from the cutreads with kalign
+    msa:list[str] = kalign(list(cutreads.values()))
+    if verbose:
+        # break up the MSA lines into blocks of terminal_width to print to the terminal
+        # print each block
+        blocks = len(msa[0]) // terminal_width + 1
+        for i in range(blocks):
+            print("\n".join(line[i*terminal_width:(i+1)*terminal_width] for line in msa))
+            print("\n" + "="*terminal_width + "\n")
+
+    # the msa is used to score all reads pairwise.
+    # the msa can weigh signals by computing a density track of signals
+    # simple distance:
+    # 1) construct a square distance matrix of size n_reads x n_reads
+    # 2) for each pair of reads, compute the distance as the number of columns in the MSA where the two reads differ (mismatches and indels count as differences)
+    readnames = list(cutreads.keys())
+    n_reads = len(readnames)
+    distance_matrix = np.zeros((n_reads, n_reads), dtype=int)
+    for i in range(n_reads):
+        for j in range(i + 1, n_reads):
+            distance = sum(
+                1 for a, b in zip(msa[i], msa[j]) if a != b
+            )  # count mismatches and indels as differences
+            distance_matrix[i, j] = distance
+            distance_matrix[j, i] = distance
+    # return the distance matrix
+    return distance_matrix
 
 def process_consensus_container(
     samplename: str,
@@ -2653,10 +2649,14 @@ def process_consensus_container(
     copy_number_tracks: Path,
     lamassemble_mat: Path | str,
     timeout: int,
+    buffer_clipped_length: int,
     threads: int = 1,
-    buffer_clipped_length: int = 10000,
-    tmp_dir_path: Path | None = None,
+    tmp_dir_path: Path | str | None = None,
+    figures_dir: Path | None = None,
     verbose: bool = False,
+    densities_weight: float = 1.0,
+    max_intra_distance: float = -1.0,
+    cn_override: int | None = None,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -2668,10 +2668,14 @@ def process_consensus_container(
     if verbose:
         for cr in crs_dict.values():
             print(f"CR region on ref: {cr.chr}:{cr.referenceStart}-{cr.referenceEnd}")
-    max_copy_number = copynumber_tracks.query_copynumber_from_regions(
-        bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
-    )
-    log.info(f"Maximum copy number for this container: {max_copy_number}")
+    if cn_override is not None:
+        max_copy_number = cn_override
+        log.info(f"Using overridden copy number: {max_copy_number}")
+    else:
+        max_copy_number = max(2,copynumber_tracks.query_copynumber_from_regions(
+            bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
+        )) # 2 minimum clusters - maybe this is really bad, idk.
+        log.info(f"Maximum copy number for this container: {max_copy_number}")
     if max_copy_number > 4:
         # don't process this container. Too complex.
         log.warning(
@@ -2713,8 +2717,11 @@ def process_consensus_container(
         for crID, alnlist in alns.items():
             print(f"CR {crID} has {len(alnlist)} alignments:")
             for aln in alnlist:
+                # either left or right break end
+                clipped_left = aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0
+                clipped_right = aln.cigartuples[-1][1] if aln.cigartuples[-1][0] == 4 else 0
                 print(
-                    f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: {aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0}"
+                    f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: left={clipped_left}, right={clipped_right}"
                 )
     dict_all_intervals = get_read_alignment_intervals_in_cr(
         crs=list(crs_dict.values()),
@@ -2723,7 +2730,7 @@ def process_consensus_container(
     )
     if verbose:
         print(f"dict_all_intervals: {dict_all_intervals}")
-    # TODO: continue!
+
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
@@ -2736,10 +2743,9 @@ def process_consensus_container(
     cutreads: dict[str, SeqRecord] = trim_reads(
         dict_alignments=alns, intervals=max_intervals, read_records=read_records
     )
-    # if there is only one cutread, return an empty consensus dict and add it to the dict_unused_reads
-    # print the distribution of ins-dels of all alignments
-    # parse all alignments to sv signals
-
+    # msa_distances:np.ndarray = distances_from_msa(cutreads=cutreads, threads=threads, verbose=verbose)
+    # print(f"MSA distance matrix:\n{msa_distances}")
+    
     dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
         alns=alns, crs=crs_dict
     )
@@ -2750,20 +2756,20 @@ def process_consensus_container(
 
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
-    res = consensus_while_clustering_with_kmeans(
-        samplename=samplename,
-        dict_summed_indels=dict_summed_indels,
-        lamassemble_mat=lamassemble_mat,
-        pool=cutreads,
-        candidate_regions=crs_dict,
-        max_k=max_copy_number,
-        variance_threshold=29.0,
-        distance_threshold=29.0,
-        threads=threads,
-        tmp_dir_path=tmp_dir_path,
-        timeout=timeout,
-        verbose=verbose,
-    )
+    # res = consensus_while_clustering_with_kmeans(
+    #     samplename=samplename,
+    #     dict_summed_indels=dict_summed_indels,
+    #     lamassemble_mat=lamassemble_mat,
+    #     pool=cutreads,
+    #     candidate_regions=crs_dict,
+    #     max_k=max_copy_number,
+    #     variance_threshold=29.0,
+    #     distance_threshold=29.0,
+    #     threads=threads,
+    #     tmp_dir_path=tmp_dir_path,
+    #     timeout=timeout,
+    #     verbose=verbose,
+    # )
     if not res:
         res = consensus_while_clustering(
             samplename=samplename,
@@ -2774,7 +2780,10 @@ def process_consensus_container(
             timeout=timeout,
             threads=threads,
             tmp_dir_path=tmp_dir_path,
+            figures_dir=figures_dir,
             verbose=verbose,
+            densities_weight=densities_weight,
+            max_intra_distance=max_intra_distance,
         )
     if res is not None:
         consensus_objects.update(res)
@@ -2914,7 +2923,12 @@ def crs_containers_to_consensus(
     timeout: int,
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
+    figures_dir: Path | None = None,
     verbose: bool = False,
+    densities_weight: float = 1.0,
+    max_intra_distance: float = -1.0,
+    fasta_debug_path: Path | None = None,
+    cn_override: int | None = None,
 ) -> None:
     if not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -2970,7 +2984,11 @@ def crs_containers_to_consensus(
             buffer_clipped_length=buffer_clipped_sequence,
             lamassemble_mat=lamassemble_mat,
             timeout=timeout,
+            figures_dir=figures_dir,
             verbose=verbose,
+            densities_weight=densities_weight,
+            max_intra_distance=max_intra_distance,
+            cn_override=cn_override,
         )
         all_unused_reads.update(unused_reads)
         if not consensuses:
@@ -3011,6 +3029,13 @@ def crs_containers_to_consensus(
                 if consensus.consensus_padding is not None:
                     f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
 
+    if fasta_debug_path is not None:
+        log.info(f"Writing padded consensus sequences to {fasta_debug_path}.")
+        with open(fasta_debug_path, "w") as f:
+            for consensusID, consensus in result.consensus_dicts.items():
+                if consensus.consensus_padding is not None:
+                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
+
     log.info(f"Writing result to {output}.")
     with open(output, "w") as f:
         print(json.dumps(result.unstructure()), file=f)
@@ -3030,7 +3055,12 @@ def run_consensus_script(args, **kwargs):
         buffer_clipped_sequence=args.buffer_clipped_sequence,
         timeout=args.timeout,
         tmp_dir_path=args.tmp_dir_path,
+        figures_dir=Path(args.figures_dir) if args.figures_dir else None,
         verbose=args.verbose,
+        densities_weight=args.densities_weight,
+        max_intra_distance=args.max_intra_distance,
+        fasta_debug_path=args.fasta_debug_path,
+        cn_override=args.cn_override,
     )
 
 
@@ -3096,6 +3126,13 @@ def get_consensus_parser(
         help="List of crIDs to process. If not given, all crIDs are processed.",
     )
     parser.add_argument(
+        "--cn-override",
+        type=int,
+        required=False,
+        default=None,
+        help="Instead of using the copy number from the estimation track, this fixed value is used.",
+    )
+    parser.add_argument(
         "--buffer-clipped-sequence",
         type=int,
         required=False,
@@ -3125,10 +3162,41 @@ def get_consensus_parser(
         help="Set the logging level (default: INFO).",
     )
     parser.add_argument(
+        "--figures-dir",
+        type=Path,
+        required=False,
+        default=None,
+        help="Directory to write diagnostic figures (AVA alignments, importance densities, size similarity, etc.) per candidate-region cluster. Created if it does not exist.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
         help="prints the alignments in each clustering iteration to the terminal.",
+    )
+    parser.add_argument(
+        "--densities-weight",
+        type=float,
+        default=0.0,
+        help="Scaling factor for importance density weights in the pairwise similarity matrix. "
+             "0.0: densities have no effect (plain signal counts); "
+             ">0.0: density influence amplified. Default is 0.0.",
+    )
+    parser.add_argument(
+        "--max-intra-distance",
+        type=float,
+        default=-1.0,
+        help="Hard upper bound on how much intra-cluster distance is tolerated. "
+             "When set to a value > 0, any pair of reads whose signal-only distance exceeds "
+             "this threshold will not be in the same cluster. "
+             "-1.0 disables the threshold. Default is -1.0.",
+    )
+    parser.add_argument(
+        "--fasta-debug-path",
+        type=Path,
+        required=False,
+        default=None,
+        help="If provided, write the final padded consensus sequences to a FASTA file at this path.",
     )
     return parser
 

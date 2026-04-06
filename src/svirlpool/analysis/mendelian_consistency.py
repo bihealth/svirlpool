@@ -48,6 +48,7 @@ from enum import Enum
 from pathlib import Path, PosixPath
 
 import vcfpy
+from intervaltree import IntervalTree
 
 # logger
 log = logging.getLogger(__name__)
@@ -355,6 +356,40 @@ def is_variant_inconsistent(
 # %%
 
 
+def load_regions_from_bed(bed_path: Path) -> dict[str, IntervalTree]:
+    """Load a BED file into a dict of IntervalTrees keyed by chromosome."""
+    trees: dict[str, IntervalTree] = {}
+    with open(bed_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            chrom, start, end = parts[0], int(parts[1]), int(parts[2])
+            if start == end:
+                end += 1  # IntervalTree requires non-zero-length intervals
+            if chrom not in trees:
+                trees[chrom] = IntervalTree()
+            trees[chrom].addi(start, end)
+    return trees
+
+
+def variant_overlaps_regions(variant: vcfpy.Record, regions: dict[str, IntervalTree]) -> bool:
+    """Return True if the variant overlaps at least one region in *regions*."""
+    chrom = variant.CHROM
+    if chrom not in regions:
+        return False
+    start = variant.POS
+    svtype = variant.INFO.get("SVTYPE", "")
+    if svtype == "DEL" and "END" in variant.INFO:
+        end = int(variant.INFO["END"])
+    else:
+        end = start + 1
+    if start == end:
+        end += 1
+    return bool(regions[chrom].overlap(start, end))
+
+
 def check_ped(path_ped: PosixPath):
     with open(path_ped, "r") as f:
         for line in f:
@@ -412,61 +447,77 @@ def extract_variant_features(variant: vcfpy.Record) -> str:
     return f"{svlen},{svtype},{precision}"
 
 
+def _empty_status_dict() -> dict[GTInheritanceStatus, int]:
+    return {
+        GTInheritanceStatus.consistent: 0,
+        GTInheritanceStatus.inconsistent: 0,
+        GTInheritanceStatus.missing: 0,
+        GTInheritanceStatus.incomplete: 0,
+        GTInheritanceStatus.uncertain: 0,
+        GTInheritanceStatus.non_informative: 0,
+    }
+
+
 # creates the output and results line of one trio
 def variants_consistency_stats(
     variants: list[vcfpy.Record],
     output: PosixPath,
     names_trio: list[str] | None = None,
     bed: PosixPath | None = None,
-) -> dict[GTInheritanceStatus, int]:
+    min_size: int = 0,
+    regions: dict[str, IntervalTree] | None = None,
+    svtypes: set[str] | None = None,
+) -> dict[str, dict[GTInheritanceStatus, int]]:
     """
-    Calculate Mendelian consistency statistics for variants in a trio.
-
-    Now supports generalized copy numbers (CN 0-4+) including:
-    - Hemizygous (CN=1)
-    - Diploid (CN=2)
-    - Triploid (CN=3)
-    - Tetraploid (CN=4)
+    Calculate Mendelian consistency statistics for variants in a trio,
+    stratified by SVTYPE.
 
     Args:
         variants: List of VCF records
         output: Output BED file path
         names_trio: Optional list of [child, father, mother] sample names
-        output_bed: Optional path for BED file with features (chr, start, end, features, status)
+        bed: Optional path for BED file with features (chr, start, end, features, status)
+        min_size: Minimum absolute SVLEN to include
+        regions: Optional IntervalTree dict for region filtering
+        svtypes: Optional set of SVTYPEs to include. If None, all SVTYPEs are included.
 
     Returns:
-        Dictionary mapping GTInheritanceStatus to counts
+        Nested dict: svtype ("all", <type1>, <type2>, ...) → GTInheritanceStatus → count
     """
     if names_trio is not None:
         assert len(names_trio) == 3, "names_trio must have 3 elements"
-    # get the number of inconsistent variants
-    # counter for each GTInheritanceStatus
 
-    # Open bed file if provided
     bed_file = open(bed, "w") if bed else None
 
+    dict_stats: dict[str, dict[GTInheritanceStatus, int]] = {
+        "all": _empty_status_dict(),
+    }
+
     with open(output, "w"):
-        dict_stats = {
-            GTInheritanceStatus.consistent: 0,
-            GTInheritanceStatus.inconsistent: 0,
-            GTInheritanceStatus.missing: 0,
-            GTInheritanceStatus.incomplete: 0,
-            GTInheritanceStatus.uncertain: 0,
-            GTInheritanceStatus.non_informative: 0,
-        }
         for variant in variants:
-            if variant.INFO["SVTYPE"] not in ["DEL", "INS"]:
+            svtype = variant.INFO.get("SVTYPE", "")
+            if svtypes is not None and svtype not in svtypes:
                 continue
+            if regions is not None and not variant_overlaps_regions(variant, regions):
+                continue
+            if min_size > 0:
+                svlen = variant.INFO.get("SVLEN", [0])
+                if isinstance(svlen, list):
+                    svlen = svlen[0]
+                if abs(int(svlen)) < min_size:
+                    continue
             status = is_variant_inconsistent(variant=variant, names_trio=names_trio)
-            dict_stats[status] += 1
-            # if inconsistent, print the variant CHROM and POS
+            dict_stats["all"][status] += 1
+            if svtype not in dict_stats:
+                dict_stats[svtype] = _empty_status_dict()
+            dict_stats[svtype][status] += 1
+
             end = (
                 int(variant.INFO["END"])
-                if variant.INFO["SVTYPE"] == "DEL"
+                if svtype == "DEL"
                 else variant.POS + 1
             )
 
-            # Write to BED file with features if requested
             if bed_file:
                 features = extract_variant_features(variant)
                 print(
@@ -480,39 +531,37 @@ def variants_consistency_stats(
     return dict_stats
 
 
-def dict_stats_to_line(
-    samplename: str, dict_stats: dict[GTInheritanceStatus, int]
+def _status_dict_to_lines(
+    dict_stats: dict[GTInheritanceStatus, int], indent: str = "  "
 ) -> str:
-    # calc n_variants by summing all values in dict_stats
-    n_variants_total = sum(dict_stats.values())
-    # Calculate n_variants excluding uncertain and non_informative for percentage calculation
-    n_variants_informative = sum(
+    """Format a single GTInheritanceStatus → count dict as indented lines."""
+    n_total = sum(dict_stats.values())
+    n_informative = sum(
         count
         for status, count in dict_stats.items()
-        if status
-        not in [GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative]
+        if status not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
     )
-
-    # separate thousands by comma and percentage by two decimal places
-    results_line = f"{samplename}:\n- total: {n_variants_total:,}\n"
-
-    # Add each status with count and percentage (calculated from informative variants only)
+    lines = f"{indent}- total: {n_total:,}\n"
     for status in dict_stats:
         count = dict_stats[status]
-        if status in [
-            GTInheritanceStatus.uncertain,
-            GTInheritanceStatus.non_informative,
-        ]:
-            # Show count only, no percentage for excluded statuses
-            results_line += f"- {status.name}: {count:,}\n"
+        if status in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative):
+            lines += f"{indent}- {status.name}: {count:,}\n"
         else:
-            # Show count and percentage for informative statuses
-            percentage = (
-                count / n_variants_informative if n_variants_informative > 0 else 0
-            )
-            results_line += f"- {status.name}: {count:,}; {percentage:.2%}\n"
+            pct = count / n_informative if n_informative > 0 else 0
+            lines += f"{indent}- {status.name}: {count:,}; {pct:.2%}\n"
+    return lines
 
-    return results_line.rstrip()  # Remove trailing newline
+
+def dict_stats_to_line(
+    samplename: str, dict_stats: dict[str, dict[GTInheritanceStatus, int]]
+) -> str:
+    """Format per-sample stratified stats as a human-readable block."""
+    lines = f"{samplename}:\n"
+    svtype_keys = ["all"] + sorted(k for k in dict_stats if k != "all")
+    for svtype in svtype_keys:
+        lines += f"  [{svtype}]\n"
+        lines += _status_dict_to_lines(dict_stats[svtype], indent="  ")
+    return lines.rstrip()
 
 
 def get_trios_from_variants(
@@ -541,72 +590,76 @@ def get_trios_from_variants(
 
 
 def all_dict_stats_to_tsv(
-    all_dict_stats: dict[str, dict[GTInheritanceStatus, int]], path_tsv: PosixPath
+    all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
+    path_tsv: PosixPath,
 ) -> None:
-    # writes a tsv file with colums: sample, status, count, percentage (.2f)
+    """Write stratified stats to a TSV with columns: sample, svtype, status, count, percentage."""
     with open(path_tsv, "w") as f:
-        print("sample\tstatus\tcount\tpercentage", file=f)
-        for sample, dict_stats in all_dict_stats.items():
-            # Calculate n_variants excluding uncertain and non_informative for percentage calculation
-            n_variants_informative = sum(
-                count
-                for status, count in dict_stats.items()
-                if status
-                not in [
-                    GTInheritanceStatus.uncertain,
-                    GTInheritanceStatus.non_informative,
-                ]
-            )
-            for status in dict_stats:
-                count = dict_stats[status]
-                if status in [
-                    GTInheritanceStatus.uncertain,
-                    GTInheritanceStatus.non_informative,
-                ]:
-                    # Show NA for percentage of excluded statuses
-                    percentage_str = "NA"
-                else:
-                    # Calculate percentage from informative variants only
-                    percentage = (
-                        count / n_variants_informative
-                        if n_variants_informative > 0
-                        else 0
+        print("sample\tsvtype\tstatus\tcount\tpercentage", file=f)
+        for sample, svtype_stats in all_dict_stats.items():
+            svtype_keys = ["all"] + sorted(k for k in svtype_stats if k != "all")
+            for svtype in svtype_keys:
+                dict_stats = svtype_stats[svtype]
+                n_informative = sum(
+                    count
+                    for status, count in dict_stats.items()
+                    if status not in (
+                        GTInheritanceStatus.uncertain,
+                        GTInheritanceStatus.non_informative,
                     )
-                    percentage_str = str(percentage)
-                print(f"{sample}\t{status.name}\t{count}\t{percentage_str}", file=f)
+                )
+                for status in dict_stats:
+                    count = dict_stats[status]
+                    if status in (
+                        GTInheritanceStatus.uncertain,
+                        GTInheritanceStatus.non_informative,
+                    ):
+                        percentage_str = "NA"
+                    else:
+                        percentage_str = str(
+                            count / n_informative if n_informative > 0 else 0
+                        )
+                    print(
+                        f"{sample}\t{svtype}\t{status.name}\t{count}\t{percentage_str}",
+                        file=f,
+                    )
 
 
 def all_dict_stats_to_latex(
-    all_dict_stats: dict[str, dict[GTInheritanceStatus, int]], path_latex: PosixPath
+    all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
+    path_latex: PosixPath,
 ) -> None:
-    # crate 1 row per GTInheritanceStatus
-    # the columns are: GTInheritanceStatus, * sample names
-    # print two rows per GTInheritanceStatus: one row with the counts and another row with the percentages
+    """Write stratified stats to a LaTeX table.
+
+    Columns: status, svtype, <sample1>, <sample2>, ...
+    One row per (status, svtype) combination showing counts and fractional percentages.
+    """
+    samples = list(all_dict_stats.keys())
+    # Collect all svtype keys across all samples
+    all_svtype_keys_set: set[str] = set()
+    for svtype_stats in all_dict_stats.values():
+        all_svtype_keys_set.update(svtype_stats.keys())
+    svtype_keys = ["all"] + sorted(k for k in all_svtype_keys_set if k != "all")
     with open(path_latex, "w") as f:
-        print(r"status & " + " & ".join(all_dict_stats.keys()) + r"\\", file=f)
+        header = r"status & svtype & " + " & ".join(samples) + r"\\"
+        print(header, file=f)
         for status in GTInheritanceStatus:
-            line_abs = (
-                f"{status.name} & "
-                + " & ".join([
-                    f"{all_dict_stats[sample][status]:,}" for sample in all_dict_stats
-                ])
-                + r"\\"
-            )
-            print(line_abs, file=f)
-            n_variants_per_sample = {
-                samplename: sum(dict_stats.values())
-                for samplename, dict_stats in all_dict_stats.items()
-            }
-            line_per = (
-                f"{status.name} & "
-                + " & ".join([
-                    f"{all_dict_stats[sample][status] / n_variants_per_sample[sample]:.2}"
-                    for sample in all_dict_stats
-                ])
-                + r"\\"
-            )
-            # line_per = line_per.replace("%", r"\%")
-            print(line_per, file=f)
+            for svtype in svtype_keys:
+                counts = [
+                    all_dict_stats[s][svtype][status] if svtype in all_dict_stats[s] else 0
+                    for s in samples
+                ]
+                totals = [
+                    sum(all_dict_stats[s][svtype].values()) if svtype in all_dict_stats[s] else 0
+                    for s in samples
+                ]
+                abs_cells = " & ".join(f"{c:,}" for c in counts)
+                pct_cells = " & ".join(
+                    f"{c / t:.2f}" if t > 0 else "NA"
+                    for c, t in zip(counts, totals)
+                )
+                print(f"{status.name} ({svtype}) & {abs_cells} \\\\", file=f)
+                print(f"  & & {pct_cells} \\\\", file=f)
 
 
 def add_mndl_format_header(header_lines: list[str]) -> list[str]:
@@ -640,7 +693,9 @@ def add_mndl_format_header(header_lines: list[str]) -> list[str]:
 
 
 def annotate_vcf_with_mendelian_consistency(
-    input_vcf: PosixPath, output_vcf: PosixPath, ped: PosixPath, passonly: bool = False
+    input_vcf: PosixPath, output_vcf: PosixPath, ped: PosixPath, passonly: bool = False, min_size: int = 0,
+    regions: dict[str, IntervalTree] | None = None,
+    svtypes: set[str] | None = None,
 ) -> None:
     """Annotate VCF file with Mendelian consistency information.
 
@@ -716,12 +771,21 @@ def annotate_vcf_with_mendelian_consistency(
             if passonly and variant.FILTER != ["PASS"]:
                 continue
 
-            # Skip non-SV types if needed
-            if "SVTYPE" in variant.INFO and variant.INFO["SVTYPE"] not in [
-                "DEL",
-                "INS",
-            ]:
+            # Skip SVTYPEs not in the requested set
+            if svtypes is not None and "SVTYPE" in variant.INFO and variant.INFO["SVTYPE"] not in svtypes:
                 continue
+
+            # Skip variants outside requested regions
+            if regions is not None and not variant_overlaps_regions(variant, regions):
+                continue
+
+            # Skip variants smaller than min_size
+            if min_size > 0:
+                svlen = variant.INFO.get("SVLEN", [0])
+                if isinstance(svlen, list):
+                    svlen = svlen[0]
+                if abs(int(svlen)) < min_size:
+                    continue
 
             # Check Mendelian consistency for each trio
             trio_statuses = {}
@@ -787,13 +851,21 @@ def mendelian_consistency(
     latex: PosixPath | None = None,
     bed: PosixPath | None = None,
     vcf: PosixPath | None = None,
+    min_size: int = 0,
+    regions: PosixPath | None = None,
+    svtypes: set[str] | None = None,
 ) -> None:
+    regions_tree: dict[str, IntervalTree] | None = (
+        load_regions_from_bed(regions) if regions is not None else None
+    )
+
     # If VCF annotation is requested, do that and return
     if vcf is not None:
         if ped is None:
             raise ValueError("--ped is required when --vcf is specified")
         annotate_vcf_with_mendelian_consistency(
-            input_vcf=input, output_vcf=vcf, ped=ped, passonly=passonly
+            input_vcf=input, output_vcf=vcf, ped=ped, passonly=passonly, min_size=min_size,
+            regions=regions_tree, svtypes=svtypes,
         )
 
     variants: list[vcfpy.Record] = parse_variants(path_vcf=input, passonly=passonly)
@@ -804,15 +876,17 @@ def mendelian_consistency(
         father = variants[0].calls[1].sample
         mother = variants[0].calls[2].sample
         trios = [[sample, father, mother]]
-    all_dict_stats: dict[str, dict[GTInheritanceStatus, int]] = {}
+    all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]] = {}
     with open(output, "w") as f:
         for sample, father, mother in sorted(trios, key=lambda x: x[0]):
-            # Create sample-specific output_bed path if requested
-            dict_stats: dict[GTInheritanceStatus, int] = variants_consistency_stats(
+            dict_stats: dict[str, dict[GTInheritanceStatus, int]] = variants_consistency_stats(
                 names_trio=[sample, father, mother],
                 variants=variants,
                 output=output,
                 bed=bed,
+                min_size=min_size,
+                regions=regions_tree,
+                svtypes=svtypes,
             )
             all_dict_stats[sample] = dict_stats
             line_consistency = dict_stats_to_line(sample, dict_stats)
@@ -825,6 +899,7 @@ def mendelian_consistency(
 
 
 def run(args, **kwargs):
+    svtypes = set(args.svtypes.split(",")) if args.svtypes else None
     mendelian_consistency(
         input=args.input,
         output=args.output,
@@ -834,6 +909,9 @@ def run(args, **kwargs):
         latex=args.latex,
         bed=args.bed,
         vcf=args.vcf,
+        min_size=args.min_size,
+        regions=args.regions,
+        svtypes=svtypes,
     )
     return
 
@@ -889,6 +967,27 @@ def get_parser():
         required=False,
         default=None,
         help="Path to an output vcf file that will contain annotated variants with Mendelian consistency status in the MNDL FORMAT field. When specified, the script only performs VCF annotation (no summary statistics).",
+    )
+    parser.add_argument(
+        "--min-size",
+        type=int,
+        required=False,
+        default=0,
+        help="Minimum variant size (absolute SVLEN). Variants smaller than this are skipped. Default: 0 (no filtering).",
+    )
+    parser.add_argument(
+        "--regions",
+        type=PosixPath,
+        required=False,
+        default=None,
+        help="Path to a BED file. If provided, only variants overlapping at least one region are included in the analysis.",
+    )
+    parser.add_argument(
+        "--svtypes",
+        type=str,
+        required=False,
+        default=None,
+        help="Comma-separated list of SVTYPEs to include (e.g. 'DEL,INS'). If not specified, all SVTYPEs present in the VCF are analysed.",
     )
     return parser
 

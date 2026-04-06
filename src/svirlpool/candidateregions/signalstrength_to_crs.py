@@ -430,11 +430,18 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
     tmp_signals_bed = tmp_dir / f"{chr_name}_signals.bed"
     with open(tmp_signals_bed, "w") as f:
         for s in signals:
-            start = max(0, s[1] - 50)
-            end = s[2] + 50
+            sv_type = s[4].sv_type
+            if sv_type in (3, 4):
+                margin = 3 * buffer_region_radius
+            elif sv_type in (1, 2):
+                margin = max(50, int(abs(s[4].size) * 0.5)) # half deletion size per seed
+            else:
+                margin = 50
+            start = max(0, s[1] - margin)
+            end = s[2] + margin
             index = s[3]
             print(s[0], start, end, index, sep="\t", file=f)
-
+    
     # Add tandem repeats to BED file
     if chr_repeats_file.exists():
         with open(chr_repeats_file, "r") as trf, open(tmp_signals_bed, "a") as f:

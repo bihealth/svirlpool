@@ -82,12 +82,6 @@ def get_parser():
         required=True,
         type=os.path.abspath,
     )
-    # parser_run_wf.add_argument(
-    #     "--unique-regions",
-    #     help="unique regions in bed format",
-    #     required=True,
-    #     type=os.path.abspath,
-    # )
     parser_run_wf.add_argument(
         "--lamassemble-mat",
         help="lamassamble matrix file used for the final consensus assembly.",
@@ -195,12 +189,6 @@ def get_parser():
         required=False,
         type=int,
         default=0,
-    )
-    parser_run_wf.add_argument(
-        "--dont-merge-horizontally",
-        help="do not merge horizontally, i.e. do not merge SVs that are close to each other or in tandem repeats",
-        required=False,
-        action="store_true",
     )
     parser_run_wf.add_argument(
         "--log-level",

@@ -239,8 +239,14 @@ class CandidateRegion:
             raise ValueError("Cannot create CandidateRegion from empty sv_signals list")
         chr = sv_signals[0].chr
         referenceID = sv_signals[0].chrID
-        referenceStart = max(0, min(s.ref_start for s in sv_signals) - buffer)
-        referenceEnd = max(s.ref_end for s in sv_signals) + buffer
+        # Scale buffer for large deletions: each anchor should be at least as large as the deletion
+        max_del_size = max(
+            (abs(s.size) for s in sv_signals if s.sv_type in (1, 2)),
+            default=0,
+        )
+        effective_buffer = max(buffer, max_del_size)
+        referenceStart = max(0, min(s.ref_start for s in sv_signals) - effective_buffer)
+        referenceEnd = max(s.ref_end for s in sv_signals) + effective_buffer
         return cls(
             crID=crID,
             chr=chr,

@@ -127,6 +127,18 @@ class TestExtractCRIDs:
         crIDs = extract_crIDs_from_line(line)
         assert 19 in crIDs
 
+    def test_consensusID_only(self):
+        # crID should be extracted from consensusID= even when crID= is absent
+        line = "DROPPED::some_function: consensusID=42.3"
+        crIDs = extract_crIDs_from_line(line)
+        assert 42 in crIDs
+
+    def test_consensusID_multiple(self):
+        # crID should be extracted from multiple consensusID= patterns
+        line = "consensusID=5.0 consensusID=19.1"
+        crIDs = extract_crIDs_from_line(line)
+        assert crIDs == {5, 19}
+
 
 # ---- Region extraction ----
 
@@ -162,6 +174,12 @@ class TestExtractRegions:
         line = "DROPPED::some function with no regions"
         regions = extract_regions_from_line(line)
         assert len(regions) == 0
+
+    def test_alignment_region(self):
+        line = "DROPPED::func: alignment_region=chr1:500-600"
+        regions = extract_regions_from_line(line)
+        assert len(regions) == 1
+        assert regions[0] == Region("chr1", 500, 600)
 
     def test_multiple_region_fields(self):
         line = "region=chr1:100-200 region=chr2:300-400"

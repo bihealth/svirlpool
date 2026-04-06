@@ -70,12 +70,13 @@ def _regions_str_from_svcomposite(svc: SVcomposite) -> str:
 
 def _svcomposite_log_id(svc: SVcomposite) -> str:
     """Get a concise identifier string for an SVcomposite for logging.
-    Format: sv_type|crIDs={...}|regions=...|consensusIDs=[...]|samples=[...]
+    Format: sv_type|size=N|crIDs={...}|regions=chr:start-end;...|consensusIDs=[...]|representative=...
     """
     sv_type = svc.sv_type.get_sv_type() if svc.sv_type else "UNKNOWN"
     crIDs = sorted(_crIDs_from_svcomposite(svc))
     consensusIDs = sorted({svp.samplenamed_consensusID for svp in svc.svPatterns})
-    return f"{sv_type}|size={svc.get_size()} crIDs={{{','.join(map(str, crIDs))}}}|regions={svc.get_regions()}|consensusIDs={consensusIDs}, svPattern representative: {svc.get_representative_SVpattern()._log_id()}"
+    regions_str = _regions_str_from_svcomposite(svc)
+    return f"{sv_type}|size={svc.get_size()}|crIDs={{{','.join(map(str, crIDs))}}}|regions={regions_str}|consensusIDs={consensusIDs}|representative={svc.get_representative_SVpattern()._log_id()}"
 
 
 def _svcomposite_short_id(svc: SVcomposite) -> str:
@@ -273,6 +274,7 @@ def binary_svpattern_index_mask(
 def svPatterns_to_horizontally_merged_svComposites(
     svPatterns: list[SVpatterns.SVpatternType],
     sv_types: set[type[SVpatterns.SVpatternType]],
+    collapse_repeats: bool = True,
 ) -> list[SVcomposite]:
 
     result: list[SVcomposite] = []
@@ -333,17 +335,19 @@ def svPatterns_to_horizontally_merged_svComposites(
         # Create a union-find structure for this group
         uf_group = UnionFind(range(len(group)))
 
-        for i in range(len(group)):
-            for j in range(i + 1, len(group)):
-                if group[i].repeatIDs.intersection(group[j].repeatIDs):
+        # this is the point where horizontal merge can be prevented by skipping the union step
+        if collapse_repeats:
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    if group[i].repeatIDs.intersection(group[j].repeatIDs):
                     # TODO: Edge case, where indels in duplicated overlapping aligned fragments are concatenated horizontally
-                    log.debug(
-                        f"HORIZONTAL_MERGE|UNION_BY_REPEATID	crID={crID}	consensusID={_consensusID}	"
-                        f"pattern_i={group[i]._log_id()}    "
-                        f"pattern_j={group[j]._log_id()}    "
-                        f"shared_repeatIDs={group[i].repeatIDs.intersection(group[j].repeatIDs)}"
-                    )
-                    uf_group.union(i, j)
+                        log.debug(
+                            f"HORIZONTAL_MERGE|UNION_BY_REPEATID	crID={crID}	consensusID={_consensusID}	"
+                            f"pattern_i={group[i]._log_id()}    "
+                            f"pattern_j={group[j]._log_id()}    "
+                            f"shared_repeatIDs={group[i].repeatIDs.intersection(group[j].repeatIDs)}"
+                        )
+                        uf_group.union(i, j)
 
         # Collect connected components
         connected_components = uf_group.get_connected_components(allow_singletons=True)
@@ -412,82 +416,39 @@ def can_merge_svComposites_insertions(
             )
         return False
 
-    # - have similar sizes (computes from a combined population of both composites), tested with Cohen's D
-    # get population of sizes
+    # - have similar sizes, tested with two criteria:
+    #   1) simple fractional size difference check
+    #   2) population-driven Cohen's D on background signals
 
-    size_tolerance_a = sizetolerance_from_SVcomposite(a)
     size_a = abs(a.get_size())
-    size_tolerance_b = sizetolerance_from_SVcomposite(b)
     size_b = abs(b.get_size())
 
-    population_a: np.ndarray = (
-        np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
-    )
-    if len(population_a) == 0:
-        raise ValueError(
-            f"can_merge_svComposites_insertions: SVcomposite 'a' has no size population to compare. SVcomposite: {a}"
-        )
-    population_b: np.ndarray = (
-        np.array(b.get_size_populations(), dtype=np.int32) + b.get_size()
-    )
-    if len(population_b) == 0:
-        raise ValueError(
-            f"can_merge_svComposites_insertions: SVcomposite 'b' has no size population to compare. SVcomposite: {b}"
-        )
+    # Test 1: Simple fractional size difference check
+    max_size = max(size_a, size_b)
+    log_size = np.log2(abs(size_a - size_b) + 1)  # log-transform the size difference for better interpretability in logs
+    fraction_similar = (max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size) or abs(size_a - size_b) < log_size
 
-    # Calculate original means
-    mean_a = np.mean(population_a)
-    mean_b = np.mean(population_b)
-    mean_diff = abs(mean_a - mean_b)
-
-    # Check if means are within tolerance range (trivial case)
-    if mean_diff <= (size_tolerance_a + size_tolerance_b):
-        # Means are close enough - consider them similar
-        similar_size = True
-        if verbose:
-            print(
-                f"Size comparison - Trivial case: mean_diff={mean_diff:.1f} <= tolerance_sum={size_tolerance_a + size_tolerance_b:.1f}"
-            )
-            print(f"  Mean A: {mean_a:.1f}, Mean B: {mean_b:.1f}")
-            print(
-                f"  Tolerance A: {size_tolerance_a:.1f}, Tolerance B: {size_tolerance_b:.1f}"
-            )
+    # Test 2: Population-driven Cohen's D on background noise signals
+    population_a = np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
+    population_b = np.array(b.get_size_populations(), dtype=np.int32) + b.get_size()
+    if len(population_a) > 0 and len(population_b) > 0:
+        cohensD = cohens_d(population_a, population_b)
+        population_similar = abs(cohensD) <= abs(d)
     else:
-        # Shift means towards each other and calculate Cohen's d
-        if mean_a > mean_b:
-            shifted_mean_a = mean_a - size_tolerance_a
-            shifted_mean_b = mean_b + size_tolerance_b
-        else:
-            shifted_mean_a = mean_a + size_tolerance_a
-            shifted_mean_b = mean_b - size_tolerance_b
+        population_similar = False
 
-        # Create shifted populations by adjusting all values by the shift amount
-        shift_a = shifted_mean_a - mean_a
-        shift_b = shifted_mean_b - mean_b
-        shifted_population_a = population_a + shift_a
-        shifted_population_b = population_b + shift_b
+    similar_size = fraction_similar or population_similar
 
-        # Calculate Cohen's d with shifted populations
-        cohensD = cohens_d(shifted_population_a, shifted_population_b)
-
-        similar_size = abs(cohensD) <= abs(d) or abs(
-            size_a - size_b
-        ) <= apriori_size_difference_fraction_tolerance * max(size_a, size_b)
-        # or abs(size_a - size_b) <= int(ceil(np.log2((size_a + size_b)*0.5))) \
-
-        if verbose:
-            print(
-                f"Size comparison - Shifted Cohen's D: {cohensD:.3f}, threshold: {d}, similar_size: {similar_size}"
-            )
-            print(
-                f"  Original means - A: {mean_a:.1f}, B: {mean_b:.1f}, diff: {mean_diff:.1f}"
-            )
-            print(f"  Shifted means - A: {shifted_mean_a:.1f}, B: {shifted_mean_b:.1f}")
-            print(
-                f"  Tolerances - A: {size_tolerance_a:.1f}, B: {size_tolerance_b:.1f}"
-            )
-            print(f"  Population A sizes: {population_a.tolist()}")
-            print(f"  Population B sizes: {population_b.tolist()}")
+    if verbose:
+        print(
+            f"Size comparison: size_a={size_a}, size_b={size_b}, "
+            f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
+            f"similar_size={similar_size}"
+        )
+        if len(population_a) > 0 and len(population_b) > 0:
+            print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
+        print(f"  Population A sizes: {population_a.tolist()}")
+        print(f"  Population B sizes: {population_b.tolist()}")
 
     # if the inserton is between two break points, then it is necessary to take the sequence from inserted_sequence
     if size_a < 100 and size_b < 100:
@@ -528,45 +489,6 @@ def can_merge_svComposites_insertions(
     if verbose:
         print("Can merge insertions: all criteria passed")
     return True
-
-
-def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
-    # if a is sv type insertion or inversion, get inserted complexity tracks
-    mean_complexity: float = 1.0
-    if issubclass(a.sv_type, SVpatterns.SVpatternInsertion) or issubclass(
-        a.sv_type, SVpatterns.SVpatternInversion
-    ):
-        complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
-        if (
-            complexities is None
-            or len(complexities) == 0
-            or sum((np.sum(s) for s in complexities)) == 0
-        ):
-            mean_complexity = 0.0
-        else:
-            mean_complexity = float(
-                np.average(
-                    [np.mean(c) for c in complexities],
-                    weights=[len(c) for c in complexities],
-                )
-            )
-    elif issubclass(a.sv_type, SVpatterns.SVpatternDeletion):
-        complexities: list[np.ndarray] = a.get_reference_complexity_tracks()
-        if (
-            complexities is None
-            or len(complexities) == 0
-            or np.sum([np.sum(s) for s in complexities]) == 0
-        ):  # try np.sum(np.fromiter(generator))
-            mean_complexity = 0.0
-        else:
-            mean_complexity = float(
-                np.average(
-                    [np.mean(c) for c in complexities],
-                    weights=[len(c) for c in complexities],
-                )
-            )
-    size_tolerance = (1.0 - mean_complexity) * float(abs(a.get_size()))
-    return size_tolerance
 
 
 def can_merge_svComposites_deletions(
@@ -620,79 +542,37 @@ def can_merge_svComposites_deletions(
             )
         return False
 
-    size_tolerance_a = sizetolerance_from_SVcomposite(a)
     size_a = abs(a.get_size())
-    size_tolerance_b = sizetolerance_from_SVcomposite(b)
     size_b = abs(b.get_size())
 
-    population_a: np.ndarray = (
-        np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
-    )
-    if len(population_a) == 0:
-        raise ValueError(
-            f"can_merge_svComposites_deletions: SVcomposite 'a' has no size population to compare. SVcomposite: {a}"
-        )
-    population_b: np.ndarray = (
-        np.array(b.get_size_populations(), dtype=np.int32) + b.get_size()
-    )
-    if len(population_b) == 0:
-        raise ValueError(
-            f"can_merge_svComposites_deletions: SVcomposite 'b' has no size population to compare. SVcomposite: {b}"
-        )
+    # Test 1: Simple fractional size difference check
+    max_size = max(size_a, size_b)
+    log_size = np.log2(abs(size_a - size_b) + 1)  # log-transform the size difference for better interpretability in logs
+    fraction_similar = (max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size) or abs(size_a - size_b) < log_size
+    fraction_similar = max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size
+    fraction_similar = (fraction_similar and abs(size_a - size_b)) < 30 or abs(size_a - size_b) < log_size
 
-    # Calculate original means
-    mean_a = np.mean(population_a)
-    mean_b = np.mean(population_b)
-    mean_diff = abs(mean_a - mean_b)
-
-    # Check if means are within tolerance range (trivial case)
-    if mean_diff <= (size_tolerance_a + size_tolerance_b):
-        # Means are close enough - consider them similar
-        similar_size = True
-        if verbose:
-            print(
-                f"Size comparison - Trivial case: mean_diff={mean_diff:.1f} <= tolerance_sum={size_tolerance_a + size_tolerance_b:.1f}"
-            )
-            print(f"  Mean A: {mean_a:.1f}, Mean B: {mean_b:.1f}")
-            print(
-                f"  Tolerance A: {size_tolerance_a:.1f}, Tolerance B: {size_tolerance_b:.1f}"
-            )
+    # Test 2: Population-driven Cohen's D on background noise signals
+    population_a = np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
+    population_b = np.array(b.get_size_populations(), dtype=np.int32) + b.get_size()
+    if len(population_a) > 0 and len(population_b) > 0:
+        cohensD = cohens_d(population_a, population_b)
+        population_similar = abs(cohensD) <= abs(d)
     else:
-        # Shift means towards each other and calculate Cohen's d
-        if mean_a > mean_b:
-            shifted_mean_a = mean_a - size_tolerance_a
-            shifted_mean_b = mean_b + size_tolerance_b
-        else:
-            shifted_mean_a = mean_a + size_tolerance_a
-            shifted_mean_b = mean_b - size_tolerance_b
+        population_similar = False
 
-        # Create shifted populations by adjusting all values by the shift amount
-        shift_a = shifted_mean_a - mean_a
-        shift_b = shifted_mean_b - mean_b
-        shifted_population_a = population_a + shift_a
-        shifted_population_b = population_b + shift_b
+    similar_size = population_similar or fraction_similar
 
-        # Calculate Cohen's d with shifted populations
-        cohensD = cohens_d(shifted_population_a, shifted_population_b)
-
-        similar_size = abs(cohensD) <= abs(d) or abs(
-            size_a - size_b
-        ) <= apriori_size_difference_fraction_tolerance * max(size_a, size_b)
-        # or abs(size_a - size_b) <= int(ceil(np.log2((size_a + size_b)*0.5))) \
-
-        if verbose:
-            print(
-                f"Size comparison - Shifted Cohen's D: {cohensD:.3f}, threshold: {d}, similar_size: {similar_size}"
-            )
-            print(
-                f"  Original means - A: {mean_a:.1f}, B: {mean_b:.1f}, diff: {mean_diff:.1f}"
-            )
-            print(f"  Shifted means - A: {shifted_mean_a:.1f}, B: {shifted_mean_b:.1f}")
-            print(
-                f"  Tolerances - A: {size_tolerance_a:.1f}, B: {size_tolerance_b:.1f}"
-            )
-            print(f"  Population A sizes: {population_a.tolist()}")
-            print(f"  Population B sizes: {population_b.tolist()}")
+    if verbose:
+        print(
+            f"Size comparison: size_a={size_a}, size_b={size_b}, "
+            f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
+            f"similar_size={similar_size}"
+        )
+        if len(population_a) > 0 and len(population_b) > 0:
+            print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
+        print(f"  Population A sizes: {population_a.tolist()}")
+        print(f"  Population B sizes: {population_b.tolist()}")
 
     if size_a < 100 and size_b < 100:
         similarity = 1.0  # don't compare k-mers for small deletions, they are too short to be meaningful
@@ -1078,77 +958,35 @@ def can_merge_svComposites_inversions(
     # in the case that inversions of different subclasses are merged, it is necessary to measure their inner sizes to find a good size comparison,
     # since outer break ends can align very well while the inverted interval can be of very different sizes.
     # this allows to merge e.g. inverted dels with inverted dups given a stronger local noise.
-    size_tolerance_a = sizetolerance_from_SVcomposite(a)
     size_a = abs(a.get_size(inner=True))
-    size_tolerance_b = sizetolerance_from_SVcomposite(b)
     size_b = abs(b.get_size(inner=True))
 
-    population_a: np.ndarray = (
-        np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
-    )
-    if len(population_a) == 0:
-        raise ValueError(
-            f"can_merge_svComposites_inversions: SVcomposite 'a' has no size population to compare. SVcomposite: {a}"
-        )
-    population_b: np.ndarray = (
-        np.array(b.get_size_populations(), dtype=np.int32) + b.get_size()
-    )
-    if len(population_b) == 0:
-        raise ValueError(
-            f"can_merge_svComposites_inversions: SVcomposite 'b' has no size population to compare. SVcomposite: {b}"
-        )
+    # Test 1: Simple fractional size difference check
+    max_size = max(size_a, size_b)
+    log_size = np.log2(abs(size_a - size_b) + 1)  # log-transform the size difference for better interpretability in logs
+    fraction_similar = (max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size) or abs(size_a - size_b) < log_size
 
-    # Calculate original means
-    mean_a = np.mean(population_a)
-    mean_b = np.mean(population_b)
-    mean_diff = abs(mean_a - mean_b)
-
-    # Check if means are within tolerance range (trivial case)
-    if mean_diff <= (size_tolerance_a + size_tolerance_b):
-        # Means are close enough - consider them similar
-        similar_size = True
-        if verbose:
-            print(
-                f"Size comparison - Trivial case: mean_diff={mean_diff:.1f} <= tolerance_sum={size_tolerance_a + size_tolerance_b:.1f}"
-            )
-            print(f"  Mean A: {mean_a:.1f}, Mean B: {mean_b:.1f}")
-            print(f"  Tolerance A: {size_tolerance_a:.1f}")
-            print(f"  Tolerance B: {size_tolerance_b:.1f}")
+    # Test 2: Population-driven Cohen's D on background noise signals
+    population_a = np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
+    population_b = np.array(b.get_size_populations(), dtype=np.int32) + b.get_size()
+    if len(population_a) > 0 and len(population_b) > 0:
+        cohensD = cohens_d(population_a, population_b)
+        population_similar = abs(cohensD) <= abs(d)
     else:
-        # Shift means towards each other and calculate Cohen's d
-        if mean_a > mean_b:
-            shifted_mean_a = mean_a - size_tolerance_a
-            shifted_mean_b = mean_b + size_tolerance_b
-        else:
-            shifted_mean_a = mean_a + size_tolerance_a
-            shifted_mean_b = mean_b - size_tolerance_b
+        population_similar = False
 
-        # Create shifted populations by adjusting all values by the shift amount
-        shift_a = shifted_mean_a - mean_a
-        shift_b = shifted_mean_b - mean_b
-        shifted_population_a = population_a + shift_a
-        shifted_population_b = population_b + shift_b
+    similar_size = fraction_similar or population_similar
 
-        # Calculate Cohen's d with shifted populations
-        cohensD = cohens_d(shifted_population_a, shifted_population_b)
-
-        similar_size = abs(cohensD) <= abs(d) or abs(
-            size_a - size_b
-        ) <= apriori_size_difference_fraction_tolerance * max(size_a, size_b)
-
-        if verbose:
-            print(
-                f"Size comparison - Shifted Cohen's D: {cohensD:.3f}, threshold: {d}, similar_size: {similar_size}"
-            )
-            print(
-                f"  Original means - A: {mean_a:.1f}, B: {mean_b:.1f}, diff: {mean_diff:.1f}"
-            )
-            print(f"  Shifted means - A: {shifted_mean_a:.1f}, B: {shifted_mean_b:.1f}")
-            print(
-                f"  Tolerances - A: {size_tolerance_a:.1f}, B: {size_tolerance_b:.1f}"
-            )
-            print(f"  Population A sizes: {population_a.tolist()}")
-            print(f"  Population B sizes: {population_b.tolist()}")
+    if verbose:
+        print(
+            f"Size comparison: size_a={size_a}, size_b={size_b}, "
+            f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
+            f"similar_size={similar_size}"
+        )
+        if len(population_a) > 0 and len(population_b) > 0:
+            print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
+        print(f"  Population A sizes: {population_a.tolist()}")
+        print(f"  Population B sizes: {population_b.tolist()}")
 
     # Use inserted sequences from inversions for k-mer similarity comparison
     # For inversions, we need to get the inverted sequences (inserted_sequence from SVpatternInversion)
@@ -1628,6 +1466,7 @@ def generate_svComposites_from_dbs(
     input: list[str | Path],
     sv_types: set[type[SVpatterns.SVpatternType]],
     candidate_regions_filter: dict[str, set[int]] | None = None,
+    collapse_repeats: bool = True,
 ) -> list[SVcomposite]:
     log.debug("HORIZONTAL_MERGE|LOAD_DBS|n_dbs=%d", len(input))
     svComposites: list[SVcomposite] = []
@@ -1669,7 +1508,7 @@ def generate_svComposites_from_dbs(
 
         svComposites.extend(
             svPatterns_to_horizontally_merged_svComposites(
-                svPatterns, sv_types=sv_types
+                svPatterns, sv_types=sv_types, collapse_repeats=collapse_repeats
             )
         )
 
@@ -2210,6 +2049,8 @@ def genotype_of_sample(
     covtrees: dict[str, dict[str, IntervalTree]],
     cn_tracks: dict[str, dict[str, IntervalTree]],
     min_radius: int = 1,
+    breakpoint_mode: bool = False,
+    breakpoint_margin: int = 100,
 ) -> Genotype:
     genotype: Genotype
     if chrname not in covtrees.get(samplename, {}):
@@ -2218,14 +2059,37 @@ def genotype_of_sample(
         )
         genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
         return genotype
-    all_reads: set[int] = get_ref_reads_from_covtrees(
-        samplename=samplename,
-        chrname=chrname,
-        start=start,
-        end=end,
-        covtrees=covtrees,
-        min_radius=min_radius,
-    )
+    if breakpoint_mode:
+        # For deletions: query at both breakpoints rather than across the full
+        # deletion span.  Alt-supporting reads have effective_intervals ending
+        # at the start breakpoint and beginning at the end breakpoint, so an
+        # interior-only query misses them for large deletions.
+        reads_at_start: set[int] = get_ref_reads_from_covtrees(
+            samplename=samplename,
+            chrname=chrname,
+            start=start,
+            end=start,
+            covtrees=covtrees,
+            min_radius=breakpoint_margin,
+        )
+        reads_at_end: set[int] = get_ref_reads_from_covtrees(
+            samplename=samplename,
+            chrname=chrname,
+            start=end,
+            end=end,
+            covtrees=covtrees,
+            min_radius=breakpoint_margin,
+        )
+        all_reads: set[int] = reads_at_start | reads_at_end
+    else:
+        all_reads: set[int] = get_ref_reads_from_covtrees(
+            samplename=samplename,
+            chrname=chrname,
+            start=start,
+            end=end,
+            covtrees=covtrees,
+            min_radius=min_radius,
+        )
     alt_reads: set[int] = all_reads.intersection(raw_alt_reads)
 
     ref_reads: set[int] = all_reads.difference(alt_reads)
@@ -2386,6 +2250,7 @@ def svcall_object_from_svcomposite(
     })
 
     #
+    is_deletion = issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion)
     genotypes: dict[str, Genotype] = {
         samplename: genotype_of_sample(
             samplename=samplename,
@@ -2395,6 +2260,7 @@ def svcall_object_from_svcomposite(
             raw_alt_reads=all_alt_reads[samplename],
             covtrees=covtrees,
             cn_tracks=cn_tracks,
+            breakpoint_mode=is_deletion,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -2864,7 +2730,7 @@ def generate_header(
         '##INFO=<ID=MATEID,Number=.,Type=String,Description="ID of mate breakends">'
     )
     header.append(
-        '##INFO=<ID=CONSENSUSIDs,Number=1,Type=String,Description="ID of the consensus that this SV originiates from. Other consensus sequences can also be involved.">'
+        '##INFO=<ID=CONSENSUSIDs,Number=.,Type=String,Description="ID of the consensus that this SV originates from. Other consensus sequences can also be involved.">'
     )
     header.append(
         '##INFO=<ID=SEQ_ID,Number=1,Type=String,Description="ID of sequence in companion FASTA file for symbolic alleles">'
@@ -2999,6 +2865,98 @@ def genotype_likelihood(
             probabilities[genotype] = 0.0
 
     return probabilities
+
+
+def _parse_consensusID_parts(
+    consensus_id: str,
+) -> tuple[str, int, int] | None:
+    """Parse a samplenamed consensusID like 'HG002:731.0' into (samplename, crID, subID).
+    Returns None if the format is unexpected."""
+    try:
+        samplename, cr_part = consensus_id.split(":", 1)
+        cr_str, sub_str = cr_part.split(".", 1)
+        return samplename, int(cr_str), int(sub_str)
+    except (ValueError, IndexError):
+        return None
+
+
+def correct_genotypes_for_multi_assembly_loci(
+    svCalls: list[SVcall],
+) -> list[SVcall]:
+    """Correct genotypes where multiple consensus assemblies from the same candidate
+    region prove that a locus is heterozygous.
+
+    When a candidate region produces two (or more) distinct consensus assemblies for
+    a sample, each assembly represents a different allele.  Variants originating from
+    different assemblies of the same crID must therefore be heterozygous (0/1) in a
+    diploid context, not homozygous (1/1).
+
+    This function detects such cases by parsing the consensusIDs on each SVcall and
+    overrides any 1/1 genotype to 0/1 for the affected sample.
+    """
+    # Step 1: For each SVcall, collect (samplename, crID) → set of subIDs
+    #         Also build an index from (samplename, crID) → list of SVcall indices
+
+
+    # (samplename, crID) → set of subIDs seen across all SVcalls
+    cr_subids: dict[tuple[str, int], set[int]] = defaultdict(set)
+    # (samplename, crID) → list of SVcall indices that contain this (samplename, crID)
+    cr_svcall_indices: dict[tuple[str, int], list[int]] = defaultdict(list)
+
+    for idx, svcall in enumerate(svCalls):
+        for cid in svcall.consensusIDs:
+            parts = _parse_consensusID_parts(cid)
+            if parts is None:
+                continue
+            samplename, crID, subID = parts
+            key = (samplename, crID)
+            cr_subids[key].add(subID)
+            cr_svcall_indices[key].append(idx)
+
+    # Step 2: Identify (samplename, crID) pairs with multiple assemblies
+    multi_assembly_keys = {
+        key for key, subids in cr_subids.items() if len(subids) >= 2
+    }
+
+    if not multi_assembly_keys:
+        return svCalls
+
+    # Step 3: For each affected SVcall + sample, override 1/1 → 0/1
+    n_corrections = 0
+    for key in multi_assembly_keys:
+        samplename, crID = key
+        for svcall_idx in cr_svcall_indices[key]:
+            svcall = svCalls[svcall_idx]
+            gt = svcall.genotypes.get(samplename)
+            if gt is None:
+                continue
+            if gt.genotype == "1/1":
+                log.info(
+                    "GENOTYPE_CORRECTION|MULTI_ASSEMBLY|%s|crID=%d|subIDs=%s|%s: "
+                    "GT 1/1 -> 0/1 (DV=%d, DR=%d, TC=%d)",
+                    samplename,
+                    crID,
+                    sorted(cr_subids[key]),
+                    svcall.to_log_id(),
+                    gt.var_reads,
+                    gt.ref_reads,
+                    gt.total_coverage,
+                )
+                gt.genotype = "0/1"
+                # Recompute GQ: we are confident this is het, but reflect that the
+                # override is heuristic by assigning a moderate quality.
+                gt.genotype_quality = min(gt.genotype_quality, 30)
+                n_corrections += 1
+
+    if n_corrections > 0:
+        log.info(
+            "GENOTYPE_CORRECTION|MULTI_ASSEMBLY|SUMMARY: corrected %d genotype(s) "
+            "across %d multi-assembly loci",
+            n_corrections,
+            len(multi_assembly_keys),
+        )
+
+    return svCalls
 
 
 # %%
@@ -3335,6 +3293,7 @@ def multisample_sv_calling(
     tmp_dir_path: Path | str | None = None,
     candidate_regions_file: Path | str | None = None,
     skip_covtrees: bool = False,
+    collapse_repeats: bool = True,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
@@ -3397,6 +3356,7 @@ def multisample_sv_calling(
         input=input,
         sv_types=sv_types_set,
         candidate_regions_filter=candidate_regions_filter,
+        collapse_repeats=collapse_repeats,
     )
     if verbose:
         svtype_counts: dict[str, int] = {}
@@ -3478,6 +3438,11 @@ def multisample_sv_calling(
             symbolic_threshold=symbolic_threshold,
         )
     ]
+
+    # Correct genotypes at multi-assembly loci: when a candidate region produced
+    # multiple consensus assemblies for a sample, the variants must be heterozygous.
+    svCalls = correct_genotypes_for_multi_assembly_loci(svCalls)
+
     if tmp_dir_path is not None:
         save_svCalls_to_json(
             data=svCalls, output_path=Path(tmp_dir_path) / "svCalls.json.gz"
@@ -3555,6 +3520,7 @@ def run(args) -> None:
         verbose=args.verbose,
         candidate_regions_file=args.candidate_regions_file,
         skip_covtrees=args.skip_covtrees,
+        collapse_repeats=not args.dont_collapse_repeats,
     )
 
 
@@ -3610,9 +3576,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
-        help="Size difference fraction tolerance for merging SVs (default: 0.2). Decrease for stronger separation of haplotypes",
+        help="Size difference fraction tolerance for merging SVs (default: 0.1). Decrease for stronger separation of haplotypes",
         type=float,
-        default=0.2,
+        default=0.05,
     )
     parser.add_argument(
         "--symbolic-threshold",
@@ -3650,6 +3616,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
         help="Set the logging level (default: INFO).",
+    )
+    parser.add_argument(
+        "--dont-collapse-repeats",
+        help="Disable merging of indels with the same repeatIDs during horizontal merge.",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "--verbose", help="Enable verbose output.", action="store_true", default=False
