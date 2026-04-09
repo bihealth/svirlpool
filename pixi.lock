@@ -121,6 +121,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/linux-64/pysam-0.23.3-py313hd07c5dd_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.13.12-hc97d973_100_cp313.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.13-8_cp313.conda
+      - conda: https://conda.anaconda.org/bioconda/linux-64/racon-1.5.0-h077b44d_8.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-h853b02a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-14.3.3-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/bioconda/linux-64/samtools-1.22.1-h96c455f_0.tar.bz2
@@ -342,6 +343,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/linux-64/pysam-0.23.3-py313hd07c5dd_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.13.12-hc97d973_100_cp313.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python_abi-3.13-8_cp313.conda
+      - conda: https://conda.anaconda.org/bioconda/linux-64/racon-1.5.0-h077b44d_8.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-h853b02a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/rich-14.3.3-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/bioconda/linux-64/samtools-1.22.1-h96c455f_0.tar.bz2
@@ -3533,6 +3535,19 @@ packages:
   requires_dist:
   - cffi ; implementation_name == 'pypy'
   requires_python: '>=3.8'
+- conda: https://conda.anaconda.org/bioconda/linux-64/racon-1.5.0-h077b44d_8.conda
+  sha256: 7ecfcb8f8361957aa49683cddf48101a3fa1fec00c321e859a7ea26b21bd6894
+  md5: 4f0d65ef6797dd32aa24f76c3a818498
+  depends:
+  - libgcc >=13
+  - libstdcxx >=13
+  - libzlib >=1.3.1,<2.0a0
+  - python
+  license: MIT
+  license_family: MIT
+  purls: []
+  size: 161903
+  timestamp: 1763592122057
 - conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-h853b02a_0.conda
   sha256: 12ffde5a6f958e285aa22c191ca01bbd3d6e710aa852e00618fa6ddc59149002
   md5: d7d95fc8287ea7bf33e0e7116d2b95ec
@@ -3997,7 +4012,7 @@ packages:
 - pypi: ./
   name: svirlpool
   version: 0.1.2
-  sha256: 1e84a08e0da985c4cb26bc4dc5a212d23e28cc96abee32656dd759a2a6ff2c4f
+  sha256: 742dfc870eae66423714608c84344849110c15eeffe11306c132291b8c037b90
   requires_dist:
   - numpy>=2.3.4,<3
   - pandas>=2.3.3,<3
