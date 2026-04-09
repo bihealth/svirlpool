@@ -2680,63 +2680,6 @@ def print_indel_distribution(read_sum_signals: dict[str, list[int]]) -> None:
         print(f"{readname}: {sum_inss} insertions, {sum_dels} deletions")
 
 
-# a function to cluster reads based on a MSA with kalign
-# kalign-python somehow is not possible to import although we installed wit with pip.
-# so we use the subprocess fallback here.
-def kalign(
-        sequences: list[SeqRecord]
-) -> list[str]:
-    input_str = "\n".join([f">{seq.id}\n{str(seq.seq)}" for seq in sequences])
-    result = subprocess.run(
-        ["kalign", "-f", "fasta"],
-        input=input_str,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    # parse the output fasta format into a list of strings (the MSA)
-    msa = []
-    for line in result.stdout.splitlines():
-        if line.startswith(">"):
-            continue
-        msa.append(line.strip())
-    return msa
-
-
-def distances_from_msa(
-    cutreads: dict[str, SeqRecord],
-    threads:int=1,
-    verbose:bool=False,
-    terminal_width:int=280,
-) -> np.ndarray:
-    # create a MSA from the cutreads with kalign
-    msa:list[str] = kalign(list(cutreads.values()))
-    if verbose:
-        # break up the MSA lines into blocks of terminal_width to print to the terminal
-        # print each block
-        blocks = len(msa[0]) // terminal_width + 1
-        for i in range(blocks):
-            print("\n".join(line[i*terminal_width:(i+1)*terminal_width] for line in msa))
-            print("\n" + "="*terminal_width + "\n")
-
-    # the msa is used to score all reads pairwise.
-    # the msa can weigh signals by computing a density track of signals
-    # simple distance:
-    # 1) construct a square distance matrix of size n_reads x n_reads
-    # 2) for each pair of reads, compute the distance as the number of columns in the MSA where the two reads differ (mismatches and indels count as differences)
-    readnames = list(cutreads.keys())
-    n_reads = len(readnames)
-    distance_matrix = np.zeros((n_reads, n_reads), dtype=int)
-    for i in range(n_reads):
-        for j in range(i + 1, n_reads):
-            distance = sum(
-                1 for a, b in zip(msa[i], msa[j]) if a != b
-            )  # count mismatches and indels as differences
-            distance_matrix[i, j] = distance
-            distance_matrix[j, i] = distance
-    # return the distance matrix
-    return distance_matrix
-
 def process_consensus_container(
     samplename: str,
     crs_dict: dict[int, datatypes.CandidateRegion],
@@ -2839,8 +2782,8 @@ def process_consensus_container(
     cutreads: dict[str, SeqRecord] = trim_reads(
         dict_alignments=alns, intervals=max_intervals, read_records=read_records
     )
-    # msa_distances:np.ndarray = distances_from_msa(cutreads=cutreads, threads=threads, verbose=verbose)
-    # print(f"MSA distance matrix:\n{msa_distances}")
+    log.info(f"number of reads: {len(cutreads)}")
+    log.info(f"summed trimmed reads bp: {sum(len(read.seq) for read in cutreads.values())}")
     
     dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
         alns=alns, crs=crs_dict
