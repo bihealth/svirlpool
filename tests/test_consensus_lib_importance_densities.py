@@ -1,9 +1,5 @@
 """Tests for importance_densities_from_ava_signals in ava_visualization."""
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import numpy as np
 
 from svirlpool.localassembly.consensus_lib import (

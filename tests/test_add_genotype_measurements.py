@@ -8,14 +8,12 @@ Key invariant being tested:
 """
 
 import pysam
-import pytest
 
 from svirlpool.localassembly.SVprimitives import (
     SVprimitive,
     add_genotypeMeasurements_to_SVprimitives,
 )
 from svirlpool.util.datatypes import MergedSVSignal
-
 
 # ---------------------------------------------------------------------------
 # Helpers

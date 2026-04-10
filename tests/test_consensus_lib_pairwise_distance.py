@@ -1,7 +1,6 @@
 """Tests for pairwise distance/similarity, BND adjustment, and outlier detection."""
 
 import numpy as np
-import pytest
 
 from svirlpool.localassembly.consensus_lib import (
     DirectedSignals,
@@ -13,7 +12,6 @@ from svirlpool.localassembly.consensus_lib import (
     size_damping,
 )
 from svirlpool.util.datatypes import SVsignal
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -440,7 +438,7 @@ class TestDetectOutlierReads:
     def test_low_connectivity_outlier_median_based(self) -> None:
         """A read with very few connections relative to the median is flagged."""
         names = [f"r{i}" for i in range(10)]
-        rl = {r: 5000 for r in names}
+        rl = dict.fromkeys(names, 5000)
         sim = np.ones((10, 10), dtype=np.float64) * 0.5
         np.fill_diagonal(sim, 1.0)
         # Disconnect r9 from almost everyone

@@ -6,14 +6,13 @@ Tests the two-test size comparison logic:
 If either test passes, the variants are considered similar in size.
 """
 
-from svirlpool.localassembly import SVprimitives, SVpatterns
+from svirlpool.localassembly import SVpatterns, SVprimitives
 from svirlpool.svcalling import genotyping
-from svirlpool.svcalling.SVcomposite import SVcomposite
 from svirlpool.svcalling.multisample_sv_calling import (
     can_merge_svComposites_deletions,
     can_merge_svComposites_insertions,
 )
-
+from svirlpool.svcalling.SVcomposite import SVcomposite
 
 # ---------------------------------------------------------------------------
 # Helper factories

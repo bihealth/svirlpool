@@ -793,7 +793,8 @@ def all_dict_stats_to_latex(
                 ]
                 abs_cells = " & ".join(f"{c:,}" for c in counts)
                 pct_cells = " & ".join(
-                    f"{c / t:.2f}" if t > 0 else "NA" for c, t in zip(counts, totals)
+                    f"{c / t:.2f}" if t > 0 else "NA"
+                    for c, t in zip(counts, totals, strict=False)
                 )
                 if all_size_dict_stats is not None:
                     print(f"{status.name} & {svtype} & all & {abs_cells} \\\\", file=f)
@@ -825,7 +826,7 @@ def all_dict_stats_to_latex(
                         bc_cells = " & ".join(f"{c:,}" for c in bin_counts)
                         bp_cells = " & ".join(
                             f"{c / t:.2f}" if t > 0 else "NA"
-                            for c, t in zip(bin_counts, bin_totals)
+                            for c, t in zip(bin_counts, bin_totals, strict=False)
                         )
                         print(
                             f"{status.name} & {svtype} & {bin_label} & {bc_cells} \\\\",
@@ -1018,8 +1019,6 @@ def plot_mendelian_results(
     all_svt: set[str] = set()
     for stats in all_dict_stats.values():
         all_svt.update(stats.keys())
-    svtype_keys = _sort_svtype_keys(all_svt)
-    n_svt = len(svtype_keys)
     n_samples = len(samples)
 
     # ---- Plot 1: combined stacked bar (ALL, DEL, INS only) ----
@@ -1054,7 +1053,7 @@ def plot_mendelian_results(
             )
             # Label consistency bars with percentage
             if status == GTInheritanceStatus.consistent:
-                for bi, (bar, val) in enumerate(zip(bars, values)):
+                for bi, (bar, val) in enumerate(zip(bars, values, strict=False)):
                     if val > 0:
                         rate = _consistency_rate(
                             all_dict_stats[sample].get(
@@ -1086,7 +1085,7 @@ def plot_mendelian_results(
     ax1.set_title(title1)
     ax1.legend(
         [h for h, _ in legend_handles],
-        [l for _, l in legend_handles],
+        [label for _, label in legend_handles],
         loc="upper right",
         fontsize="small",
     )
@@ -1131,7 +1130,7 @@ def plot_mendelian_results(
             )
             # Label consistency bars with percentage
             if status == GTInheritanceStatus.consistent:
-                for bi, (bar, val) in enumerate(zip(bars, values)):
+                for bi, (bar, val) in enumerate(zip(bars, values, strict=False)):
                     if val > 0:
                         rate = _consistency_rate(
                             all_dict_stats[sample].get(
@@ -1206,7 +1205,7 @@ def plot_mendelian_results(
                     markersize=7,
                 )
                 # Add percentage labels to each point
-                for xi, yi in zip(x_bins[valid], rates[valid]):
+                for xi, yi in zip(x_bins[valid], rates[valid], strict=False):
                     ax.text(
                         xi,
                         yi + 2,

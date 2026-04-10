@@ -21,7 +21,6 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-from copy import deepcopy
 from pathlib import Path
 
 import attrs
@@ -32,7 +31,7 @@ import pysam
 from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from intervaltree import Interval, IntervalTree
+from intervaltree import IntervalTree
 from sklearn.cluster import KMeans, SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
@@ -258,9 +257,7 @@ def get_read_alignments_for_crs(
     """Returns a dict of the form crID:{sampleID:[alignments]}"""
     dict_alignments: dict[int, list[pysam.AlignedSegment]] = {}
     dict_alignments_wt: dict[int, list[pysam.AlignedSegment]] = {}
-    readnames_in_signals: dict[str] = {
-        signal.readname for cr in crs for signal in cr.sv_signals
-    }
+    _readnames_in_signals = {signal.readname for cr in crs for signal in cr.sv_signals}
     # if no read alignments can be found for one sample,
     for cr in crs:
         # check if cr is of type datatypes.CandidateRegion

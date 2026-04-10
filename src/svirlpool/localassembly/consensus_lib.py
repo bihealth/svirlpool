@@ -5,20 +5,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Tuple
 
-import numpy as np
 import matplotlib
-
-matplotlib.use("Agg")  # non-interactive backend
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-
-logging.getLogger("matplotlib").setLevel(logging.WARNING)
+import numpy as np
 import pysam
 from Bio import SeqIO
 
-from ..util.datatypes import SVsignal
-from ..signalprocessing import alignments_to_rafs
+matplotlib.use("Agg")  # non-interactive backend
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 
+from ..signalprocessing import alignments_to_rafs
+from ..util.datatypes import SVsignal
+
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
@@ -901,7 +900,12 @@ def visualize_similarity_graph(
             ha="center",
             va="bottom",
             zorder=4,
-            bbox=dict(boxstyle="round,pad=0.1", fc="white", alpha=0.6, ec="none"),
+            bbox={
+                "boxstyle": "round,pad=0.1",
+                "fc": "white",
+                "alpha": 0.6,
+                "ec": "none",
+            },
         )
 
     ax.set_title("Read similarity graph")
