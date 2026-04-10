@@ -1623,8 +1623,39 @@ def consensus_while_clustering_with_kmeans(
         log.debug("Not enough reads for KMeans clustering. Returning None.")
         return None
 
+    # Filter out reads whose sequence length is an outlier.
+    # Uses the same gap-based approach as consensus_lib._outlier_reads_by_length:
+    # reads are sorted by length, gaps exceeding `length_factor` start a new
+    # cluster, and clusters smaller than a threshold are flagged as outliers.
+    read_lengths = {rn: len(pool[rn].seq) for rn in dict_summed_indels if rn in pool}
+    size_outliers: set[str] = set()
+    if len(read_lengths) >= 3:
+        length_factor = 1.2
+        sorted_by_len = sorted(read_lengths, key=lambda r: read_lengths[r])
+        clusters: list[list[str]] = [[sorted_by_len[0]]]
+        for i in range(1, len(sorted_by_len)):
+            prev_len = read_lengths[sorted_by_len[i - 1]]
+            curr_len = read_lengths[sorted_by_len[i]]
+            if prev_len > 0 and curr_len / prev_len > length_factor:
+                clusters.append([])
+            clusters[-1].append(sorted_by_len[i])
+        min_cluster_size = max(2, int(np.sqrt(len(read_lengths) / max(max_k, 1))))
+        for cluster in clusters:
+            if len(cluster) < min_cluster_size:
+                size_outliers.update(cluster)
+        if size_outliers:
+            log.info(
+                f"KMeans: filtered {len(size_outliers)} size-outlier read(s): "
+                f"{sorted(size_outliers)}"
+            )
+
     # Build the feature matrix: each read has [sum_insertions, sum_deletions]
-    readnames = sorted(dict_summed_indels.keys())
+    readnames = sorted(rn for rn in dict_summed_indels.keys() if rn not in size_outliers)
+
+    if len(readnames) < 2:
+        log.debug("Not enough reads after size-outlier filtering for KMeans clustering. Returning None.")
+        return None
+
     X = np.array([dict_summed_indels[rn] for rn in readnames], dtype=np.float64)
 
     # 1) Try KMeans clustering with k = 1 .. max_k
@@ -1704,7 +1735,7 @@ def consensus_while_clustering_with_kmeans(
 
     # 2) Assemble consensus for each cluster
     result: dict[str, consensus_class.Consensus] | None = None
-    failed_reads: list[str] = []
+    failed_reads: list[str] = [] #list(size_outliers)
 
     try:
         with tempfile.TemporaryDirectory(
@@ -2795,20 +2826,21 @@ def process_consensus_container(
 
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
-    # res = consensus_while_clustering_with_kmeans(
-    #     samplename=samplename,
-    #     dict_summed_indels=dict_summed_indels,
-    #     lamassemble_mat=lamassemble_mat,
-    #     pool=cutreads,
-    #     candidate_regions=crs_dict,
-    #     max_k=max_copy_number,
-    #     variance_threshold=29.0,
-    #     distance_threshold=29.0,
-    #     threads=threads,
-    #     tmp_dir_path=tmp_dir_path,
-    #     timeout=timeout,
-    #     verbose=verbose,
-    # )
+    res = consensus_while_clustering_with_kmeans(
+        samplename=samplename,
+        dict_summed_indels=dict_summed_indels,
+        lamassemble_mat=lamassemble_mat,
+        pool=cutreads,
+        candidate_regions=crs_dict,
+        max_k=max_copy_number,
+        variance_threshold=29.0,
+        distance_threshold=29.0,
+        threads=threads,
+        tmp_dir_path=tmp_dir_path,
+        timeout=timeout,
+        verbose=verbose,
+        consensus_method=consensus_method,
+    )
     if not res:
         res = consensus_while_clustering(
             samplename=samplename,
