@@ -16,6 +16,7 @@ from svirlpool.util.datatypes import SVsignal
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _ins(ref_start: int, ref_end: int, size: int) -> SVsignal:
     return SVsignal(
         ref_start=ref_start,
@@ -31,6 +32,7 @@ def _ins(ref_start: int, ref_end: int, size: int) -> SVsignal:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_importance_densities_without_size_scaling_uses_unit_scale() -> None:
     """Without size_densities every signal contributes with scale=1.0.
 
@@ -39,7 +41,7 @@ def test_importance_densities_without_size_scaling_uses_unit_scale() -> None:
     """
     ava_signals = {
         "readA": [
-            _ins(ref_start=450, ref_end=550, size=500),   # position ~500
+            _ins(ref_start=450, ref_end=550, size=500),  # position ~500
             _ins(ref_start=2450, ref_end=2550, size=500),  # position ~2500
         ]
     }
@@ -66,9 +68,9 @@ def test_importance_densities_size_scaling_reduces_rare_size_contribution() -> N
     ava_signals = {
         "readA": [
             # three common-size signals far from the rare one
-            _ins(ref_start=450,  ref_end=550,  size=100),
-            _ins(ref_start=650,  ref_end=750,  size=100),
-            _ins(ref_start=850,  ref_end=950,  size=100),
+            _ins(ref_start=450, ref_end=550, size=100),
+            _ins(ref_start=650, ref_end=750, size=100),
+            _ins(ref_start=850, ref_end=950, size=100),
             # one rare-size signal at a distinct position
             _ins(ref_start=2450, ref_end=2550, size=500),
         ]
@@ -77,11 +79,13 @@ def test_importance_densities_size_scaling_reduces_rare_size_contribution() -> N
     size_densities = sv_size_densities_from_ava_signals(ava_signals)
 
     unscaled = importance_densities_from_ava_signals(ava_signals, size_densities=None)
-    scaled   = importance_densities_from_ava_signals(ava_signals, size_densities=size_densities)
+    scaled = importance_densities_from_ava_signals(
+        ava_signals, size_densities=size_densities
+    )
 
     # The rare-size position (2500) should be reduced after scaling
     rare_peak_unscaled = unscaled["readA"][2480:2520].max()
-    rare_peak_scaled   = scaled["readA"][2480:2520].max()
+    rare_peak_scaled = scaled["readA"][2480:2520].max()
 
     assert rare_peak_scaled < rare_peak_unscaled, (
         f"Expected scaled peak ({rare_peak_scaled:.4f}) < unscaled peak "
@@ -97,9 +101,9 @@ def test_importance_densities_size_scaling_preserves_common_size_contribution() 
     """
     ava_signals = {
         "readA": [
-            _ins(ref_start=450,  ref_end=550,  size=100),
-            _ins(ref_start=650,  ref_end=750,  size=100),
-            _ins(ref_start=850,  ref_end=950,  size=100),
+            _ins(ref_start=450, ref_end=550, size=100),
+            _ins(ref_start=650, ref_end=750, size=100),
+            _ins(ref_start=850, ref_end=950, size=100),
             _ins(ref_start=2450, ref_end=2550, size=500),
         ]
     }
@@ -107,11 +111,13 @@ def test_importance_densities_size_scaling_preserves_common_size_contribution() 
     size_densities = sv_size_densities_from_ava_signals(ava_signals)
 
     unscaled = importance_densities_from_ava_signals(ava_signals, size_densities=None)
-    scaled   = importance_densities_from_ava_signals(ava_signals, size_densities=size_densities)
+    scaled = importance_densities_from_ava_signals(
+        ava_signals, size_densities=size_densities
+    )
 
     # At the common-size position the scale should be 1.0, so peaks are equal
     common_peak_unscaled = unscaled["readA"][480:520].max()
-    common_peak_scaled   = scaled["readA"][480:520].max()
+    common_peak_scaled = scaled["readA"][480:520].max()
 
     np.testing.assert_allclose(common_peak_unscaled, common_peak_scaled, rtol=1e-6)
 
@@ -128,9 +134,12 @@ def test_importance_densities_bnd_signals_always_use_unit_scale() -> None:
     without size_densities.
     """
     bnd_signal = SVsignal(
-        ref_start=1000, ref_end=1000,
-        read_start=0, read_end=0,
-        size=300, sv_type=3,  # BNDL
+        ref_start=1000,
+        ref_end=1000,
+        read_start=0,
+        read_end=0,
+        size=300,
+        sv_type=3,  # BNDL
     )
     ins_signal = _ins(ref_start=200, ref_end=300, size=100)
     ava_signals = {"readA": [ins_signal, bnd_signal]}
@@ -138,9 +147,11 @@ def test_importance_densities_bnd_signals_always_use_unit_scale() -> None:
     size_densities = sv_size_densities_from_ava_signals(ava_signals)
 
     unscaled = importance_densities_from_ava_signals(ava_signals, size_densities=None)
-    scaled   = importance_densities_from_ava_signals(ava_signals, size_densities=size_densities)
+    scaled = importance_densities_from_ava_signals(
+        ava_signals, size_densities=size_densities
+    )
 
     bnd_peak_unscaled = unscaled["readA"][980:1020].max()
-    bnd_peak_scaled   = scaled["readA"][980:1020].max()
+    bnd_peak_scaled = scaled["readA"][980:1020].max()
 
     np.testing.assert_allclose(bnd_peak_unscaled, bnd_peak_scaled, rtol=1e-6)

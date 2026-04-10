@@ -73,8 +73,13 @@ def validate_input(args) -> None:
     check_annotations_file(
         input=Path(args.mononucleotides), reference_fai=reference_fai
     )
-    if getattr(args, "consensus_method", "lamassemble") == "lamassemble" and args.lamassemble_mat is None:
-        raise ValueError("--lamassemble-mat is required when --consensus-method is 'lamassemble'.")
+    if (
+        getattr(args, "consensus_method", "lamassemble") == "lamassemble"
+        and args.lamassemble_mat is None
+    ):
+        raise ValueError(
+            "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+        )
 
 
 def config_create_json(config: dict, path_json: Path):

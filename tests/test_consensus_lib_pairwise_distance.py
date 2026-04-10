@@ -10,7 +10,8 @@ from svirlpool.localassembly.consensus_lib import (
     detect_outlier_reads,
     importance_densities_from_ava_signals,
     pairwise_similarity_matrix,
-    size_damping)
+    size_damping,
+)
 from svirlpool.util.datatypes import SVsignal
 
 
@@ -18,7 +19,14 @@ from svirlpool.util.datatypes import SVsignal
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _ins(ref_start: int, ref_end: int, size: int, read_start: int = 0, read_end: int | None = None) -> SVsignal:
+
+def _ins(
+    ref_start: int,
+    ref_end: int,
+    size: int,
+    read_start: int = 0,
+    read_end: int | None = None,
+) -> SVsignal:
     return SVsignal(
         ref_start=ref_start,
         ref_end=ref_end,
@@ -29,7 +37,13 @@ def _ins(ref_start: int, ref_end: int, size: int, read_start: int = 0, read_end:
     )
 
 
-def _del(ref_start: int, ref_end: int, size: int, read_start: int = 0, read_end: int | None = None) -> SVsignal:
+def _del(
+    ref_start: int,
+    ref_end: int,
+    size: int,
+    read_start: int = 0,
+    read_end: int | None = None,
+) -> SVsignal:
     return SVsignal(
         ref_start=ref_start,
         ref_end=ref_end,
@@ -66,7 +80,7 @@ class TestSizeDamping:
 
     def test_transition_is_monotonic(self) -> None:
         values = [size_damping(float(s), s0=30.0, alpha=1.5) for s in range(1, 500)]
-        assert all(a <= b for a, b in zip(values, values[1:]))
+        assert all(a <= b for a, b in zip(values, values[1:], strict=True))
 
     def test_zero_size_returns_zero(self) -> None:
         assert size_damping(0.0) == 0.0
@@ -101,7 +115,9 @@ class TestImportanceDensitiesUpdated:
                 _ins(ref_start=2490, ref_end=2510, size=200),
             ]
         }
-        densities = importance_densities_from_ava_signals(ava_signals, size_densities=None)
+        densities = importance_densities_from_ava_signals(
+            ava_signals, size_densities=None
+        )
         track = densities["readA"]
         peak_small = track[490:520].max()
         peak_large = track[2490:2520].max()
@@ -109,10 +125,10 @@ class TestImportanceDensitiesUpdated:
 
     def test_backward_compat_no_size_densities(self) -> None:
         """Without size_densities, large signals still get scale=1.0."""
-        ava_signals = {
-            "readA": [_ins(ref_start=450, ref_end=550, size=200)]
-        }
-        densities = importance_densities_from_ava_signals(ava_signals, size_densities=None)
+        ava_signals = {"readA": [_ins(ref_start=450, ref_end=550, size=200)]}
+        densities = importance_densities_from_ava_signals(
+            ava_signals, size_densities=None
+        )
         assert densities["readA"].max() > 0
 
 
@@ -157,12 +173,16 @@ class TestDirectedDistance:
         assert _directed_distance(signals, None, None, 30.0, 1.5) == 0.0
 
     def test_basic_ins_contributes(self) -> None:
-        signals = [_ins(ref_start=500, ref_end=600, size=100, read_start=50, read_end=150)]
+        signals = [
+            _ins(ref_start=500, ref_end=600, size=100, read_start=50, read_end=150)
+        ]
         d = _directed_distance(signals, None, None, 30.0, 1.5)
         assert d > 0
 
     def test_importance_weighting_amplifies(self) -> None:
-        signals = [_ins(ref_start=500, ref_end=600, size=100, read_start=50, read_end=150)]
+        signals = [
+            _ins(ref_start=500, ref_end=600, size=100, read_start=50, read_end=150)
+        ]
         # With uniform density of 2.0 at the signal positions
         ref_density = np.full(1000, 2.0)
         query_density = np.full(200, 2.0)
@@ -190,64 +210,104 @@ class TestPairwiseSimilarityMatrix:
         read_lengths = {"A": 5000, "B": 5000, "C": 5000}
         # A->B and B->A: small INS signals (similar reads)
         ds_ab = DirectedSignals(
-            query_name="A", ref_name="B",
-            signals=[_ins(ref_start=1000, ref_end=1100, size=50, read_start=1000, read_end=1050)],
+            query_name="A",
+            ref_name="B",
+            signals=[
+                _ins(
+                    ref_start=1000,
+                    ref_end=1100,
+                    size=50,
+                    read_start=1000,
+                    read_end=1050,
+                )
+            ],
             ref_length=5000,
         )
         ds_ba = DirectedSignals(
-            query_name="B", ref_name="A",
-            signals=[_ins(ref_start=1000, ref_end=1100, size=50, read_start=1000, read_end=1050)],
+            query_name="B",
+            ref_name="A",
+            signals=[
+                _ins(
+                    ref_start=1000,
+                    ref_end=1100,
+                    size=50,
+                    read_start=1000,
+                    read_end=1050,
+                )
+            ],
             ref_length=5000,
         )
         # A->C: interior BND (reads are very different)
         ds_ac = DirectedSignals(
-            query_name="A", ref_name="C",
+            query_name="A",
+            ref_name="C",
             signals=[_bnd(ref_start=2500, size=1000, sv_type=3)],
             ref_length=5000,
         )
         ds_ca = DirectedSignals(
-            query_name="C", ref_name="A",
-            signals=[_ins(ref_start=1000, ref_end=1100, size=50, read_start=1000, read_end=1050)],
+            query_name="C",
+            ref_name="A",
+            signals=[
+                _ins(
+                    ref_start=1000,
+                    ref_end=1100,
+                    size=50,
+                    read_start=1000,
+                    read_end=1050,
+                )
+            ],
             ref_length=5000,
         )
         return [ds_ab, ds_ba, ds_ac, ds_ca], read_lengths
 
     def test_diagonal_is_one(self) -> None:
         ds, rl = self._make_three_read_scenario()
-        sim, names = pairwise_similarity_matrix(ds, {}, rl, all_read_names=["A", "B", "C"])
+        sim, names = pairwise_similarity_matrix(
+            ds, {}, rl, all_read_names=["A", "B", "C"]
+        )
         for i in range(len(names)):
             assert sim[i, i] == 1.0
 
     def test_symmetry(self) -> None:
         ds, rl = self._make_three_read_scenario()
-        sim, names = pairwise_similarity_matrix(ds, {}, rl, all_read_names=["A", "B", "C"])
+        sim, names = pairwise_similarity_matrix(
+            ds, {}, rl, all_read_names=["A", "B", "C"]
+        )
         np.testing.assert_array_equal(sim, sim.T)
 
     def test_interior_bnd_zeroes_similarity(self) -> None:
         """A<->C should be 0 because A->C has an interior BND."""
         ds, rl = self._make_three_read_scenario()
-        sim, names = pairwise_similarity_matrix(ds, {}, rl, all_read_names=["A", "B", "C"])
+        sim, names = pairwise_similarity_matrix(
+            ds, {}, rl, all_read_names=["A", "B", "C"]
+        )
         ai, ci = names.index("A"), names.index("C")
         assert sim[ai, ci] == 0.0
 
     def test_no_alignment_gives_zero_similarity(self) -> None:
         """B and C have no alignments between them."""
         ds, rl = self._make_three_read_scenario()
-        sim, names = pairwise_similarity_matrix(ds, {}, rl, all_read_names=["A", "B", "C"])
+        sim, names = pairwise_similarity_matrix(
+            ds, {}, rl, all_read_names=["A", "B", "C"]
+        )
         bi, ci = names.index("B"), names.index("C")
         assert sim[bi, ci] == 0.0
 
     def test_similar_reads_have_high_similarity(self) -> None:
         """A and B have small symmetric signals -> positive similarity."""
         ds, rl = self._make_three_read_scenario()
-        sim, names = pairwise_similarity_matrix(ds, {}, rl, all_read_names=["A", "B", "C"])
+        sim, names = pairwise_similarity_matrix(
+            ds, {}, rl, all_read_names=["A", "B", "C"]
+        )
         ai, bi = names.index("A"), names.index("B")
         assert sim[ai, bi] > 0.3
 
     def test_length_difference_reduces_similarity(self) -> None:
         """Two reads with identical signals but different lengths should have
         lower similarity than two with the same length."""
-        sig = _ins(ref_start=1000, ref_end=1100, size=100, read_start=1000, read_end=1100)
+        sig = _ins(
+            ref_start=1000, ref_end=1100, size=100, read_start=1000, read_end=1100
+        )
         ds_equal = [
             DirectedSignals("X", "Y", [sig], ref_length=5000),
             DirectedSignals("Y", "X", [sig], ref_length=5000),
@@ -259,8 +319,12 @@ class TestPairwiseSimilarityMatrix:
         rl_equal = {"X": 5000, "Y": 5000}
         rl_unequal = {"X": 10000, "Y": 5000}
 
-        sim_eq, _ = pairwise_similarity_matrix(ds_equal, {}, rl_equal, all_read_names=["X", "Y"])
-        sim_uneq, _ = pairwise_similarity_matrix(ds_unequal, {}, rl_unequal, all_read_names=["X", "Y"])
+        sim_eq, _ = pairwise_similarity_matrix(
+            ds_equal, {}, rl_equal, all_read_names=["X", "Y"]
+        )
+        sim_uneq, _ = pairwise_similarity_matrix(
+            ds_unequal, {}, rl_unequal, all_read_names=["X", "Y"]
+        )
         assert sim_eq[0, 1] > sim_uneq[0, 1]
 
     def test_bnd_at_read_edge_does_not_zero_similarity(self) -> None:
@@ -268,14 +332,32 @@ class TestPairwiseSimilarityMatrix:
         trigger the zeroing."""
         ds = [
             DirectedSignals(
-                "A", "B",
-                [_bnd(ref_start=50, size=300, sv_type=3),
-                 _ins(ref_start=1000, ref_end=1100, size=100, read_start=1000, read_end=1100)],
+                "A",
+                "B",
+                [
+                    _bnd(ref_start=50, size=300, sv_type=3),
+                    _ins(
+                        ref_start=1000,
+                        ref_end=1100,
+                        size=100,
+                        read_start=1000,
+                        read_end=1100,
+                    ),
+                ],
                 ref_length=5000,
             ),
             DirectedSignals(
-                "B", "A",
-                [_ins(ref_start=1000, ref_end=1100, size=100, read_start=1000, read_end=1100)],
+                "B",
+                "A",
+                [
+                    _ins(
+                        ref_start=1000,
+                        ref_end=1100,
+                        size=100,
+                        read_start=1000,
+                        read_end=1100,
+                    )
+                ],
                 ref_length=5000,
             ),
         ]
@@ -299,7 +381,7 @@ class TestDetectOutlierReads:
     def test_uniform_reads_no_outliers(self) -> None:
         """All reads have similar lengths and are well-connected."""
         names = [f"r{i}" for i in range(10)]
-        rl = {r: 5000 for r in names}
+        rl = dict.fromkeys(names, 5000)
         sim = np.ones((10, 10), dtype=np.float64) * 0.5
         np.fill_diagonal(sim, 1.0)
         outliers = detect_outlier_reads(sim, names, rl, n_clusters=2)

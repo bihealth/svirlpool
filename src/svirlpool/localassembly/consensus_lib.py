@@ -7,9 +7,11 @@ from typing import Dict, Tuple
 
 import numpy as np
 import matplotlib
+
 matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 import pysam
 from Bio import SeqIO
@@ -64,8 +66,15 @@ def parse_sv_signals_from_ava_alignments(
             read_start = aln.query_alignment_start
             read_end = aln.query_alignment_end
 
-            if ref_start is None or ref_end is None or read_start is None or read_end is None:
-                raise ValueError(f"parse_directed_signals_from_ava::Alignment missing required positions: ref_start={ref_start}, ref_end={ref_end}, read_start={read_start}, read_end={read_end}")
+            if (
+                ref_start is None
+                or ref_end is None
+                or read_start is None
+                or read_end is None
+            ):
+                raise ValueError(
+                    f"parse_directed_signals_from_ava::Alignment missing required positions: ref_start={ref_start}, ref_end={ref_end}, read_start={read_start}, read_end={read_end}"
+                )
 
             signals = alignments_to_rafs.parse_SVsignals_from_alignment(
                 alignment=aln,
@@ -80,6 +89,7 @@ def parse_sv_signals_from_ava_alignments(
             if signals:
                 result.setdefault(ref_name, []).extend(signals)
     return result
+
 
 def importance_densities_from_ava_signals(
     ava_signals: Dict[str, list[SVsignal]],
@@ -149,8 +159,8 @@ def importance_densities_from_ava_signals(
             if lo >= hi:
                 continue
             x = np.arange(lo, hi, dtype=np.float64)
-            left  = 1.0 / (1.0 + np.exp(-falloff * (x - (center - half_win))))
-            right = 1.0 / (1.0 + np.exp( falloff * (x - (center + half_win))))
+            left = 1.0 / (1.0 + np.exp(-falloff * (x - (center - half_win))))
+            right = 1.0 / (1.0 + np.exp(falloff * (x - (center + half_win))))
             bump = left * right
 
             # Size-damping: suppress small indels
@@ -216,8 +226,8 @@ def sv_size_densities_from_ava_signals(
                     continue
                 x = np.arange(lo, hi, dtype=np.float64)
                 # smooth plateau: rising sigmoid at (center - half_win), falling at (center + half_win)
-                left  = 1.0 / (1.0 + np.exp(-falloff * (x - (center - half_win))))
-                right = 1.0 / (1.0 + np.exp( falloff * (x - (center + half_win))))
+                left = 1.0 / (1.0 + np.exp(-falloff * (x - (center - half_win))))
+                right = 1.0 / (1.0 + np.exp(falloff * (x - (center + half_win))))
                 density[lo:hi] += left * right
 
             result[sv_type][ref_name] = density
@@ -229,7 +239,12 @@ def sv_size_densities_from_ava_signals(
             if not type_tracks:
                 continue
             read_names = sorted(type_tracks.keys())
-            fig, ax = plt.subplots(figsize=(max(10, max(len(d) for d in type_tracks.values()) // 100), max(4, len(read_names) * 0.6)))
+            fig, ax = plt.subplots(
+                figsize=(
+                    max(10, max(len(d) for d in type_tracks.values()) // 100),
+                    max(4, len(read_names) * 0.6),
+                )
+            )
             for name in read_names:
                 track = type_tracks[name]
                 ax.plot(np.arange(len(track)), track, label=name, linewidth=1)
@@ -255,6 +270,7 @@ def sv_size_densities_from_ava_signals(
 @dataclass(frozen=True)
 class DirectedSignals:
     """SV signals from one alignment direction (query aligned to reference)."""
+
     query_name: str
     ref_name: str
     signals: list[SVsignal]
@@ -292,9 +308,18 @@ def parse_directed_signals_from_ava(
             read_end = aln.query_alignment_end
 
             if query_name is None:
-                raise ValueError("parse_directed_signals_from_ava::Alignment query name is missing")
-            if ref_end is None or ref_start is None or read_start is None or read_end is None:
-                raise ValueError(f"parse_directed_signals_from_ava::Alignment missing required positions: ref_start={ref_start}, ref_end={ref_end}, read_start={read_start}, read_end={read_end}")
+                raise ValueError(
+                    "parse_directed_signals_from_ava::Alignment query name is missing"
+                )
+            if (
+                ref_end is None
+                or ref_start is None
+                or read_start is None
+                or read_end is None
+            ):
+                raise ValueError(
+                    f"parse_directed_signals_from_ava::Alignment missing required positions: ref_start={ref_start}, ref_end={ref_end}, read_start={read_start}, read_end={read_end}"
+                )
 
             # Use inferred reference length from the alignment.
             # For the ref read in AVA this equals the read's own length.
@@ -310,12 +335,14 @@ def parse_directed_signals_from_ava(
                 min_bnd_size=min_bnd_size,
             )
 
-            result.append(DirectedSignals(
-                query_name=query_name,
-                ref_name=ref_name,
-                signals=signals,
-                ref_length=ref_length,
-            ))
+            result.append(
+                DirectedSignals(
+                    query_name=query_name,
+                    ref_name=ref_name,
+                    signals=signals,
+                    ref_length=ref_length,
+                )
+            )
     return result
 
 
@@ -362,7 +389,9 @@ def _directed_distance(
 
         w_query = 1.0
         if query_density is not None and 0 <= query_center < len(query_density):
-            w_query = 1.0 + densities_weight * (float(query_density[query_center]) - 1.0)
+            w_query = 1.0 + densities_weight * (
+                float(query_density[query_center]) - 1.0
+            )
 
         total += w_ref * w_query * damp * abs(sig.size)
     return total
@@ -477,8 +506,11 @@ def pairwise_similarity_matrix(
         query_density = densities.get(ds.query_name)
 
         dd = _directed_distance(
-            ds.signals, ref_density, query_density,
-            damping_s0=damping_s0, damping_alpha=damping_alpha,
+            ds.signals,
+            ref_density,
+            query_density,
+            damping_s0=damping_s0,
+            damping_alpha=damping_alpha,
             densities_weight=densities_weight,
         )
         d_sum[qi, ri] += dd
@@ -511,7 +543,9 @@ def pairwise_similarity_matrix(
     # This ensures that the length penalty shifts similarities relative to
     # a fixed kernel width derived from the SV-signal content alone.
     finite_signal_dists = distance[np.isfinite(distance) & (distance > 0)]
-    sigma = float(np.median(finite_signal_dists)) if finite_signal_dists.size > 0 else 1.0
+    sigma = (
+        float(np.median(finite_signal_dists)) if finite_signal_dists.size > 0 else 1.0
+    )
     if sigma == 0:
         sigma = 1.0
 
@@ -544,7 +578,7 @@ def pairwise_similarity_matrix(
         similarity[i, i] = 1.0
         for j in range(i + 1, n):
             if np.isfinite(distance[i, j]):
-                sim = float(np.exp(-(distance[i, j] ** 2) / (2.0 * sigma ** 2)))
+                sim = float(np.exp(-(distance[i, j] ** 2) / (2.0 * sigma**2)))
                 similarity[i, j] = sim
                 similarity[j, i] = sim
             # else: stays 0 (no alignment)
@@ -609,7 +643,11 @@ def visualize_raw_signal_matrix(
     # Build RGBA image: YlOrRd for signal values, grey for BND cells
     cmap = plt.get_cmap("YlOrRd")
     non_bnd_values = signal_sums[~has_bnd & (np.arange(n)[:, None] != np.arange(n))]
-    vmax = float(non_bnd_values.max()) if non_bnd_values.size > 0 and non_bnd_values.max() > 0 else 1.0
+    vmax = (
+        float(non_bnd_values.max())
+        if non_bnd_values.size > 0 and non_bnd_values.max() > 0
+        else 1.0
+    )
     norm = mcolors.Normalize(vmin=0, vmax=vmax)
 
     rgba = cmap(norm(signal_sums))
@@ -623,12 +661,27 @@ def visualize_raw_signal_matrix(
             val = signal_sums[i, j]
             if has_bnd[i, j]:
                 label = f"{val:.0f}\nBND"
-                ax.text(j, i, label, ha="center", va="center",
-                        fontsize=fontsize, color="white", linespacing=1.2)
+                ax.text(
+                    j,
+                    i,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=fontsize,
+                    color="white",
+                    linespacing=1.2,
+                )
             else:
                 text_color = "black" if norm(val) < 0.65 else "white"
-                ax.text(j, i, f"{val:.0f}", ha="center", va="center",
-                        fontsize=fontsize, color=text_color)
+                ax.text(
+                    j,
+                    i,
+                    f"{val:.0f}",
+                    ha="center",
+                    va="center",
+                    fontsize=fontsize,
+                    color=text_color,
+                )
 
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
@@ -673,16 +726,27 @@ def visualize_normalized_similarity_matrix(
 
     fig, ax = plt.subplots(figsize=(max(8, n), max(7, n - 1)))
     im = ax.imshow(
-        similarity_matrix, cmap="viridis", vmin=0, vmax=1,
-        aspect="auto", interpolation="nearest",
+        similarity_matrix,
+        cmap="viridis",
+        vmin=0,
+        vmax=1,
+        aspect="auto",
+        interpolation="nearest",
     )
 
     for i in range(n):
         for j in range(n):
             val = similarity_matrix[i, j]
             text_color = "white" if val < 0.6 else "black"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                    fontsize=max(6, 10 - n // 5), color=text_color)
+            ax.text(
+                j,
+                i,
+                f"{val:.2f}",
+                ha="center",
+                va="center",
+                fontsize=max(6, 10 - n // 5),
+                color=text_color,
+            )
 
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
@@ -702,8 +766,14 @@ def visualize_normalized_similarity_matrix(
 
 # Palette of visually distinct colours for cluster nodes
 _CLUSTER_COLORS = [
-    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
-    "#ff7f00", "#a65628", "#f781bf", "#999999",
+    "#e41a1c",
+    "#377eb8",
+    "#4daf4a",
+    "#984ea3",
+    "#ff7f00",
+    "#a65628",
+    "#f781bf",
+    "#999999",
 ]
 
 
@@ -797,8 +867,16 @@ def visualize_similarity_graph(
         )
         mx = (pos[i, 0] + pos[j, 0]) / 2
         my = (pos[i, 1] + pos[j, 1]) / 2
-        ax.text(mx, my, f"{w:.2f}", fontsize=6, ha="center", va="center",
-                color="dimgrey", zorder=2)
+        ax.text(
+            mx,
+            my,
+            f"{w:.2f}",
+            fontsize=6,
+            ha="center",
+            va="center",
+            color="dimgrey",
+            zorder=2,
+        )
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
@@ -806,11 +884,25 @@ def visualize_similarity_graph(
 
     for idx, name in enumerate(read_names):
         node_color = node_colors.get(name, "steelblue") if node_colors else "steelblue"
-        ax.scatter(pos[idx, 0], pos[idx, 1], s=200, zorder=3, color=node_color,
-                   edgecolors="white", linewidths=1)
-        ax.text(pos[idx, 0], pos[idx, 1], name, fontsize=7,
-                ha="center", va="bottom", zorder=4,
-                bbox=dict(boxstyle="round,pad=0.1", fc="white", alpha=0.6, ec="none"))
+        ax.scatter(
+            pos[idx, 0],
+            pos[idx, 1],
+            s=200,
+            zorder=3,
+            color=node_color,
+            edgecolors="white",
+            linewidths=1,
+        )
+        ax.text(
+            pos[idx, 0],
+            pos[idx, 1],
+            name,
+            fontsize=7,
+            ha="center",
+            va="bottom",
+            zorder=4,
+            bbox=dict(boxstyle="round,pad=0.1", fc="white", alpha=0.6, ec="none"),
+        )
 
     ax.set_title("Read similarity graph")
     ax.axis("off")
@@ -935,7 +1027,9 @@ def detect_outlier_reads(
         min_connections=min_connections,
         connectivity_threshold=connectivity_threshold,
     )
-    log.debug(f"detect_outlier_reads: length outliers={by_length}, similarity outliers={by_similarity}")
+    log.debug(
+        f"detect_outlier_reads: length outliers={by_length}, similarity outliers={by_similarity}"
+    )
     return by_length | by_similarity
 
 
@@ -979,10 +1073,7 @@ def _outlier_reads_by_length(
     length_outliers: set[str] = set()
     for idx, cluster in enumerate(clusters):
         cluster_lengths = [read_lengths.get(r, 0) for r in cluster]
-        log.debug(
-            f"  cluster {idx}: size={len(cluster)}, "
-            f"lengths={cluster_lengths}"
-        )
+        log.debug(f"  cluster {idx}: size={len(cluster)}, lengths={cluster_lengths}")
         if len(cluster) < min_cluster_size:
             log.debug(
                 f"    -> flagging {len(cluster)} read(s) as length outlier(s) "
@@ -1005,10 +1096,14 @@ def _outlier_reads_by_similarity(
         expected_cluster_size = int(np.ceil(n / max(n_clusters, 1)))
         cluster_based = max(1, int(0.5 * expected_cluster_size))
         # Also adapt to actual observed connectivity via the median
-        conn_counts = np.array([
-            int(np.sum(similarity[i, :] > connectivity_threshold)) - 1  # -1 for self
-            for i in range(n)
-        ], dtype=np.int64)
+        conn_counts = np.array(
+            [
+                int(np.sum(similarity[i, :] > connectivity_threshold))
+                - 1  # -1 for self
+                for i in range(n)
+            ],
+            dtype=np.int64,
+        )
         median_conn = float(np.median(conn_counts)) if n > 0 else 0.0
         median_based = max(1, int(0.5 * median_conn))
         min_connections = max(1, min(cluster_based, median_based))
@@ -1020,7 +1115,11 @@ def _outlier_reads_by_similarity(
     connectivity_outliers: set[str] = set()
     for r in read_names:
         i = idx[r]
-        connections = [read_names[j] for j in range(n) if j != i and similarity[i, j] > connectivity_threshold]
+        connections = [
+            read_names[j]
+            for j in range(n)
+            if j != i and similarity[i, j] > connectivity_threshold
+        ]
         n_conn = len(connections)
         log.debug(
             f"  '{r}': {n_conn} connections >= {connectivity_threshold} "
@@ -1045,7 +1144,9 @@ def visualize_ava_alignments(ava_alignments: Path, output: Path) -> None:
             ref = aln.reference_name
             alen = aln.query_alignment_length or 0
             if query is None:
-                raise ValueError("visualize_alignment_presence::Alignment query name is missing")
+                raise ValueError(
+                    "visualize_alignment_presence::Alignment query name is missing"
+                )
             reads.update([query, ref])
             key = (query, ref)
             lengths[key] = lengths.get(key, 0) + alen
@@ -1070,8 +1171,15 @@ def visualize_ava_alignments(ava_alignments: Path, output: Path) -> None:
             val = matrix[i, j]
             norm_val = norm_matrix[i, j]
             text_color = "white" if norm_val < 0.6 else "black"
-            ax.text(j, i, str(val), ha="center", va="center",
-                    fontsize=max(6, 10 - n // 5), color=text_color)
+            ax.text(
+                j,
+                i,
+                str(val),
+                ha="center",
+                va="center",
+                fontsize=max(6, 10 - n // 5),
+                color=text_color,
+            )
 
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
@@ -1145,10 +1253,7 @@ def visualize_importance_densities(
 
 def read_lengths_from_fasta(fasta: Path) -> Dict[str, int]:
     """Return a dict mapping each record ID to its sequence length."""
-    return {
-        record.id: len(record.seq)
-        for record in SeqIO.parse(str(fasta), "fasta")
-    }
+    return {record.id: len(record.seq) for record in SeqIO.parse(str(fasta), "fasta")}
 
 
 def visualize_size_similarity(read_lengths: Dict[str, int], output: Path) -> None:
@@ -1175,8 +1280,15 @@ def visualize_size_similarity(read_lengths: Dict[str, int], output: Path) -> Non
         for j in range(n):
             val = matrix[i, j]
             text_color = "white" if val < 0.6 else "black"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                    fontsize=max(6, 10 - n // 5), color=text_color)
+            ax.text(
+                j,
+                i,
+                f"{val:.2f}",
+                ha="center",
+                va="center",
+                fontsize=max(6, 10 - n // 5),
+                color=text_color,
+            )
 
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
@@ -1211,12 +1323,16 @@ def visualize_alignment_presence(ava_alignments: Path, output: Path) -> None:
                 continue
             query = aln.query_name
             if query is None:
-                raise(ValueError("visualize_alignment_presence::Alignment query name is missing"))
+                raise (
+                    ValueError(
+                        "visualize_alignment_presence::Alignment query name is missing"
+                    )
+                )
             ref = aln.reference_name
             reads.update([query, ref])
             aligned.add((query, ref))
             aln_count[query] = aln_count.get(query, 0) + 1
-            aln_count[ref]   = aln_count.get(ref,   0) + 1
+            aln_count[ref] = aln_count.get(ref, 0) + 1
 
     read_names = sorted(reads)
     n = len(read_names)
@@ -1244,6 +1360,7 @@ def visualize_alignment_presence(ava_alignments: Path, output: Path) -> None:
     ax.set_title("Alignment presence (blue = aligned, grey = no alignment)")
 
     from matplotlib.patches import Patch
+
     ax.legend(
         handles=[
             Patch(facecolor="#1f77b4", label="Aligned"),
@@ -1256,5 +1373,3 @@ def visualize_alignment_presence(ava_alignments: Path, output: Path) -> None:
     fig.tight_layout()
     fig.savefig(str(output), dpi=150)
     log.info(f"Saved alignment-presence figure to {output}")
-
-

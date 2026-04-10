@@ -6,7 +6,6 @@ Tests the two-test size comparison logic:
 If either test passes, the variants are considered similar in size.
 """
 
-
 from svirlpool.localassembly import SVprimitives, SVpatterns
 from svirlpool.svcalling import genotyping
 from svirlpool.svcalling.SVcomposite import SVcomposite
@@ -19,6 +18,7 @@ from svirlpool.svcalling.multisample_sv_calling import (
 # ---------------------------------------------------------------------------
 # Helper factories
 # ---------------------------------------------------------------------------
+
 
 def _make_genotype(reads: list[str] | None = None) -> genotyping.GenotypeMeasurement:
     if reads is None:
@@ -161,6 +161,7 @@ def _make_deletion_composite(
 # INSERTION TESTS
 # ===========================================================================
 
+
 class TestCanMergeInsertions:
     """Tests for can_merge_svComposites_insertions."""
 
@@ -179,9 +180,12 @@ class TestCanMergeInsertions:
             consensusID="2.0",
         )
         assert can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_similar_size_within_fraction_tolerance(self):
@@ -200,9 +204,12 @@ class TestCanMergeInsertions:
             consensusID="2.0",
         )
         assert can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_different_sizes_beyond_fraction_but_populations_overlap(self):
@@ -211,20 +218,27 @@ class TestCanMergeInsertions:
         # but populations with large spread should overlap and have small Cohen's D
         a = _make_insertion_composite(
             size=500,
-            size_distortions={f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])},
+            size_distortions={
+                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
+            },
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=600,
-            size_distortions={f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])},
+            size_distortions={
+                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
+            },
             samplename="sample2",
             consensusID="2.0",
         )
         assert can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_very_different_sizes_reject(self):
@@ -244,9 +258,12 @@ class TestCanMergeInsertions:
             consensusID="2.0",
         )
         assert not can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=600, min_kmer_overlap=0.0,
+            d=2.0,
+            near=600,
+            min_kmer_overlap=0.0,
         )
 
     def test_empty_populations_fraction_pass(self):
@@ -264,9 +281,12 @@ class TestCanMergeInsertions:
             consensusID="2.0",
         )
         assert can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_empty_populations_fraction_fail(self):
@@ -284,9 +304,12 @@ class TestCanMergeInsertions:
             consensusID="2.0",
         )
         assert not can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=600, min_kmer_overlap=0.0,
+            d=2.0,
+            near=600,
+            min_kmer_overlap=0.0,
         )
 
     def test_not_near_rejects(self):
@@ -306,9 +329,12 @@ class TestCanMergeInsertions:
             consensusID="2.0",
         )
         assert not can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_kmer_similarity_rejects(self):
@@ -328,9 +354,12 @@ class TestCanMergeInsertions:
             sequence="GCGCGCGC" * 25,  # 200bp GC-rich
         )
         assert not can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_strict_tolerance_rejects_borderline(self):
@@ -351,21 +380,28 @@ class TestCanMergeInsertions:
         )
         # With default 10%: should merge (fraction passes)
         assert can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
         # With 1%: fraction fails; tight populations → Cohen's D >2 → reject
         assert not can_merge_svComposites_insertions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.01,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
 
 # ===========================================================================
 # DELETION TESTS
 # ===========================================================================
+
 
 class TestCanMergeDeletions:
     """Tests for can_merge_svComposites_deletions."""
@@ -385,9 +421,12 @@ class TestCanMergeDeletions:
             consensusID="2.0",
         )
         assert can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_similar_size_within_fraction_tolerance(self):
@@ -406,9 +445,12 @@ class TestCanMergeDeletions:
             consensusID="2.0",
         )
         assert can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_different_sizes_beyond_fraction_but_populations_overlap(self):
@@ -417,20 +459,27 @@ class TestCanMergeDeletions:
         # wide spread populations should produce small Cohen's D
         a = _make_deletion_composite(
             size=500,
-            size_distortions={f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])},
+            size_distortions={
+                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
+            },
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=600,
-            size_distortions={f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])},
+            size_distortions={
+                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
+            },
             samplename="sample2",
             consensusID="2.0",
         )
         assert can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_very_different_sizes_reject(self):
@@ -449,9 +498,12 @@ class TestCanMergeDeletions:
             consensusID="2.0",
         )
         assert not can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=1000, min_kmer_overlap=0.0,
+            d=2.0,
+            near=1000,
+            min_kmer_overlap=0.0,
         )
 
     def test_empty_populations_fraction_pass(self):
@@ -469,9 +521,12 @@ class TestCanMergeDeletions:
             consensusID="2.0",
         )
         assert can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_empty_populations_fraction_fail(self):
@@ -489,9 +544,12 @@ class TestCanMergeDeletions:
             consensusID="2.0",
         )
         assert not can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=600, min_kmer_overlap=0.0,
+            d=2.0,
+            near=600,
+            min_kmer_overlap=0.0,
         )
 
     def test_not_near_rejects(self):
@@ -511,9 +569,12 @@ class TestCanMergeDeletions:
             consensusID="2.0",
         )
         assert not can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_kmer_similarity_rejects_deletions(self):
@@ -533,9 +594,12 @@ class TestCanMergeDeletions:
             sequence="GCGCGCGC" * 25,  # 200bp GC-rich
         )
         assert not can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
 
     def test_strict_cohens_d_threshold(self):
@@ -544,25 +608,35 @@ class TestCanMergeDeletions:
         # wide population spread so Cohen's D is moderate (~1.1)
         a = _make_deletion_composite(
             size=500,
-            size_distortions={f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])},
+            size_distortions={
+                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
+            },
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=560,
-            size_distortions={f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])},
+            size_distortions={
+                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
+            },
             samplename="sample2",
             consensusID="2.0",
         )
         # With lenient d=2.0: Cohen's D ~1.1 → merge via population test
         assert can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0, near=150, min_kmer_overlap=0.7,
+            d=2.0,
+            near=150,
+            min_kmer_overlap=0.7,
         )
         # With strict d=0.5 and strict fraction: both tests fail → reject
         assert not can_merge_svComposites_deletions(
-            a=a, b=b,
+            a=a,
+            b=b,
             apriori_size_difference_fraction_tolerance=0.05,
-            d=0.5, near=150, min_kmer_overlap=0.7,
+            d=0.5,
+            near=150,
+            min_kmer_overlap=0.7,
         )

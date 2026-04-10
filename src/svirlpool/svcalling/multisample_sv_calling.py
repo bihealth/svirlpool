@@ -340,7 +340,7 @@ def svPatterns_to_horizontally_merged_svComposites(
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
                     if group[i].repeatIDs.intersection(group[j].repeatIDs):
-                    # TODO: Edge case, where indels in duplicated overlapping aligned fragments are concatenated horizontally
+                        # TODO: Edge case, where indels in duplicated overlapping aligned fragments are concatenated horizontally
                         log.debug(
                             f"HORIZONTAL_MERGE|UNION_BY_REPEATID	crID={crID}	consensusID={_consensusID}	"
                             f"pattern_i={group[i]._log_id()}    "
@@ -425,8 +425,14 @@ def can_merge_svComposites_insertions(
 
     # Test 1: Simple fractional size difference check
     max_size = max(size_a, size_b)
-    log_size = np.log2(abs(size_a - size_b) + 1)  # log-transform the size difference for better interpretability in logs
-    fraction_similar = (max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size) or abs(size_a - size_b) < log_size
+    log_size = np.log2(
+        abs(size_a - size_b) + 1
+    )  # log-transform the size difference for better interpretability in logs
+    fraction_similar = (
+        max_size > 0
+        and abs(size_a - size_b)
+        <= apriori_size_difference_fraction_tolerance * max_size
+    ) or abs(size_a - size_b) < log_size
 
     # Test 2: Population-driven Cohen's D on background noise signals
     population_a = np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -547,10 +553,22 @@ def can_merge_svComposites_deletions(
 
     # Test 1: Simple fractional size difference check
     max_size = max(size_a, size_b)
-    log_size = np.log2(abs(size_a - size_b) + 1)  # log-transform the size difference for better interpretability in logs
-    fraction_similar = (max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size) or abs(size_a - size_b) < log_size
-    fraction_similar = max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size
-    fraction_similar = (fraction_similar and abs(size_a - size_b)) < 30 or abs(size_a - size_b) < log_size
+    log_size = np.log2(
+        abs(size_a - size_b) + 1
+    )  # log-transform the size difference for better interpretability in logs
+    fraction_similar = (
+        max_size > 0
+        and abs(size_a - size_b)
+        <= apriori_size_difference_fraction_tolerance * max_size
+    ) or abs(size_a - size_b) < log_size
+    fraction_similar = (
+        max_size > 0
+        and abs(size_a - size_b)
+        <= apriori_size_difference_fraction_tolerance * max_size
+    )
+    fraction_similar = (fraction_similar and abs(size_a - size_b)) < 30 or abs(
+        size_a - size_b
+    ) < log_size
 
     # Test 2: Population-driven Cohen's D on background noise signals
     population_a = np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -963,8 +981,14 @@ def can_merge_svComposites_inversions(
 
     # Test 1: Simple fractional size difference check
     max_size = max(size_a, size_b)
-    log_size = np.log2(abs(size_a - size_b) + 1)  # log-transform the size difference for better interpretability in logs
-    fraction_similar = (max_size > 0 and abs(size_a - size_b) <= apriori_size_difference_fraction_tolerance * max_size) or abs(size_a - size_b) < log_size
+    log_size = np.log2(
+        abs(size_a - size_b) + 1
+    )  # log-transform the size difference for better interpretability in logs
+    fraction_similar = (
+        max_size > 0
+        and abs(size_a - size_b)
+        <= apriori_size_difference_fraction_tolerance * max_size
+    ) or abs(size_a - size_b) < log_size
 
     # Test 2: Population-driven Cohen's D on background noise signals
     population_a = np.array(a.get_size_populations(), dtype=np.int32) + a.get_size()
@@ -2897,7 +2921,6 @@ def correct_genotypes_for_multi_assembly_loci(
     # Step 1: For each SVcall, collect (samplename, crID) → set of subIDs
     #         Also build an index from (samplename, crID) → list of SVcall indices
 
-
     # (samplename, crID) → set of subIDs seen across all SVcalls
     cr_subids: dict[tuple[str, int], set[int]] = defaultdict(set)
     # (samplename, crID) → list of SVcall indices that contain this (samplename, crID)
@@ -2914,9 +2937,7 @@ def correct_genotypes_for_multi_assembly_loci(
             cr_svcall_indices[key].append(idx)
 
     # Step 2: Identify (samplename, crID) pairs with multiple assemblies
-    multi_assembly_keys = {
-        key for key, subids in cr_subids.items() if len(subids) >= 2
-    }
+    multi_assembly_keys = {key for key, subids in cr_subids.items() if len(subids) >= 2}
 
     if not multi_assembly_keys:
         return svCalls

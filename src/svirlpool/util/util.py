@@ -227,9 +227,7 @@ def align_reads_with_minimap(
 
         # Check that samtools sort succeeded
         if p_sort.returncode != 0:
-            raise subprocess.CalledProcessError(
-                p_sort.returncode, " ".join(cmd_sort)
-            )
+            raise subprocess.CalledProcessError(p_sort.returncode, " ".join(cmd_sort))
 
         # if we get here p_sort finished successfully; index BAM
         log.info(f"indexing {bamout}")

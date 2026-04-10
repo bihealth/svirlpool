@@ -58,13 +58,17 @@ def subsample_alignments(
     with pysam.AlignmentFile(input_bamfile, "rb") as infile:
         alignments = list(infile)
 
-        alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
+        alignments_filtered = [
+            a for a in alignments if a.query_name != a.reference_name
+        ]
         alignments_by_length = sorted(
             alignments_filtered,
             key=lambda a: a.reference_end - a.reference_start,
             reverse=True,
         )
-        alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
+        alignments_sampled = alignments_by_length[
+            : min(number, len(alignments_by_length))
+        ]
 
         if len(alignments_by_length) == 0:
             # No valid alignments, create empty output file
@@ -689,7 +693,9 @@ def make_consensus_with_lamassemble(
     # try to run lamassemble. if it fails or the output is empty, return None.
     # lamassemble writes its output to the command line, so the output should be caught from there.
     cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
-    log.info(f"Running lamassemble with command:\n{cmd_lamassemble}\nwith timeout of {timeout} seconds")
+    log.info(
+        f"Running lamassemble with command:\n{cmd_lamassemble}\nwith timeout of {timeout} seconds"
+    )
     result: str = ""
     try:
         with open(output, "w") as f:
@@ -1082,7 +1088,9 @@ def prepare_and_run_racon(
     ) as tmp_dir:
         # 1. Write the representative read to a temporary FASTA file.
         tmp_ref = tempfile.NamedTemporaryFile(
-            prefix="racon_ref.", suffix=".fasta", dir=tmp_dir,
+            prefix="racon_ref.",
+            suffix=".fasta",
+            dir=tmp_dir,
             delete=False if tmp_dir_path else True,
         )
         with open(tmp_ref.name, "w") as f:
@@ -1090,7 +1098,9 @@ def prepare_and_run_racon(
 
         # 2. Extract AVA alignments to the representative, one per query (longest kept).
         tmp_sam = tempfile.NamedTemporaryFile(
-            prefix="racon_aln.", suffix=".sam", dir=tmp_dir,
+            prefix="racon_aln.",
+            suffix=".sam",
+            dir=tmp_dir,
             delete=False if tmp_dir_path else True,
         )
         n_alns = filter_ava_alignments_for_racon(
@@ -1134,7 +1144,9 @@ def assemble_consensus(
     verbose: bool = False,
 ) -> str | None:
     if method not in ("lamassemble", "racon"):
-        raise ValueError(f"Unknown consensus method '{method}'. Choose 'lamassemble' or 'racon'.")
+        raise ValueError(
+            f"Unknown consensus method '{method}'. Choose 'lamassemble' or 'racon'."
+        )
 
     with tempfile.TemporaryDirectory():
         if method == "racon":
@@ -1274,7 +1286,11 @@ def consensus_while_clustering(
                         tech="ava-ont",
                         threads=threads,
                     )
-                except (TimeoutError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+                except (
+                    TimeoutError,
+                    subprocess.TimeoutExpired,
+                    subprocess.CalledProcessError,
+                ) as e:
                     log.warning(
                         f"AVA alignment failed on attempt {ava_attempt + 1}/{max_ava_attempts} "
                         f"with {len(ava_pool)} reads: {e}"
@@ -1342,12 +1358,14 @@ def consensus_while_clustering(
                 min_bnd_size=100,
             )
 
-            similarity_matrix, sim_read_names = consensus_lib.pairwise_similarity_matrix(
-                directed_signals=directed_signals,
-                densities=densities,
-                read_lengths=read_lengths,
-                all_read_names=all_reads,
-                densities_weight=densities_weight
+            similarity_matrix, sim_read_names = (
+                consensus_lib.pairwise_similarity_matrix(
+                    directed_signals=directed_signals,
+                    densities=densities,
+                    read_lengths=read_lengths,
+                    all_read_names=all_reads,
+                    densities_weight=densities_weight,
+                )
             )
 
             if figures_dir is not None:
@@ -1390,11 +1408,17 @@ def consensus_while_clustering(
                 effective_partitions = max(1, len(well_connected))
             else:
                 effective_partitions = partitions
-            log.debug(f"Effective number of clusters for spectral clustering: {effective_partitions}. Original requested partitions: {partitions}")
+            log.debug(
+                f"Effective number of clusters for spectral clustering: {effective_partitions}. Original requested partitions: {partitions}"
+            )
 
             # Cluster well-connected reads using their sub-matrix
             if len(well_connected) > 1:
-                wc_indices = [i for i, name in enumerate(sim_read_names) if name not in outlier_set]
+                wc_indices = [
+                    i
+                    for i, name in enumerate(sim_read_names)
+                    if name not in outlier_set
+                ]
                 wc_similarity = similarity_matrix[np.ix_(wc_indices, wc_indices)]
                 clustering_result = partition_reads_spectral(
                     similarity_matrix=wc_similarity,
@@ -1406,8 +1430,13 @@ def consensus_while_clustering(
 
             if figures_dir is not None:
                 _cluster_palette = [
-                    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
-                    "#ff7f00", "#a65628", "#f781bf",
+                    "#e41a1c",
+                    "#377eb8",
+                    "#4daf4a",
+                    "#984ea3",
+                    "#ff7f00",
+                    "#a65628",
+                    "#f781bf",
                 ]
                 node_colors: dict[str, str] = {
                     name: _cluster_palette[cid % len(_cluster_palette)]
@@ -1446,11 +1475,15 @@ def consensus_while_clustering(
                 consensus_name = f"{min(crIDs)}.{cluster_id}"
 
                 # Find centroid read for racon
-                _representative = find_representative_read(
-                    similarity_matrix=similarity_matrix,
-                    sim_read_names=sim_read_names,
-                    cluster_read_names=chosen_reads,
-                ) if consensus_method == "racon" else None
+                _representative = (
+                    find_representative_read(
+                        similarity_matrix=similarity_matrix,
+                        sim_read_names=sim_read_names,
+                        cluster_read_names=chosen_reads,
+                    )
+                    if consensus_method == "racon"
+                    else None
+                )
 
                 consensus_sequence: str | None = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
@@ -1531,11 +1564,15 @@ def consensus_while_clustering(
 
                 # Find centroid read for racon (isolated reads)
                 _isolated_in_pool = [r for r in isolated if r in pool]
-                _representative = find_representative_read(
-                    similarity_matrix=similarity_matrix,
-                    sim_read_names=sim_read_names,
-                    cluster_read_names=_isolated_in_pool,
-                ) if consensus_method == "racon" and len(_isolated_in_pool) > 0 else None
+                _representative = (
+                    find_representative_read(
+                        similarity_matrix=similarity_matrix,
+                        sim_read_names=sim_read_names,
+                        cluster_read_names=_isolated_in_pool,
+                    )
+                    if consensus_method == "racon" and len(_isolated_in_pool) > 0
+                    else None
+                )
 
                 consensus_sequence: str | None = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
@@ -1650,10 +1687,14 @@ def consensus_while_clustering_with_kmeans(
             )
 
     # Build the feature matrix: each read has [sum_insertions, sum_deletions]
-    readnames = sorted(rn for rn in dict_summed_indels.keys() if rn not in size_outliers)
+    readnames = sorted(
+        rn for rn in dict_summed_indels.keys() if rn not in size_outliers
+    )
 
     if len(readnames) < 2:
-        log.debug("Not enough reads after size-outlier filtering for KMeans clustering. Returning None.")
+        log.debug(
+            "Not enough reads after size-outlier filtering for KMeans clustering. Returning None."
+        )
         return None
 
     X = np.array([dict_summed_indels[rn] for rn in readnames], dtype=np.float64)
@@ -1735,7 +1776,7 @@ def consensus_while_clustering_with_kmeans(
 
     # 2) Assemble consensus for each cluster
     result: dict[str, consensus_class.Consensus] | None = None
-    failed_reads: list[str] = [] #list(size_outliers)
+    failed_reads: list[str] = []  # list(size_outliers)
 
     try:
         with tempfile.TemporaryDirectory(
@@ -2671,8 +2712,7 @@ def summed_indel_distribution(
                     filter_density_min_bp=30,
                 )
             )
-            
-    
+
     # create a dict of the form read:sum_signals ({str,int})
     read_sum_signals: dict[str, int] = {
         aln.query_name: [0, 0]
@@ -2742,9 +2782,12 @@ def process_consensus_container(
         max_copy_number = cn_override
         log.info(f"Using overridden copy number: {max_copy_number}")
     else:
-        max_copy_number = max(2,copynumber_tracks.query_copynumber_from_regions(
-            bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
-        )) # 2 minimum clusters - maybe this is really bad, idk.
+        max_copy_number = max(
+            2,
+            copynumber_tracks.query_copynumber_from_regions(
+                bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
+            ),
+        )  # 2 minimum clusters - maybe this is really bad, idk.
         log.info(f"Maximum copy number for this container: {max_copy_number}")
     if max_copy_number > 4:
         # don't process this container. Too complex.
@@ -2788,8 +2831,12 @@ def process_consensus_container(
             print(f"CR {crID} has {len(alnlist)} alignments:")
             for aln in alnlist:
                 # either left or right break end
-                clipped_left = aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0
-                clipped_right = aln.cigartuples[-1][1] if aln.cigartuples[-1][0] == 4 else 0
+                clipped_left = (
+                    aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0
+                )
+                clipped_right = (
+                    aln.cigartuples[-1][1] if aln.cigartuples[-1][0] == 4 else 0
+                )
                 print(
                     f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: left={clipped_left}, right={clipped_right}"
                 )
@@ -2814,8 +2861,10 @@ def process_consensus_container(
         dict_alignments=alns, intervals=max_intervals, read_records=read_records
     )
     log.info(f"number of reads: {len(cutreads)}")
-    log.info(f"summed trimmed reads bp: {sum(len(read.seq) for read in cutreads.values())}")
-    
+    log.info(
+        f"summed trimmed reads bp: {sum(len(read.seq) for read in cutreads.values())}"
+    )
+
     dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
         alns=alns, crs=crs_dict
     )
@@ -3118,7 +3167,9 @@ def crs_containers_to_consensus(
 
 def run_consensus_script(args, **kwargs):
     if args.consensus_method == "lamassemble" and args.lamassemble_mat is None:
-        raise ValueError("--lamassemble-mat is required when --consensus-method is 'lamassemble'.")
+        raise ValueError(
+            "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+        )
     crs_containers_to_consensus(
         samplename=args.samplename,
         input=args.input,
@@ -3264,17 +3315,17 @@ def get_consensus_parser(
         type=float,
         default=0.0,
         help="Scaling factor for importance density weights in the pairwise similarity matrix. "
-             "0.0: densities have no effect (plain signal counts); "
-             ">0.0: density influence amplified. Default is 0.0.",
+        "0.0: densities have no effect (plain signal counts); "
+        ">0.0: density influence amplified. Default is 0.0.",
     )
     parser.add_argument(
         "--max-intra-distance",
         type=float,
         default=-1.0,
         help="Hard upper bound on how much intra-cluster distance is tolerated. "
-             "When set to a value > 0, any pair of reads whose signal-only distance exceeds "
-             "this threshold will not be in the same cluster. "
-             "-1.0 disables the threshold. Default is -1.0.",
+        "When set to a value > 0, any pair of reads whose signal-only distance exceeds "
+        "this threshold will not be in the same cluster. "
+        "-1.0 disables the threshold. Default is -1.0.",
     )
     parser.add_argument(
         "--fasta-debug-path",

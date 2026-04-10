@@ -192,7 +192,9 @@ def add_genotypeMeasurements_to_SVprimitives(
             start, end = (end, start) if start > end else (start, end)
             if start <= svp_start <= end:
                 supporting_reads_start.append(readname)
-        _svp_crID = svp.consensusID.split(".")[0] if "." in svp.consensusID else svp.consensusID
+        _svp_crID = (
+            svp.consensusID.split(".")[0] if "." in svp.consensusID else svp.consensusID
+        )
         log.debug(
             f"TRANSFORMED::add_genotypeMeasurements_to_SVprimitives::GENOTYPE_MEASUREMENT_START\tconsensusID={svp.consensusID}\tcrID={_svp_crID}\tsvID={svp.svID}\tsv_type={svp.sv_type}\t"
             f"svp_start_core={svp_start}\tcore_interval_start={core_interval_start}\t"

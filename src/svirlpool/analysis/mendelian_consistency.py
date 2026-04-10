@@ -376,7 +376,9 @@ def load_regions_from_bed(bed_path: Path) -> dict[str, IntervalTree]:
     return trees
 
 
-def variant_overlaps_regions(variant: vcfpy.Record, regions: dict[str, IntervalTree]) -> bool:
+def variant_overlaps_regions(
+    variant: vcfpy.Record, regions: dict[str, IntervalTree]
+) -> bool:
     """Return True if the variant overlaps at least one region in *regions*."""
     chrom = variant.CHROM
     if chrom not in regions:
@@ -589,11 +591,7 @@ def variants_consistency_stats(
                         }
                     size_stats[svtype][bin_label][status] += 1
 
-            end = (
-                int(variant.INFO["END"])
-                if svtype == "DEL"
-                else variant.POS + 1
-            )
+            end = int(variant.INFO["END"]) if svtype == "DEL" else variant.POS + 1
 
             if bed_file:
                 features = extract_variant_features(variant)
@@ -616,12 +614,16 @@ def _status_dict_to_lines(
     n_informative = sum(
         count
         for status, count in dict_stats.items()
-        if status not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
+        if status
+        not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
     )
     lines = f"{indent}- total: {n_total:,}\n"
     for status in dict_stats:
         count = dict_stats[status]
-        if status in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative):
+        if status in (
+            GTInheritanceStatus.uncertain,
+            GTInheritanceStatus.non_informative,
+        ):
             lines += f"{indent}- {status.name}: {count:,}\n"
         else:
             pct = count / n_informative if n_informative > 0 else 0
@@ -643,7 +645,9 @@ def dict_stats_to_line(
         if size_stats is not None and svtype in size_stats:
             for bin_label in SIZE_BIN_LABELS:
                 lines += f"  [{svtype} / {bin_label}]\n"
-                lines += _status_dict_to_lines(size_stats[svtype][bin_label], indent="    ")
+                lines += _status_dict_to_lines(
+                    size_stats[svtype][bin_label], indent="    "
+                )
     return lines.rstrip()
 
 
@@ -675,7 +679,8 @@ def get_trios_from_variants(
 def all_dict_stats_to_tsv(
     all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
     path_tsv: PosixPath,
-    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]] | None = None,
+    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]]
+    | None = None,
 ) -> None:
     """Write stratified stats to a TSV with columns: sample, svtype, [size_bin,] status, count, percentage."""
     with open(path_tsv, "w") as f:
@@ -690,7 +695,8 @@ def all_dict_stats_to_tsv(
                 n_informative = sum(
                     count
                     for status, count in dict_stats.items()
-                    if status not in (
+                    if status
+                    not in (
                         GTInheritanceStatus.uncertain,
                         GTInheritanceStatus.non_informative,
                     )
@@ -725,7 +731,8 @@ def all_dict_stats_to_tsv(
                             n_inf = sum(
                                 c
                                 for s, c in bin_stats.items()
-                                if s not in (
+                                if s
+                                not in (
                                     GTInheritanceStatus.uncertain,
                                     GTInheritanceStatus.non_informative,
                                 )
@@ -734,7 +741,8 @@ def all_dict_stats_to_tsv(
                                 count = bin_stats[status]
                                 pct_str = (
                                     "NA"
-                                    if status in (
+                                    if status
+                                    in (
                                         GTInheritanceStatus.uncertain,
                                         GTInheritanceStatus.non_informative,
                                     )
@@ -749,7 +757,8 @@ def all_dict_stats_to_tsv(
 def all_dict_stats_to_latex(
     all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
     path_latex: PosixPath,
-    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]] | None = None,
+    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]]
+    | None = None,
 ) -> None:
     """Write stratified stats to a LaTeX table.
 
@@ -771,17 +780,20 @@ def all_dict_stats_to_latex(
         for status in GTInheritanceStatus:
             for svtype in svtype_keys:
                 counts = [
-                    all_dict_stats[s][svtype][status] if svtype in all_dict_stats[s] else 0
+                    all_dict_stats[s][svtype][status]
+                    if svtype in all_dict_stats[s]
+                    else 0
                     for s in samples
                 ]
                 totals = [
-                    sum(all_dict_stats[s][svtype].values()) if svtype in all_dict_stats[s] else 0
+                    sum(all_dict_stats[s][svtype].values())
+                    if svtype in all_dict_stats[s]
+                    else 0
                     for s in samples
                 ]
                 abs_cells = " & ".join(f"{c:,}" for c in counts)
                 pct_cells = " & ".join(
-                    f"{c / t:.2f}" if t > 0 else "NA"
-                    for c, t in zip(counts, totals)
+                    f"{c / t:.2f}" if t > 0 else "NA" for c, t in zip(counts, totals)
                 )
                 if all_size_dict_stats is not None:
                     print(f"{status.name} & {svtype} & all & {abs_cells} \\\\", file=f)
@@ -815,14 +827,18 @@ def all_dict_stats_to_latex(
                             f"{c / t:.2f}" if t > 0 else "NA"
                             for c, t in zip(bin_counts, bin_totals)
                         )
-                        print(f"{status.name} & {svtype} & {bin_label} & {bc_cells} \\\\", file=f)
+                        print(
+                            f"{status.name} & {svtype} & {bin_label} & {bc_cells} \\\\",
+                            file=f,
+                        )
                         print(f"  & & & {bp_cells} \\\\", file=f)
 
 
 def all_dict_stats_to_json(
     all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
     path_json: PosixPath,
-    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]] | None = None,
+    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]]
+    | None = None,
 ) -> None:
     """Write stratified stats to a JSON file."""
     out: dict = {}
@@ -832,12 +848,20 @@ def all_dict_stats_to_json(
         for svtype in svtype_keys:
             d = svtype_stats[svtype]
             n_informative = sum(
-                c for s, c in d.items()
-                if s not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
+                c
+                for s, c in d.items()
+                if s
+                not in (
+                    GTInheritanceStatus.uncertain,
+                    GTInheritanceStatus.non_informative,
+                )
             )
             entry: dict = {}
             for status, count in d.items():
-                if status in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative):
+                if status in (
+                    GTInheritanceStatus.uncertain,
+                    GTInheritanceStatus.non_informative,
+                ):
                     entry[status.name] = {"count": count, "percentage": None}
                 else:
                     entry[status.name] = {
@@ -855,12 +879,20 @@ def all_dict_stats_to_json(
                 for bin_label in SIZE_BIN_LABELS:
                     bin_d = all_size_dict_stats[sample][svtype][bin_label]
                     n_inf = sum(
-                        c for s, c in bin_d.items()
-                        if s not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
+                        c
+                        for s, c in bin_d.items()
+                        if s
+                        not in (
+                            GTInheritanceStatus.uncertain,
+                            GTInheritanceStatus.non_informative,
+                        )
                     )
                     bin_obj: dict = {}
                     for status, count in bin_d.items():
-                        if status in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative):
+                        if status in (
+                            GTInheritanceStatus.uncertain,
+                            GTInheritanceStatus.non_informative,
+                        ):
                             bin_obj[status.name] = {"count": count, "percentage": None}
                         else:
                             bin_obj[status.name] = {
@@ -959,7 +991,8 @@ def _save_fig(fig, prefix: str, suffix: str) -> None:
 
 def plot_mendelian_results(
     all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
-    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]] | None,
+    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]]
+    | None,
     fig_prefix: str,
     plot_color: str = "#1f77b4",
 ) -> None:
@@ -971,6 +1004,7 @@ def plot_mendelian_results(
       {fig_prefix}_size_scatter – rows=samples, cols=SV types, consistency rate vs. size bin
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.colors as mcolors
     import matplotlib.pyplot as plt
@@ -1065,7 +1099,8 @@ def plot_mendelian_results(
     n_svt_noall = len(svtype_noall)
     n_rows2 = max(n_samples, 1)
     fig2, axes2 = plt.subplots(
-        n_rows2, 1,
+        n_rows2,
+        1,
         figsize=(max(6, n_svt_noall * 1.2 + 2), 4.5 * n_rows2),
         squeeze=False,
     )
@@ -1157,9 +1192,9 @@ def plot_mendelian_results(
                 if svtype not in size_data:
                     ax.set_visible(False)
                     continue
-                rates = np.array(
-                    [_consistency_rate(size_data[svtype][bl]) for bl in SIZE_BIN_LABELS]
-                )
+                rates = np.array([
+                    _consistency_rate(size_data[svtype][bl]) for bl in SIZE_BIN_LABELS
+                ])
                 valid = ~np.isnan(rates)
                 ax.plot(
                     x_bins[valid],
@@ -1182,7 +1217,9 @@ def plot_mendelian_results(
                         fontweight="bold",
                     )
                 ax.set_xticks(x_bins)
-                ax.set_xticklabels(SIZE_BIN_LABELS, fontsize="x-small", rotation=30, ha="right")
+                ax.set_xticklabels(
+                    SIZE_BIN_LABELS, fontsize="x-small", rotation=30, ha="right"
+                )
                 ax.set_ylim(-5, 105)
                 ax.grid(axis="y", alpha=0.3)
                 if si == 0:
@@ -1235,7 +1272,11 @@ def add_mndl_format_header(header_lines: list[str]) -> list[str]:
 
 
 def annotate_vcf_with_mendelian_consistency(
-    input_vcf: PosixPath, output_vcf: PosixPath, ped: PosixPath, passonly: bool = False, min_size: int = 0,
+    input_vcf: PosixPath,
+    output_vcf: PosixPath,
+    ped: PosixPath,
+    passonly: bool = False,
+    min_size: int = 0,
     regions: dict[str, IntervalTree] | None = None,
     svtypes: set[str] | None = None,
 ) -> None:
@@ -1314,7 +1355,11 @@ def annotate_vcf_with_mendelian_consistency(
                 continue
 
             # Skip SVTYPEs not in the requested set
-            if svtypes is not None and "SVTYPE" in variant.INFO and variant.INFO["SVTYPE"] not in svtypes:
+            if (
+                svtypes is not None
+                and "SVTYPE" in variant.INFO
+                and variant.INFO["SVTYPE"] not in svtypes
+            ):
                 continue
 
             # Skip variants outside requested regions
@@ -1410,8 +1455,13 @@ def mendelian_consistency(
         if ped is None:
             raise ValueError("--ped is required when --vcf is specified")
         annotate_vcf_with_mendelian_consistency(
-            input_vcf=input, output_vcf=vcf, ped=ped, passonly=passonly, min_size=min_size,
-            regions=regions_tree, svtypes=svtypes,
+            input_vcf=input,
+            output_vcf=vcf,
+            ped=ped,
+            passonly=passonly,
+            min_size=min_size,
+            regions=regions_tree,
+            svtypes=svtypes,
         )
 
     variants: list[vcfpy.Record] = parse_variants(path_vcf=input, passonly=passonly)
@@ -1423,9 +1473,9 @@ def mendelian_consistency(
         mother = variants[0].calls[2].sample
         trios = [[sample, father, mother]]
     all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]] = {}
-    all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]] | None = (
-        {} if size_stratification else None
-    )
+    all_size_dict_stats: (
+        dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]] | None
+    ) = {} if size_stratification else None
     with open(output, "w") as f:
         for sample, father, mother in sorted(trios, key=lambda x: x[0]):
             dict_stats, size_stats = variants_consistency_stats(
@@ -1454,7 +1504,10 @@ def mendelian_consistency(
         all_dict_stats_to_json(all_dict_stats, json_out, all_size_dict_stats)
     if fig:
         plot_mendelian_results(
-            all_dict_stats, all_size_dict_stats, str(fig), plot_color=plot_color,
+            all_dict_stats,
+            all_size_dict_stats,
+            str(fig),
+            plot_color=plot_color,
         )
 
 

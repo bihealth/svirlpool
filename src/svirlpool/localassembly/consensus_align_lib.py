@@ -12,7 +12,7 @@ from intervaltree import Interval
 from pysam import AlignedSegment
 
 from ..localassembly import consensus
-from ..util.datatypes import (MergedSVSignal, SVsignal)
+from ..util.datatypes import MergedSVSignal, SVsignal
 from . import consensus_class
 
 log = logging.getLogger(__name__)
@@ -120,14 +120,12 @@ def parse_sv_signals_from_consensus(
     Parse SV signals from consensus alignment. Returned items are sorted by their position on the consensus.
     """
     # parse sv signals from alignments
-    sv_signals: list[SVsignal] = (
-        consensus.parse_ReadAlignmentSignals_from_alignment(
-            samplename=samplename,
-            alignment=pysam_alignment,
-            min_signal_size=min_signal_size,
-            min_bnd_size=min_bnd_size,
-        ).SV_signals
-    )
+    sv_signals: list[SVsignal] = consensus.parse_ReadAlignmentSignals_from_alignment(
+        samplename=samplename,
+        alignment=pysam_alignment,
+        min_signal_size=min_signal_size,
+        min_bnd_size=min_bnd_size,
+    ).SV_signals
 
     if interval_core is not None:
         _filtered_outside_core = [
@@ -147,14 +145,14 @@ def parse_sv_signals_from_consensus(
         # also log the signals that were taken
         for signal in sv_signals:
             _consensusID = str(pysam_alignment.query_name)
-            _crID = _consensusID.split('.')[0]
+            _crID = _consensusID.split(".")[0]
             log.debug(
                 f"TRANSFORMED::parse_sv_signals_from_consensus:(keeping signals inside of interval_core {interval_core}): consensusID={_consensusID}, crID={_crID}, description={signal._get_description(reference_name)}"
             )
 
         if _filtered_outside_core:
             _consensusID = str(pysam_alignment.query_name)
-            _crID = _consensusID.split('.')[0]
+            _crID = _consensusID.split(".")[0]
             log.debug(
                 f"DROPPED::parse_sv_signals_from_consensus:(dropping signals outside of interval_core {interval_core}): consensusID={_consensusID}, crID={_crID}, description={[sv_signal._get_description(reference_name) for sv_signal in _filtered_outside_core]}"
             )
