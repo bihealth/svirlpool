@@ -76,7 +76,8 @@ min_cr_size=config["min_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
 
 # consensus
-lamassemble_mat = config["lamassemble_mat"]
+lamassemble_mat = config.get("lamassemble_mat", None)
+consensus_method = config.get("consensus_method", "lamassemble")
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -128,6 +129,25 @@ def get_crIDs(wildcards):
     path_crIDs = 'crIDs.txt'
     crIDs = [int(line.strip()) for line in open(path_crIDs)]
     return [f"consensus/{str(int(crID / N_files_per_dir))}/consensus.{crID}.txt" for crID in crIDs]
+
+_CONSENSUS_THREADS  = [1, 2, 4, 12]
+_CONSENSUS_MEM_MB   = [512, 1024, 2048, 4096]
+_CONSENSUS_RUNTIME  = ["20s", "1m", "3m", "10m"]
+_CONSENSUS_TIMEOUTS = [20, 60, 60, 120]  # in seconds
+
+def get_consensus_threads(wildcards, attempt):
+    return _CONSENSUS_THREADS[min(attempt - 1, len(_CONSENSUS_THREADS) - 1)]
+
+def get_consensus_mem_mb(wildcards, attempt):
+    return _CONSENSUS_MEM_MB[min(attempt - 1, len(_CONSENSUS_MEM_MB) - 1)]
+
+def get_consensus_runtime(wildcards, attempt):
+    return _CONSENSUS_RUNTIME[min(attempt - 1, len(_CONSENSUS_RUNTIME) - 1)]
+
+def get_consensus_timeout(wildcards, attempt):
+    if attempt > len(_CONSENSUS_THREADS):
+        return 1
+    return _CONSENSUS_TIMEOUTS[min(attempt - 1, len(_CONSENSUS_TIMEOUTS) - 1)]
 
 # def get_coverage(wildcards):
 #     with open("coverage.txt", "r") as f:
@@ -561,15 +581,18 @@ rule consensus_consensus:
     params:
         alignments=alignments,
         samplename=samplename,
-        lamassemble_mat=lamassemble_mat,
+        lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
         log_level=log_level,
+        consensus_method=consensus_method,
     threads:
-        cores_per_consensus
+        get_consensus_threads
     conda:
         "envs/svirlpool.yml"
     resources:
-        mem_mb=2*1024,
-        runtime=15
+        mem_mb=get_consensus_mem_mb,
+        runtime=get_consensus_runtime,
+        _attempt=lambda wildcards, attempt: attempt,
+        timeout=get_consensus_timeout
     benchmark:
         "benchmarks/consensus/consensus.{crID}.{crIDdir}.txt"
     shell:
@@ -577,14 +600,16 @@ rule consensus_consensus:
         python3 -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
         -cn {input.copynumbertracks} \
-        --lamassemble-mat {params.lamassemble_mat} \
+        {params.lamassemble_mat_arg} \
+        --consensus-method {params.consensus_method} \
         -i {input.containers} \
         -a {params.alignments} \
         -o {output.container} \
         -t {threads} \
         -c {wildcards.crID} \
         --logfile {output.log} \
-        --log-level {params.log_level}"""
+        --log-level {params.log_level} \
+        --timeout {resources.timeout}"""
         # --verbose"""
 
 

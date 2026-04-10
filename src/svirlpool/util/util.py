@@ -197,7 +197,6 @@ def align_reads_with_minimap(
             cmd_sort,
             stdin=p_align.stdout,
             stderr=log_handle if logfile else None,
-            start_new_session=True,
         )
         # Close parent's reference to the pipe output so p_sort gets EOF after p_align exits
         if p_align.stdout:
@@ -208,19 +207,27 @@ def align_reads_with_minimap(
             p_sort.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             log.error("Alignment timed out, killing processes...")
-            # try to kill both process groups
-            for p in (p_sort, p_align):
+            # kill minimap2 process group (has start_new_session=True)
+            try:
+                killpg(getpgid(p_align.pid), signal.SIGTERM)
+            except Exception:
                 try:
-                    killpg(getpgid(p.pid), signal.SIGTERM)
+                    p_align.kill()
                 except Exception:
-                    try:
-                        p.kill()
-                    except Exception:
-                        pass
+                    pass
+            # kill samtools sort directly (shares parent's process group)
+            try:
+                p_sort.kill()
+            except Exception:
+                pass
             # raise a built-in timeout error
             raise TimeoutError(
                 "Alignment with minimap2 timed out after the specified time limit."
             )
+
+        # Check that samtools sort succeeded
+        if p_sort.returncode != 0:
+            raise subprocess.CalledProcessError(p_sort.returncode, " ".join(cmd_sort))
 
         # if we get here p_sort finished successfully; index BAM
         log.info(f"indexing {bamout}")
