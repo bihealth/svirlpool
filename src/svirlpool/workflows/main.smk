@@ -144,10 +144,10 @@ def get_consensus_mem_mb(wildcards, attempt):
 def get_consensus_runtime(wildcards, attempt):
     return _CONSENSUS_RUNTIME[min(attempt - 1, len(_CONSENSUS_RUNTIME) - 1)]
 
-def get_consensus_timeout_arg(wildcards, resources):
-    if resources._attempt > len(_CONSENSUS_THREADS):
-        return "--timeout 1"
-    return _CONSENSUS_TIMEOUTS[min(resources._attempt - 1, len(_CONSENSUS_TIMEOUTS) - 1)]
+def get_consensus_timeout(wildcards, attempt):
+    if attempt > len(_CONSENSUS_THREADS):
+        return 1
+    return _CONSENSUS_TIMEOUTS[min(attempt - 1, len(_CONSENSUS_TIMEOUTS) - 1)]
 
 # def get_coverage(wildcards):
 #     with open("coverage.txt", "r") as f:
@@ -584,7 +584,6 @@ rule consensus_consensus:
         lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
         log_level=log_level,
         consensus_method=consensus_method,
-        timeout_arg=get_consensus_timeout_arg,
     threads:
         get_consensus_threads
     conda:
@@ -592,7 +591,8 @@ rule consensus_consensus:
     resources:
         mem_mb=get_consensus_mem_mb,
         runtime=get_consensus_runtime,
-        _attempt=lambda wildcards, attempt: attempt
+        _attempt=lambda wildcards, attempt: attempt,
+        timeout=get_consensus_timeout
     benchmark:
         "benchmarks/consensus/consensus.{crID}.{crIDdir}.txt"
     shell:
@@ -609,7 +609,7 @@ rule consensus_consensus:
         -c {wildcards.crID} \
         --logfile {output.log} \
         --log-level {params.log_level} \
-        {params.timeout_arg}"""
+        --timeout {resources.timeout}"""
         # --verbose"""
 
 
