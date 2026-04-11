@@ -689,7 +689,8 @@ def make_consensus_with_lamassemble(
     """Assemble reads with lamassemble and return the consensus sequence as a string."""
     # try to run lamassemble. if it fails or the output is empty, return None.
     # lamassemble writes its output to the command line, so the output should be caught from there.
-    cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
+    #cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
+    cmd_lamassemble = f"lamassemble --name {consensus_name} -P {threads} -f fa -s 2 -g 67 {str(lamassemble_mat)} {str(reads_file)}"
     log.info(
         f"Running lamassemble with command:\n{cmd_lamassemble}\nwith timeout of {timeout} seconds"
     )
