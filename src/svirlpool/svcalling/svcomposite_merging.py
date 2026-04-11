@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from ..localassembly import SVpatterns
 from ..util.datastructures import UnionFind
-from ..util.util import (kmer_similarity_of_groups, lerp)
+from ..util.util import kmer_similarity_of_groups, lerp
 from .SVcomposite import SVcomposite
 from .svcomposite_utils import (
     _crIDs_from_svcomposite,
@@ -27,7 +27,6 @@ from .svcomposite_utils import (
 )
 
 log = logging.getLogger(__name__)
-
 
 
 def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
@@ -73,7 +72,7 @@ def can_merge_svComposites_insertions(
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
     near: int,
-    scale_by_complexity_factor:float,
+    scale_by_complexity_factor: float,
     d: float = 2.0,
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
@@ -133,9 +132,7 @@ def can_merge_svComposites_insertions(
 
     # Test 1: Simple fractional size difference check
     max_size = max(size_a_adjusted, size_b_adjusted)
-    log_size = np.log2(
-        abs(size_a - size_b) + 1
-    )
+    log_size = np.log2(abs(size_a - size_b) + 1)
     fraction_similar = (
         max_size > 0
         and abs(size_a_adjusted - size_b_adjusted)
@@ -266,9 +263,7 @@ def can_merge_svComposites_deletions(
 
     # Test 1: Simple fractional size difference check
     max_size = max(size_a_adjusted, size_b_adjusted)
-    log_size = np.log2(
-        abs(size_a - size_b) + 1
-    )
+    log_size = np.log2(abs(size_a - size_b) + 1)
     fraction_similar = (
         max_size > 0
         and abs(size_a_adjusted - size_b_adjusted)
@@ -699,9 +694,7 @@ def can_merge_svComposites_inversions(
 
     # Test 1: Simple fractional size difference check
     max_size = max(size_a_adjusted, size_b_adjusted)
-    log_size = np.log2(
-        abs(size_a - size_b) + 1
-    )
+    log_size = np.log2(abs(size_a - size_b) + 1)
     fraction_similar = (
         max_size > 0
         and abs(size_a_adjusted - size_b_adjusted)

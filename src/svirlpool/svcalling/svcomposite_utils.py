@@ -6,7 +6,6 @@ multisample_sv_calling and svcomposite_merging.
 
 import numpy as np
 
-from ..localassembly import SVpatterns
 from .SVcomposite import SVcomposite
 
 

@@ -2277,6 +2277,7 @@ def json_to_seqRecord(
         annotations=data["annotations"],
     )
 
+
 def lerp(a: float, b: float, t: float) -> float:
     """Linear interpolation between a and b with parameter t in [0, 1]."""
     return (1 - t) * a + t * b
