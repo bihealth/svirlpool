@@ -992,7 +992,7 @@ class SVpatternAdjacency(SVpattern):
     def _log_id(self) -> str:
         regions = self.get_reference_regions()
         region_strs = [f"{chr}:{start}-{end}" for chr, start, end in regions]
-        return f"sample={self.samplename}|consensusID={self.consensusID}|type={self.get_sv_type()}|size={self.get_size()}|regions={','.join(region_strs)}"
+        return f"sample={self.samplename}|consensusID={self.consensusID}|crID={self.consensusID.split('.')[0]}|type={self.get_sv_type()}|size={self.get_size()}|regions={','.join(region_strs)}"
 
 
 # Use Union for better type hints
@@ -1471,32 +1471,7 @@ def parse_SVprimitives_to_SVpatterns(
     # parse all leftover breakends to single ended BNDs or Adjacency BNDs
     unused_indices = set(range(len(breakends))) - used_indices
     if unused_indices:
-        # _loss_logger = get_signal_loss_logger()
         _consensusID = SVprimitives[0].consensusID if SVprimitives else ""
-        # log every consensusID and every SVprimitives that is part of the unused indices for breakends
-        # log.debug(
-        #     f"TRANFORMED::parse_SVprimitives_to_SVpatterns:(unused break ends to adjacencies/singletons), unused_indices={sorted(unused_indices)}, svprimitives:{[breakends[i]._get_description() for i in sorted(unused_indices)]}"
-        # )
-        # _loss_logger.log_skipped(
-        #     stage="parse_SVprimitives_to_SVpatterns",
-        #     consensusID=_consensusID,
-        #     reason="breakends_not_parsed_into_complex_SVpattern",
-        #     count=len(unused_indices),
-        #     details={
-        #         "unused_breakend_indices": sorted(unused_indices),
-        #         "total_breakends": len(breakends),
-        #         "breakend_details": [
-        #             {
-        #                 "sv_type": breakends[i].sv_type,
-        #                 "chr": breakends[i].chr,
-        #                 "ref_start": breakends[i].ref_start,
-        #                 "ref_end": breakends[i].ref_end,
-        #                 "alignmentID": breakends[i].alignmentID,
-        #             }
-        #             for i in sorted(unused_indices)
-        #         ],
-        #     },
-        # )
         log.info(
             f"parse_SVprimitives_to_SVpatterns: consensus {_consensusID}: "
             f"{len(unused_indices)} out of {len(breakends)} breakends could not be parsed "
@@ -1554,7 +1529,7 @@ def break_up_CPX(
             result.append(SVpatternAdjacency(SVprimitives=[svp_a, svp_b]))
             paired_indices.update([idx_a, idx_b])
             log.debug(
-                f"TRANSFORMED::break_up_CPX:(broken into 2 adjacencies), first={svp_a._get_description()}, second={svp_b._get_description()}"
+                f"TRANSFORMED::break_up_CPX:(broken into 2 adjacencies), consensusID={svp_a.consensusID}, crID={svp_a.consensusID.split('.')[0]}, first={svp_a._get_description()}, second={svp_b._get_description()}"
             )
 
     # Handle unpaired breakends - create single breakends
@@ -1562,7 +1537,7 @@ def break_up_CPX(
     for idx in sorted(unpaired_indices):
         result.append(SVpatternSingleBreakend(SVprimitives=[SVprimitives[idx]]))
         log.debug(
-            f"TRANSFORMED::break_up_CPX:(broken into 1 single BND), first={SVprimitives[idx]._get_description()}"
+            f"TRANSFORMED::break_up_CPX:(broken into 1 single BND), consensusID={SVprimitives[idx].consensusID}, crID={SVprimitives[idx].consensusID.split('.')[0]}, first={SVprimitives[idx]._get_description()}"
         )
 
     return result

@@ -1012,8 +1012,8 @@ def get_parser():
     parser.add_argument(
         "--stay-prob",
         type=float,
-        default=0.96,
-        help="Stay probability for the Hidden Markov Model (default: 0.98). "
+        default=0.90,
+        help="Stay probability for the Hidden Markov Model (default: 0.90). "
         "Higher values = more likely to stay in the same state.",
     )
     parser.add_argument(

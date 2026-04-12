@@ -10,9 +10,11 @@ crIDs are identified in log lines by the patterns:
     crID=<int>
     crIDs={<int>,<int>,...}
     crIDs=[<int>, <int>, ...]
+    consensusID=<crID>.<subID>  (extracts the integer before the first dot)
 
 Regions are identified by the patterns:
     region=<chr>:<start>-<end>
+    alignment_region=<chr>:<start>-<end>
     regions=<chr>:<start>-<end>;<chr>:<start>-<end>
     regions=<chr>:<start>-<end>,<chr>:<start>-<end>
 
@@ -82,10 +84,12 @@ def parse_region(region_str: str) -> Region:
 _RE_CRID_SINGLE = re.compile(r"crID=(\d+)")
 # Matches: crIDs={1,2,3} or crIDs=[1, 2, 3] or crIDs={1, 2, 3}
 _RE_CRIDS_SET = re.compile(r"crIDs=[\[{]([\d,\s]+)[\]}]")
+# Matches: consensusID=123.0 or consensusID=123.0.1 — extracts the crID (integer before first dot)
+_RE_CONSENSUSID = re.compile(r"consensusID=(\d+)\.")
 
 # Regex patterns for extracting regions from log lines
-# Matches: region=chr1:100-200
-_RE_REGION_SINGLE = re.compile(r"region=([\w._-]+:\d[\d,]*-\d[\d,]*)")
+# Matches: region=chr1:100-200 or alignment_region=chr1:100-200
+_RE_REGION_SINGLE = re.compile(r"(?:alignment_)?region=([\w._-]+:\d[\d,]*-\d[\d,]*)")
 # Matches: regions=chr1:100-200;chr2:300-400 or regions=chr1:100-200,chr2:300-400
 # Also handles the format: regions=chr1:100-200 chr2:300-400 (space-separated with region= prefix)
 _RE_REGIONS_BLOCK = re.compile(
@@ -94,7 +98,13 @@ _RE_REGIONS_BLOCK = re.compile(
 
 
 def extract_crIDs_from_line(line: str) -> set[int]:
-    """Extract all crIDs mentioned in a log line."""
+    """Extract all crIDs mentioned in a log line.
+
+    Extracts from:
+    - crID=<int>
+    - crIDs={<int>,<int>,...} or crIDs=[<int>, <int>, ...]
+    - consensusID=<crID>.<subID> (extracts the integer before the first dot)
+    """
     crIDs: set[int] = set()
 
     # Extract crIDs from set/list notation: crIDs={1,2,3} or crIDs=[1, 2, 3]
@@ -106,6 +116,10 @@ def extract_crIDs_from_line(line: str) -> set[int]:
 
     # Extract single crID= values
     for match in _RE_CRID_SINGLE.finditer(line):
+        crIDs.add(int(match.group(1)))
+
+    # Extract crID from consensusID=<crID>.<subID> patterns
+    for match in _RE_CONSENSUSID.finditer(line):
         crIDs.add(int(match.group(1)))
 
     return crIDs

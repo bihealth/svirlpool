@@ -121,10 +121,10 @@ To call SVs on your own data, follow these three stages: Preparing prefab data, 
 
 | File Type | Description | Requirements |
 | --- | --- | --- |
-| **Alignments (.bam)** | Indexed long-read alignments | Generated with `minimap2`; must have DNA sequences and quality scores. |
-| **Reference (.fa)** | Reference genome | Indexed with `samtools faidx`. |
+| **Alignments (.bam OR .cram)** | Indexed long-read alignments | Generated with `minimap2`; must have DNA sequences and quality scores. |
+| **Reference (.fa OR fa.gz)** | Reference genome | Indexed with `samtools faidx`. |
 | **Matrices (.mat)** | Error models for assembly | Included in the repository under `data/lamassemble-mats/`. |
-| **Annotations** | TRF and Mononucleotides | Download from [svirlpool-data](https://github.com/bihealth/svirlpool-data). |
+| **Annotations (.bed)** | TRF and Mononucleotides | Download from [svirlpool-data](https://github.com/bihealth/svirlpool-data). |
 
 ### II. Step-by-Step Execution
 
@@ -166,7 +166,6 @@ svirlpool sv-calling \
     --input HG002/svirltile.db HG003/svirltile.db \
     --reference $REFERENCE \
     --output family.vcf.gz \
-    --sv-types DEL INS \
     --min-sv-size 50
 ```
 

@@ -82,27 +82,30 @@ def get_parser():
         required=True,
         type=os.path.abspath,
     )
-    # parser_run_wf.add_argument(
-    #     "--unique-regions",
-    #     help="unique regions in bed format",
-    #     required=True,
-    #     type=os.path.abspath,
-    # )
     parser_run_wf.add_argument(
         "--lamassemble-mat",
-        help="lamassamble matrix file used for the final consensus assembly.",
-        required=True,
+        help="lamassamble matrix file used for the final consensus assembly. Required when --consensus-method is 'lamassemble'.",
+        required=False,
+        default=None,
         type=os.path.abspath,
+    )
+    parser_run_wf.add_argument(
+        "--consensus-method",
+        help="Method for consensus assembly: 'lamassemble' (default) or 'racon'.",
+        required=False,
+        type=str,
+        choices=["lamassemble", "racon"],
+        default="lamassemble",
     )
     parser_run_wf.add_argument(
         "--threads", help="number of threads to use", required=True, type=int
     )
     parser_run_wf.add_argument(
         "--cores-per-consensus",
-        help="number of cores per consensus clustering and assembly [1]",
+        help="number of cores per consensus clustering and assembly [2]",
         required=False,
         type=int,
-        default=1,
+        default=2,
     )
     parser_run_wf.add_argument(
         "--max-coverage-per-region",
@@ -195,12 +198,6 @@ def get_parser():
         required=False,
         type=int,
         default=0,
-    )
-    parser_run_wf.add_argument(
-        "--dont-merge-horizontally",
-        help="do not merge horizontally, i.e. do not merge SVs that are close to each other or in tandem repeats",
-        required=False,
-        action="store_true",
     )
     parser_run_wf.add_argument(
         "--log-level",
