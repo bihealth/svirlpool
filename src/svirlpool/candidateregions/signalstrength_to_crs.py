@@ -20,7 +20,7 @@ import numpy.typing as npt
 import psutil
 from tqdm import tqdm
 
-from ..svcalling.multisample_sv_calling import cohens_d
+from ..svcalling.svcomposite_utils import cohens_d
 
 # %%
 from ..util import datatypes, util
