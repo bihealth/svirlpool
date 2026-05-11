@@ -2065,9 +2065,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
-        help="Size difference fraction tolerance for merging SVs (default: 0.1). Decrease for stronger separation of haplotypes",
+        help="Size difference fraction tolerance for merging SVs (default: 0.06). Decrease for stronger separation of haplotypes",
         type=float,
-        default=0.05,
+        default=0.06,
     )
     parser.add_argument(
         "--symbolic-threshold",
@@ -2108,9 +2108,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--scale-by-complexity-factor",
-        help="Weight (0.0 to 1.0) for scaling SV sizes by sequence complexity when merging. 0.0 disables complexity scaling, 1.0 applies full complexity scaling (default: 1.0).",
+        help="Weight (0.0 to 1.0) for scaling SV sizes by sequence complexity when merging. 0.0 disables complexity scaling, 1.0 applies full complexity scaling (default: 0.67).",
         type=float,
-        default=0.5,
+        default=0.67,
     )
     parser.add_argument(
         "--dont-collapse-repeats",

@@ -95,7 +95,7 @@ def get_parser():
         required=False,
         type=str,
         choices=["lamassemble", "racon"],
-        default="lamassemble",
+        default="racon",
     )
     parser_run_wf.add_argument(
         "--threads", help="number of threads to use", required=True, type=int

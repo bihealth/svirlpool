@@ -493,26 +493,16 @@ def trim_reads(
 # =============================================================================
 
 
-def find_representative_read(
+def _rank_reads_by_similarity(
     similarity_matrix: np.ndarray,
     sim_read_names: list[str],
     cluster_read_names: list[str],
-) -> str:
-    """Find the centroid read in a cluster using the similarity matrix.
-
-    The centroid is the read that maximises the mean similarity to all other
-    reads in the cluster (equivalently, minimises the mean distance).
-
-    Args:
-        similarity_matrix: Symmetric (n, n) similarity matrix with values in [0, 1].
-        sim_read_names: Ordered read names corresponding to matrix rows/columns.
-        cluster_read_names: Read names belonging to the cluster of interest.
-
-    Returns:
-        The name of the representative (centroid) read.
+) -> list[str]:
+    """
+    rank all reads of the cluster by similarity to all others. Largest similarity is ranked highest.
     """
     if len(cluster_read_names) == 1:
-        return cluster_read_names[0]
+        return cluster_read_names
 
     name_to_idx = {name: i for i, name in enumerate(sim_read_names)}
     cluster_indices = np.array([name_to_idx[r] for r in cluster_read_names])
@@ -521,60 +511,51 @@ def find_representative_read(
     sub_sim = similarity_matrix[np.ix_(cluster_indices, cluster_indices)]
     # Mean similarity of each read to all other reads in the cluster
     mean_similarities = sub_sim.mean(axis=1)
-    best_local_idx = int(np.argmax(mean_similarities))
-    chosen_read = cluster_read_names[best_local_idx]
-    log.debug(
-        f"Chosen representative read: {chosen_read} with mean similarity {mean_similarities[best_local_idx]:.4f} in cluster of size {len(cluster_read_names)}"
-    )
-    return chosen_read
+    # sort reads by mean similarity
+    sim_ranks = np.argsort(-mean_similarities)  # negative for descending order
+    # return the readnames sorted by similarity
+    return [cluster_read_names[i] for i in sim_ranks]
 
 
-def filter_ava_alignments_for_racon(
-    ava_bam: Path,
-    representative_read: str,
-    output_sam: Path,
-) -> int:
-    """Filter an all-vs-all BAM to produce a SAM suitable for racon polishing.
-
-    From the all-vs-all BAM, keeps only alignments where the reference (target)
-    is ``representative_read``.  For each query read, only the longest alignment
-    (by number of query bases consumed) is retained, guaranteeing at most one
-    alignment per query name and avoiding racon's duplicate-sequence error.
-
-    Returns the number of alignments written.
+def _rank_reads_by_alignment_lengths(
+        pairwise_alignment_lengths_matrix: np.ndarray,
+        sim_read_names: list[str],
+        cluster_read_names: list[str]) -> list[str]:
     """
-    # Pass 1: collect the longest alignment per query read that maps to the representative
-    best: dict[str, pysam.AlignedSegment] = {}
-    with pysam.AlignmentFile(str(ava_bam), mode="rb") as bam:
-        ref_names = bam.references
-        if representative_read not in ref_names:
-            log.warning(
-                f"Representative read '{representative_read}' not found as a reference "
-                f"in AVA BAM '{ava_bam}'."
-            )
-            return 0
-        for aln in bam.fetch(representative_read):
-            if aln.is_unmapped or aln.query_name is None:
-                continue
-            # Skip the self-alignment: the representative read aligned to itself
-            # would appear in both the SAM and the reference FASTA, causing racon to
-            # complain about a duplicate sequence with unequal data.
-            if aln.query_name == representative_read:
-                continue
-            query_bases = aln.query_alignment_length or 0
-            prev = best.get(aln.query_name)
-            if prev is None or query_bases > (prev.query_alignment_length or 0):
-                best[aln.query_name] = aln
+    rank all reads of the cluster by the sum of their alignment lengths to all other reads in the cluster. Largest sum is ranked highest.
+    """
+    if len(cluster_read_names) == 1:
+        return cluster_read_names
 
-    # Pass 2: write filtered alignments to SAM
-    with pysam.AlignmentFile(str(ava_bam), mode="rb") as bam:
-        header = bam.header
-    with pysam.AlignmentFile(str(output_sam), mode="w", header=header) as out_sam:
-        for aln in best.values():
-            out_sam.write(aln)
+    name_to_idx = {name: i for i, name in enumerate(sim_read_names)}
+    cluster_indices = np.array([name_to_idx[r] for r in cluster_read_names])
 
-    return len(best)
+    # Sub-matrix for the cluster
+    sub_sim = pairwise_alignment_lengths_matrix[np.ix_(cluster_indices, cluster_indices)]
+    # sum alignment lengths of each read to all other reads in the cluster
+    for i in range(sub_sim.shape[0]):
+        sub_sim[i, i] = 0
+    sum_alignment_lengths = sub_sim.sum(axis=1)
+    # sort reads by sum of alignment lengths
+    sim_ranks = np.argsort(-sum_alignment_lengths)  # negative for descending order
+    # return the readnames sorted by sum of alignment lengths
+    return [cluster_read_names[i] for i in sim_ranks]
 
+def find_representative_read(
+    similarity_matrix: np.ndarray,
+    pairwise_alignment_lengths_matrix: np.ndarray,
+    sim_read_names: list[str],
+    cluster_read_names: list[str],
+) -> str:
+    """Find the representative read of a cluster based on similarity and alignment lengths."""
+    # rank reads by similarity and alignment lengths
+    ranked_by_similarity = _rank_reads_by_similarity(similarity_matrix, sim_read_names, cluster_read_names)
+    ranked_by_alignment_lengths = _rank_reads_by_alignment_lengths(pairwise_alignment_lengths_matrix, sim_read_names, cluster_read_names)
+    ranksums: np.ndarray = np.zeros(len(cluster_read_names))
+    for i, read in enumerate(cluster_read_names):
+        ranksums[i] = ranked_by_similarity.index(read) + ranked_by_alignment_lengths.index(read)
+    representative_read = cluster_read_names[np.argmin(ranksums)]
+    return representative_read
 
 def make_consensus_with_racon_subsampled(
     reference_fasta: Path,
@@ -1038,7 +1019,6 @@ def prepare_and_run_racon(
     consensus_fasta_path: Path,
     name: str,
     threads: int,
-    ava_bam: Path,
     representative_read: str,
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
@@ -1050,7 +1030,6 @@ def prepare_and_run_racon(
         consensus_fasta_path: Path where the consensus FASTA will be written.
         name: Name for the consensus sequence.
         threads: Number of threads for racon.
-        ava_bam: Path to the all-vs-all alignments BAM file.
         representative_read: Name of the chosen representative (centroid) read.
         tmp_dir_path: Optional directory for temporary files (kept on disk if set).
         verbose: Enable verbose logging.
@@ -1094,24 +1073,19 @@ def prepare_and_run_racon(
         with open(tmp_ref.name, "w") as f:
             SeqIO.write(records[representative_read], f, "fasta")
 
-        # 2. Extract AVA alignments to the representative, one per query (longest kept).
         tmp_sam = tempfile.NamedTemporaryFile(
             prefix="racon_aln.",
             suffix=".sam",
             dir=tmp_dir,
             delete=False if tmp_dir_path else True,
         )
-        n_alns = filter_ava_alignments_for_racon(
-            ava_bam=ava_bam,
-            representative_read=representative_read,
-            output_sam=Path(tmp_sam.name),
+        # align the reads of this cluster the the representative
+        align_reads_to_record(
+            reference=tmp_ref.name,
+            reads=reads_fasta,
+            path_alignments=tmp_sam.name,
+            threads=threads,
         )
-        if n_alns == 0:
-            log.warning(
-                f"No alignments found to representative '{representative_read}' "
-                f"in AVA BAM '{ava_bam}' for '{name}'."
-            )
-            return None
 
         # 3. Polish with racon (reads_fasta is already FASTA — no quality strings).
         consensus_sequence = make_consensus_with_racon(
@@ -1136,7 +1110,6 @@ def assemble_consensus(
     threads: int,
     timeout: int,
     method: str,
-    ava_bam: Path | None = None,
     representative_read: str | None = None,
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
@@ -1148,18 +1121,11 @@ def assemble_consensus(
 
     with tempfile.TemporaryDirectory():
         if method == "racon":
-            if ava_bam is None or representative_read is None:
-                log.warning(
-                    "ava_bam and representative_read are required when method='racon'. "
-                    "Returning None."
-                )
-                return None
             consensus_sequence: str | None = prepare_and_run_racon(
                 reads_fasta=reads_fasta,
                 consensus_fasta_path=consensus_fasta_path,
                 name=name,
                 threads=threads,
-                ava_bam=ava_bam,
                 representative_read=representative_read,
                 tmp_dir_path=tmp_dir_path,
                 verbose=verbose,
@@ -1203,6 +1169,36 @@ def partition_reads_spectral(
 
     labels = clustering.fit_predict(similarity_matrix)
     return {read: int(label) for read, label in zip(read_names, labels, strict=True)}
+
+
+def pairwise_alignment_lengths(ava_alignments:list[pysam.AlignedSegment], read_names:list[str]) -> np.ndarray:
+    """Calculate pairwise alignment lengths from all-vs-all alignments.
+
+    Args:
+        ava_alignments: List of all-vs-all alignments as pysam AlignedSegment objects.
+        read_names: Ordered list of read names corresponding to the alignments.
+
+    Returns:
+        A symmetric (n, n) matrix where entry (i, j) is the length of the alignment
+        between read i and read j, or 0 if no alignment exists.
+    """
+    name_to_idx = {name: i for i, name in enumerate(read_names)}
+    n = len(read_names)
+    alignment_lengths = np.zeros((n, n), dtype=int)
+
+    for aln in ava_alignments:
+        if aln.is_unmapped or aln.query_name is None or aln.reference_name is None:
+            continue
+        query = aln.query_name
+        ref = aln.reference_name
+        if query not in name_to_idx or ref not in name_to_idx:
+            continue
+        i, j = name_to_idx[query], name_to_idx[ref]
+        length = aln.query_alignment_length or 0
+        alignment_lengths[i, j] = length
+        alignment_lengths[j, i] = length  # Symmetric
+
+    return alignment_lengths
 
 
 def consensus_while_clustering(
@@ -1473,9 +1469,14 @@ def consensus_while_clustering(
                 consensus_name = f"{min(crIDs)}.{cluster_id}"
 
                 # Find centroid read for racon
+                _pairwise_aln_lengths = pairwise_alignment_lengths(
+                    ava_alignments=all_vs_all_alignments, read_names=sim_read_names
+                )
+                
                 _representative = (
                     find_representative_read(
                         similarity_matrix=similarity_matrix,
+                        pairwise_alignment_lengths_matrix=_pairwise_aln_lengths,
                         sim_read_names=sim_read_names,
                         cluster_read_names=chosen_reads,
                     )
@@ -1491,7 +1492,6 @@ def consensus_while_clustering(
                     threads=threads,
                     timeout=timeout,
                     method=consensus_method,
-                    ava_bam=ava_path if consensus_method == "racon" else None,
                     representative_read=_representative,
                     tmp_dir_path=tmp_dir_path,
                     verbose=verbose,
@@ -1580,7 +1580,6 @@ def consensus_while_clustering(
                     threads=threads,
                     timeout=timeout,
                     method=consensus_method,
-                    ava_bam=ava_path if consensus_method == "racon" else None,
                     representative_read=_representative,
                     tmp_dir_path=tmp_dir_path,
                     verbose=verbose,
@@ -1820,7 +1819,6 @@ def consensus_while_clustering_with_kmeans(
                     threads=threads,
                     timeout=timeout,
                     method=consensus_method,
-                    ava_bam=None,
                     representative_read=None,
                     verbose=verbose,
                 )
@@ -1895,7 +1893,6 @@ def consensus_while_clustering_with_kmeans(
                     threads=threads,
                     timeout=timeout,
                     method=consensus_method,
-                    ava_bam=None,
                     representative_read=None,
                     verbose=verbose,
                 )
@@ -3244,7 +3241,7 @@ def get_consensus_parser(
         "--consensus-method",
         type=str,
         choices=["lamassemble", "racon"],
-        default="lamassemble",
+        default="racon",
         help="Method used for consensus assembly. 'lamassemble' or 'racon' (default).",
     )
     parser.add_argument(
@@ -3382,3 +3379,4 @@ def main():
 if __name__ == "__main__":
     main()
 # %%
+
