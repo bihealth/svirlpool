@@ -518,9 +518,10 @@ def _rank_reads_by_similarity(
 
 
 def _rank_reads_by_alignment_lengths(
-        pairwise_alignment_lengths_matrix: np.ndarray,
-        sim_read_names: list[str],
-        cluster_read_names: list[str]) -> list[str]:
+    pairwise_alignment_lengths_matrix: np.ndarray,
+    sim_read_names: list[str],
+    cluster_read_names: list[str],
+) -> list[str]:
     """
     rank all reads of the cluster by the sum of their alignment lengths to all other reads in the cluster. Largest sum is ranked highest.
     """
@@ -531,7 +532,9 @@ def _rank_reads_by_alignment_lengths(
     cluster_indices = np.array([name_to_idx[r] for r in cluster_read_names])
 
     # Sub-matrix for the cluster
-    sub_sim = pairwise_alignment_lengths_matrix[np.ix_(cluster_indices, cluster_indices)]
+    sub_sim = pairwise_alignment_lengths_matrix[
+        np.ix_(cluster_indices, cluster_indices)
+    ]
     # sum alignment lengths of each read to all other reads in the cluster
     for i in range(sub_sim.shape[0]):
         sub_sim[i, i] = 0
@@ -541,6 +544,7 @@ def _rank_reads_by_alignment_lengths(
     # return the readnames sorted by sum of alignment lengths
     return [cluster_read_names[i] for i in sim_ranks]
 
+
 def find_representative_read(
     similarity_matrix: np.ndarray,
     pairwise_alignment_lengths_matrix: np.ndarray,
@@ -549,13 +553,20 @@ def find_representative_read(
 ) -> str:
     """Find the representative read of a cluster based on similarity and alignment lengths."""
     # rank reads by similarity and alignment lengths
-    ranked_by_similarity = _rank_reads_by_similarity(similarity_matrix, sim_read_names, cluster_read_names)
-    ranked_by_alignment_lengths = _rank_reads_by_alignment_lengths(pairwise_alignment_lengths_matrix, sim_read_names, cluster_read_names)
+    ranked_by_similarity = _rank_reads_by_similarity(
+        similarity_matrix, sim_read_names, cluster_read_names
+    )
+    ranked_by_alignment_lengths = _rank_reads_by_alignment_lengths(
+        pairwise_alignment_lengths_matrix, sim_read_names, cluster_read_names
+    )
     ranksums: np.ndarray = np.zeros(len(cluster_read_names))
     for i, read in enumerate(cluster_read_names):
-        ranksums[i] = ranked_by_similarity.index(read) + ranked_by_alignment_lengths.index(read)
+        ranksums[i] = ranked_by_similarity.index(
+            read
+        ) + ranked_by_alignment_lengths.index(read)
     representative_read = cluster_read_names[np.argmin(ranksums)]
     return representative_read
+
 
 def make_consensus_with_racon_subsampled(
     reference_fasta: Path,
@@ -1171,7 +1182,9 @@ def partition_reads_spectral(
     return {read: int(label) for read, label in zip(read_names, labels, strict=True)}
 
 
-def pairwise_alignment_lengths(ava_alignments:list[pysam.AlignedSegment], read_names:list[str]) -> np.ndarray:
+def pairwise_alignment_lengths(
+    ava_alignments: list[pysam.AlignedSegment], read_names: list[str]
+) -> np.ndarray:
     """Calculate pairwise alignment lengths from all-vs-all alignments.
 
     Args:
@@ -1472,7 +1485,7 @@ def consensus_while_clustering(
                 _pairwise_aln_lengths = pairwise_alignment_lengths(
                     ava_alignments=all_vs_all_alignments, read_names=sim_read_names
                 )
-                
+
                 _representative = (
                     find_representative_read(
                         similarity_matrix=similarity_matrix,
@@ -3379,4 +3392,3 @@ def main():
 if __name__ == "__main__":
     main()
 # %%
-

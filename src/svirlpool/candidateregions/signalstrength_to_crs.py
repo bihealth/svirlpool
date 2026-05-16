@@ -395,14 +395,19 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
     """Worker function to process one chromosome and create proto-CRs.
 
     Args:
-        args_tuple: (chr_name, chr_signals_file, chr_repeats_file, tmp_dir, buffer_region_radius)
+        args_tuple: (chr_name, chr_signals_file, chr_repeats_file, tmp_dir, buffer_region_radius, bnd_region_radius)
 
     Returns:
         (chr_name, proto_crs_file, statistics_dict)
     """
-    chr_name, chr_signals_file, chr_repeats_file, tmp_dir, buffer_region_radius = (
-        args_tuple
-    )
+    (
+        chr_name,
+        chr_signals_file,
+        chr_repeats_file,
+        tmp_dir,
+        buffer_region_radius,
+        bnd_region_radius,
+    ) = args_tuple
 
     logger.info(f"Processing chromosome {chr_name}...")
 
@@ -432,7 +437,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
         for s in signals:
             sv_type = s[4].sv_type
             if sv_type in (3, 4):
-                margin = 3 * buffer_region_radius
+                margin = bnd_region_radius
             elif sv_type in (1, 2):
                 margin = max(
                     50, int(abs(s[4].size) * 0.5)
@@ -775,6 +780,7 @@ def create_candidate_regions(
     dropped: Path | None = None,
     bedgraph: Path | None = None,
     tmp_dir_path: Path | None = None,
+    bnd_region_radius: int = 300,
 ) -> None:
     csv.field_size_limit(sys.maxsize)
 
@@ -872,6 +878,7 @@ def create_candidate_regions(
                 chr_repeat_files.get(chr_name, tmp_dir / f"{chr_name}_repeats.bed"),
                 tmp_dir,
                 buffer_region_radius,
+                bnd_region_radius,
             ))
 
         chr_results = []
@@ -972,6 +979,7 @@ def run(args, **kwargs):
         min_cr_size=args.min_cr_size,
         dropped=args.dropped,
         tmp_dir_path=getattr(args, "tmp_dir", None),
+        bnd_region_radius=args.bnd_region_radius,
     )
 
 
@@ -1029,6 +1037,13 @@ def get_parser():
         required=False,
         default=300,
         help="Radius of the initial seeds' sizes around signal that can constitute a candidate region seed.",
+    )
+    parser.add_argument(
+        "--bnd-region-radius",
+        type=int,
+        required=False,
+        default=300,
+        help="Margin (bp) added around BND signals when seeding candidate regions. Independent of --buffer-region-radius.",
     )
     parser.add_argument(
         "--cutoff-median-readcount-per-region",
