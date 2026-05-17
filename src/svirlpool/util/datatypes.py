@@ -308,6 +308,17 @@ class CandidateRegion:
             )
         return read_alignment_signals
 
+    def median_indel_size(self) -> int:
+        indel_sizes = [abs(s.size) for s in self.sv_signals if s.sv_type <= 1]
+        if not indel_sizes:
+            return 0
+        sorted_sizes = sorted(indel_sizes)
+        n = len(sorted_sizes)
+        if n % 2 == 1:
+            return sorted_sizes[n // 2]
+        else:
+            return (sorted_sizes[n // 2 - 1] + sorted_sizes[n // 2]) // 2
+
 
 @attrs.define
 class SequenceObject:

@@ -78,7 +78,7 @@ class TestSizeDamping:
 
     def test_transition_is_monotonic(self) -> None:
         values = [size_damping(float(s), s0=30.0, alpha=1.5) for s in range(1, 500)]
-        assert all(a <= b for a, b in zip(values, values[1:], strict=True))
+        assert all(a <= b for a, b in zip(values[:-1], values[1:], strict=True))
 
     def test_zero_size_returns_zero(self) -> None:
         assert size_damping(0.0) == 0.0

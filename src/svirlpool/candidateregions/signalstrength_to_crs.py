@@ -629,9 +629,11 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
             # Try to merge with previous CR
             if previous_cr is not None:
                 # Check if should merge (same chromosome, close proximity, similar signals)
+                # the distance scales with the sv size to allow larger SVs to be merged over larger distances
+                long_distance_merge_tolerance = min(previous_cr.median_indel_size(), cr.median_indel_size()) * 2
                 if (
                     previous_cr.chr == cr.chr
-                    and cr.referenceStart <= previous_cr.referenceEnd + 100_000
+                    and cr.referenceStart <= previous_cr.referenceEnd + long_distance_merge_tolerance
                     and has_similar_sv_signals(previous_cr, cr)
                 ):
                     # Merge
