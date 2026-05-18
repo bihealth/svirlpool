@@ -53,9 +53,11 @@ SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInsertion,
     SVpatterns.SVpatternDeletion,
     SVpatterns.SVpatternInversion,
-    SVpatterns.SVpatternSingleBreakend,
     SVpatterns.SVpatternAdjacency,
 })
+
+#    SVpatterns.SVpatternSingleBreakend,
+
 
 SUPPORTED_SV_TYPE_STRINGS: frozenset[str] = frozenset({
     pattern_type.get_sv_type() for pattern_type in SUPPORTED_SV_TYPES
