@@ -207,6 +207,13 @@ def get_parser():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
     )
+    parser_run_wf.add_argument(
+        "--single-evidence-gt",
+        help="Pass this flag through the workflow configuration for experimental single-read evidence genotyping.",
+        required=False,
+        action="store_true",
+        default=False,
+    )
 
     parser_run_wf.set_defaults(fast=False, func=run_wf.run_wf)
 

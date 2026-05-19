@@ -531,6 +531,31 @@ def get_ref_reads_from_covtrees(
     return all_reads
 
 
+def _single_evidence_genotype(
+    n_alt_reads: int,
+    n_ref_reads: int,
+    n_total_reads: int,
+    copy_number: int,
+) -> tuple[str, float]:
+    """Assign a genotype based solely on read presence, ignoring probabilistic model.
+
+    Any alt read(s) make the call; complete absence of noise is assumed.
+    Returns the genotype string and a fixed likelihood of 1.0.
+    """
+    if n_alt_reads == 0:
+        gt = "0/0" if copy_number >= 2 else "0"
+    elif copy_number == 1:
+        gt = "1"
+    elif copy_number == 2:
+        gt = "1/1" if n_ref_reads == 0 else "0/1"
+    else:
+        # Higher CN: count alt copies by rounding alt fraction to nearest integer
+        n_alt_copies = round(n_alt_reads / n_total_reads * copy_number) if n_total_reads > 0 else 0
+        n_alt_copies = max(0, min(n_alt_copies, copy_number))
+        gt = "/".join(["1" if i < n_alt_copies else "0" for i in range(copy_number)])
+    return gt, 1.0
+
+
 def genotype_of_sample(
     samplename: str,
     chrname: str,
@@ -542,6 +567,7 @@ def genotype_of_sample(
     min_radius: int = 1,
     breakpoint_mode: bool = False,
     breakpoint_margin: int = 100,
+    single_evidence_gt: bool = False,
 ) -> Genotype:
     genotype: Genotype
     if chrname not in covtrees.get(samplename, {}):
@@ -630,14 +656,21 @@ def genotype_of_sample(
             f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
         )
 
-    # first compute the total gt for this locus and this sample (for all SVcomposites, that once overlapped)
-    gt_likelihoods: dict[str, float] = genotype_likelihood(
-        n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
-    )
-
-    gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
-    # if not gt in ('0/0', '0/1', '1/1'):
-    #     raise ValueError(f"Invalid genotype {gt} for sample {samplename}, in region: {chrname,start,end}, with {len(alt_reads)} alt reads and {len(all_reads)} total reads.")
+    # Compute genotype either via the probabilistic binomial model or the
+    # single-evidence rule (any alt read counts; no noise assumed).
+    if single_evidence_gt:
+        gt, gt_likelihood_val = _single_evidence_genotype(
+            n_alt_reads=len(alt_reads),
+            n_ref_reads=len(ref_reads),
+            n_total_reads=len(all_reads),
+            copy_number=copy_number,
+        )
+        gt_likelihoods: dict[str, float] = {gt: gt_likelihood_val}
+    else:
+        gt_likelihoods = genotype_likelihood(
+            n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
+        )
+        gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
 
     genotype = Genotype(
         samplename=samplename,
@@ -666,6 +699,7 @@ def SVcalls_from_SVcomposite(
     ],  # saplename -> chrname -> IntervalTree with copy number
     find_leftmost_reference_position: bool,
     symbolic_threshold: int,
+    single_evidence_gt: bool = False,
 ) -> list[SVcall]:
     # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
     #   have one chr, start, end on the reference
@@ -694,6 +728,7 @@ def SVcalls_from_SVcomposite(
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
             all_alt_reads=all_alt_reads,
+            single_evidence_gt=single_evidence_gt,
         )
         log.debug(
             f"TRANSFORMED::SVcalls_from_SVcomposite::svcall_object_from_svcomposite:(to DEL, INS, INV, BND) {composite_id}; TRANSFORMED TO: {res.to_log_id()}",
@@ -709,6 +744,7 @@ def SVcalls_from_SVcomposite(
             cn_tracks=cn_tracks,
             all_alt_reads=all_alt_reads,
             symbolic_threshold=symbolic_threshold,
+            single_evidence_gt=single_evidence_gt,
         )
         # log each res
         for _res in res:
@@ -729,6 +765,7 @@ def svcall_object_from_svcomposite(
     cn_tracks: dict[str, dict[str, IntervalTree]],
     find_leftmost_reference_position: bool,
     all_alt_reads: dict[str, set[int]],
+    single_evidence_gt: bool = False,
 ) -> SVcall:
     chrname, start, end = get_svComposite_interval_on_reference(
         svComposite=svComposite,
@@ -752,6 +789,7 @@ def svcall_object_from_svcomposite(
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             breakpoint_mode=is_deletion,
+            single_evidence_gt=single_evidence_gt,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -907,6 +945,7 @@ def svcall_objects_from_Adjacencies(
     cn_tracks: dict[str, dict[str, IntervalTree]],
     all_alt_reads: dict[str, set[int]],
     symbolic_threshold: int,
+    single_evidence_gt: bool = False,
 ) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
@@ -1016,6 +1055,7 @@ def svcall_objects_from_Adjacencies(
             raw_alt_reads=all_alt_reads[samplename],
             covtrees=covtrees,
             cn_tracks=cn_tracks,
+            single_evidence_gt=single_evidence_gt,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1030,6 +1070,7 @@ def svcall_objects_from_Adjacencies(
             raw_alt_reads=all_alt_reads[samplename],
             covtrees=covtrees,
             cn_tracks=cn_tracks,
+            single_evidence_gt=single_evidence_gt,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1779,6 +1820,7 @@ def multisample_sv_calling(
     candidate_regions_file: Path | str | None = None,
     skip_covtrees: bool = False,
     collapse_repeats: bool = True,
+    single_evidence_gt: bool = False,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
@@ -1922,6 +1964,7 @@ def multisample_sv_calling(
             cn_tracks=cn_tracks,
             find_leftmost_reference_position=find_leftmost_reference_position,
             symbolic_threshold=symbolic_threshold,
+            single_evidence_gt=single_evidence_gt,
         )
     ]
 
@@ -2008,6 +2051,7 @@ def run(args) -> None:
         candidate_regions_file=args.candidate_regions_file,
         skip_covtrees=args.skip_covtrees,
         collapse_repeats=not args.dont_collapse_repeats,
+        single_evidence_gt=args.single_evidence_gt,
     )
 
 
@@ -2118,6 +2162,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--verbose", help="Enable verbose output.", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--single-evidence-gt",
+        help="Experimental: assign genotypes based solely on read presence rather than a probabilistic model. "
+             "Any alt read(s) call the variant; any ref read(s) alongside alt make it heterozygous. "
+             "Avoids false HOM calls when a small number of ref reads are present.",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "--logfile",
