@@ -2486,33 +2486,218 @@ def create_padding_for_consensus(
     consensus_object: consensus_class.Consensus,
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
+    crs_dict: dict[int, datatypes.CandidateRegion] | None = None,
+    reference_fasta: pysam.FastaFile | None = None,
+    reference_padding_size: int = 30000,
 ) -> consensus_class.ConsensusPadding:
-    """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
+    """Create a ConsensusPadding object.
 
-    read_paddings_for_consensus = _get_all_read_padding_intervals(
-        consensus_object=consensus_object, cutreads=cutreads, read_records=read_records
-    )
+    Uses reference-based padding (flanks fetched from the reference genome) for
+    each side where the candidate-region topology unambiguously identifies a
+    closed reference flank. Falls back to read-based padding for sides where
+    such an unambiguous flank cannot be determined.
 
-    padding_sizes_per_read = _get_padding_sizes_per_read(
-        read_paddings_for_consensus=read_paddings_for_consensus
-    )
+    When ``crs_dict`` or ``reference_fasta`` is ``None``, the read-based fallback
+    is used for both sides (mainly intended for unit tests).
+    """
+    if crs_dict is None or reference_fasta is None:
+        left_ref_iv: tuple[str, int, int] | None = None
+        right_ref_iv: tuple[str, int, int] | None = None
+    else:
+        left_ref_iv, right_ref_iv = _determine_reference_padding_intervals(
+            consensus_object=consensus_object,
+            crs_dict=crs_dict,
+            reference_padding_size=reference_padding_size,
+        )
 
-    padding_reads = _get_padding_read_names_of_consensus(
-        padding_sizes_per_read=padding_sizes_per_read
-    )
+    # Only compute read-based padding info if at least one side needs it.
+    if left_ref_iv is None or right_ref_iv is None:
+        read_paddings_for_consensus = _get_all_read_padding_intervals(
+            consensus_object=consensus_object,
+            cutreads=cutreads,
+            read_records=read_records,
+        )
+        padding_sizes_per_read = _get_padding_sizes_per_read(
+            read_paddings_for_consensus=read_paddings_for_consensus
+        )
+        padding_reads = _get_padding_read_names_of_consensus(
+            padding_sizes_per_read=padding_sizes_per_read
+        )
+        padding_intervals = _get_read_padding_intervals(
+            read_paddings_for_consensus=read_paddings_for_consensus,
+            padding_read_names_of_consensus=padding_reads,
+        )
+    else:
+        read_paddings_for_consensus = {}
+        padding_reads = ("", "")
+        padding_intervals = ((0, 0), (0, 0))
 
-    padding_intervals = _get_read_padding_intervals(
-        read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_read_names_of_consensus=padding_reads,
-    )
-    padding = _create_padding_object(
-        cons=consensus_object,
+    left_seq, left_name = _build_padding_side(
+        ref_iv=left_ref_iv,
+        is_left=True,
+        reference_fasta=reference_fasta,
         read_paddings_for_consensus=read_paddings_for_consensus,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
     )
-    return padding
+    right_seq, right_name = _build_padding_side(
+        ref_iv=right_ref_iv,
+        is_left=False,
+        reference_fasta=reference_fasta,
+        read_paddings_for_consensus=read_paddings_for_consensus,
+        padding_reads=padding_reads,
+        padding_intervals=padding_intervals,
+        read_records=read_records,
+    )
+
+    padded_consensus_sequence = Seq(
+        str(left_seq).lower()
+        + consensus_object.consensus_sequence.upper()
+        + str(right_seq).lower()
+    )
+
+    return consensus_class.ConsensusPadding(
+        sequence=str(padded_consensus_sequence),
+        readname_left=left_name,
+        readname_right=right_name,
+        padding_size_left=len(left_seq),
+        padding_size_right=len(right_seq),
+        consensus_interval_on_sequence_with_padding=(
+            len(left_seq),
+            len(padded_consensus_sequence) - len(right_seq),
+        ),
+    )
+
+
+def _determine_reference_padding_intervals(
+    consensus_object: consensus_class.Consensus,
+    crs_dict: dict[int, datatypes.CandidateRegion],
+    reference_padding_size: int,
+) -> tuple[tuple[str, int, int] | None, tuple[str, int, int] | None]:
+    """Determine (left, right) reference padding intervals for a consensus.
+
+    Each element is either ``(chr, start, end)`` for reference-based padding, or
+    ``None`` to indicate that the read-based fallback should be used for that
+    side.
+    """
+    used_reads = consensus_object.get_used_readnames()
+    crIDs = consensus_object.crIDs
+
+    if len(crIDs) == 0:
+        raise ValueError(
+            f"Consensus {consensus_object.ID} has no candidate regions; cannot determine padding."
+        )
+
+    for crID in crIDs:
+        if crID not in crs_dict:
+            raise KeyError(
+                f"Consensus {consensus_object.ID} references crID {crID} that is not in crs_dict."
+            )
+
+    # Case 5: more than two connected CRs -> full read-based fallback.
+    if len(crIDs) > 2:
+        return (None, None)
+
+    if len(crIDs) == 1:
+        cr = crs_dict[crIDs[0]]
+        bnd_types = _bnd_types_in_cr(cr, used_reads)
+        left_iv = _left_ref_interval(cr, reference_padding_size)
+        right_iv = _right_ref_interval(cr, reference_padding_size)
+        if not bnd_types:
+            # Case 1: reads span the CR.
+            return (left_iv, right_iv)
+        if bnd_types == {3}:
+            # Case 2a: open left, closed right.
+            return (None, right_iv)
+        if bnd_types == {4}:
+            # Case 2b: closed left, open right.
+            return (left_iv, None)
+        # Both type 3 and 4 present.
+        if _any_read_has_both_bnd_types(cr, used_reads):
+            # Case 3: a read touches both ends via two alignments.
+            return (left_iv, right_iv)
+        # Mixed signals without a read touching both ends -> fallback.
+        return (None, None)
+
+    # len(crIDs) == 2: Case 4 (two connected CRs).
+    cr_a = crs_dict[crIDs[0]]
+    cr_b = crs_dict[crIDs[1]]
+    if cr_a.chr != cr_b.chr:
+        return (None, None)
+    cr_up, cr_down = (
+        (cr_a, cr_b) if cr_a.referenceStart <= cr_b.referenceStart else (cr_b, cr_a)
+    )
+    up_bnds = _bnd_types_in_cr(cr_up, used_reads)
+    down_bnds = _bnd_types_in_cr(cr_down, used_reads)
+    if up_bnds == {3} and down_bnds == {4}:
+        # Case 4a: simple large deletion across two connected CRs.
+        return (
+            _left_ref_interval(cr_up, reference_padding_size),
+            _right_ref_interval(cr_down, reference_padding_size),
+        )
+    # Case 4b: inhomogeneous BND order (e.g. inversion) -> fallback.
+    return (None, None)
+
+
+def _bnd_types_in_cr(
+    cr: datatypes.CandidateRegion, used_reads: set[str]
+) -> set[int]:
+    """Return the set of BND SV types (3, 4) present among ``used_reads`` in ``cr``."""
+    return {
+        s.sv_type
+        for s in cr.sv_signals
+        if s.sv_type in (3, 4) and s.readname in used_reads
+    }
+
+
+def _any_read_has_both_bnd_types(
+    cr: datatypes.CandidateRegion, used_reads: set[str]
+) -> bool:
+    """Return True if at least one read in ``used_reads`` has both type 3 and 4 BND signals in ``cr``."""
+    per_read: dict[str, set[int]] = {}
+    for s in cr.sv_signals:
+        if s.sv_type in (3, 4) and s.readname in used_reads:
+            per_read.setdefault(s.readname, set()).add(s.sv_type)
+    return any(t == {3, 4} for t in per_read.values())
+
+
+def _left_ref_interval(
+    cr: datatypes.CandidateRegion, padding_size: int
+) -> tuple[str, int, int]:
+    return (cr.chr, max(0, cr.referenceStart - padding_size), cr.referenceStart)
+
+
+def _right_ref_interval(
+    cr: datatypes.CandidateRegion, padding_size: int
+) -> tuple[str, int, int]:
+    return (cr.chr, cr.referenceEnd, cr.referenceEnd + padding_size)
+
+
+def _build_padding_side(
+    ref_iv: tuple[str, int, int] | None,
+    is_left: bool,
+    reference_fasta: pysam.FastaFile,
+    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
+    padding_reads: tuple[str, str],
+    padding_intervals: tuple[tuple[int, int], tuple[int, int]],
+    read_records: dict[str, SeqRecord],
+) -> tuple[Seq, str]:
+    """Build the padding sequence and identifier for one side (left or right)."""
+    if ref_iv is not None:
+        chrom, start, end = ref_iv
+        # pysam.FastaFile.fetch truncates at contig ends.
+        seq = Seq(reference_fasta.fetch(chrom, start, end))
+        return seq, f"REF:{chrom}:{start}-{end}"
+
+    side_index = 0 if is_left else 1
+    read_name = padding_reads[side_index]
+    interval = padding_intervals[side_index]
+    seq = read_records[read_name].seq[interval[0] : interval[1]]
+    # Reverse-complement if the cutread alignment was reverse on the consensus.
+    if not read_paddings_for_consensus[read_name][4]:
+        seq = seq.reverse_complement()
+    return seq, read_name
 
 
 def _get_all_read_padding_intervals(
@@ -2604,45 +2789,7 @@ def _get_read_padding_intervals(
     return left_padding, right_padding
 
 
-def _create_padding_object(
-    cons: consensus_class.Consensus,
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
-    padding_reads: tuple[str, str],
-    padding_intervals: tuple[tuple[int, int], tuple[int, int]],
-    read_records: dict[str, SeqRecord],
-) -> consensus_class.ConsensusPadding:
-    """Creates a new ConsensusPadding object with the padding sequence and the read names."""
 
-    left_padding: Seq = read_records[padding_reads[0]].seq[
-        padding_intervals[0][0] : padding_intervals[0][1]
-    ]
-    # needs to be reverse complimented if the cutread alignment is reverse
-    if not read_paddings_for_consensus[padding_reads[0]][4]:
-        left_padding = left_padding.reverse_complement()
-
-    right_padding: Seq = read_records[padding_reads[1]].seq[
-        padding_intervals[1][0] : padding_intervals[1][1]
-    ]
-    # needs to be reverse complimented if the cutread alignment is reverse
-    if not read_paddings_for_consensus[padding_reads[1]][4]:
-        right_padding = right_padding.reverse_complement()
-    # add padding to the consensus sequence
-    padded_consensus_sequence = Seq(
-        left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
-    )
-
-    new_padding = consensus_class.ConsensusPadding(
-        sequence=str(padded_consensus_sequence),
-        readname_left=padding_reads[0],
-        readname_right=padding_reads[1],
-        padding_size_left=len(left_padding),
-        padding_size_right=len(right_padding),
-        consensus_interval_on_sequence_with_padding=(
-            len(left_padding),
-            len(padded_consensus_sequence) - len(right_padding),
-        ),
-    )
-    return new_padding
 
 
 # =============================================================================
@@ -2768,6 +2915,8 @@ def process_consensus_container(
     timeout: int,
     buffer_clipped_length: int,
     consensus_method: str,
+    reference: Path,
+    reference_padding_size: int,
     threads: int = 1,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -3021,10 +3170,16 @@ def process_consensus_container(
                 dict_unused_reads[crID].append(seqobject)
 
     # add padding to the consensus objects
-    for consensus in consensus_objects.values():
-        consensus.consensus_padding = create_padding_for_consensus(
-            consensus_object=consensus, cutreads=cutreads, read_records=read_records
-        )
+    with pysam.FastaFile(str(reference)) as reference_fasta:
+        for consensus in consensus_objects.values():
+            consensus.consensus_padding = create_padding_for_consensus(
+                consensus_object=consensus,
+                cutreads=cutreads,
+                read_records=read_records,
+                crs_dict=crs_dict,
+                reference_fasta=reference_fasta,
+                reference_padding_size=reference_padding_size,
+            )
 
     # for each consensus, create a dict
     return consensus_objects, dict_unused_reads
@@ -3051,6 +3206,8 @@ def crs_containers_to_consensus(
     buffer_clipped_sequence: int,
     timeout: int,
     consensus_method: str,
+    reference: Path,
+    reference_padding_size: int,
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -3120,6 +3277,8 @@ def crs_containers_to_consensus(
             max_intra_distance=max_intra_distance,
             cn_override=cn_override,
             consensus_method=consensus_method,
+            reference=reference,
+            reference_padding_size=reference_padding_size,
         )
         all_unused_reads.update(unused_reads)
         if not consensuses:
@@ -3197,6 +3356,8 @@ def run_consensus_script(args, **kwargs):
         fasta_debug_path=args.fasta_debug_path,
         cn_override=args.cn_override,
         consensus_method=args.consensus_method,
+        reference=args.reference,
+        reference_padding_size=args.reference_padding_size,
     )
 
 
@@ -3235,6 +3396,19 @@ def get_consensus_parser(
         type=Path,
         required=True,
         help="Path to the copy number track file in bgzipped and indexed bed format.",
+    )
+    parser.add_argument(
+        "-r",
+        "--reference",
+        type=Path,
+        required=True,
+        help="Path to the reference FASTA file (must be indexed with samtools faidx). Used for reference-based consensus padding.",
+    )
+    parser.add_argument(
+        "--reference-padding-size",
+        type=int,
+        default=30000,
+        help="Length in bp of reference-based padding fetched per side (default: 30000).",
     )
     parser.add_argument(
         "-o",

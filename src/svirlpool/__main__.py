@@ -172,6 +172,14 @@ def get_parser():
         default=0.1,
     )
     parser_run_wf.add_argument(
+        "--reference-padding-size",
+        help="Length in bp of reference-based padding fetched per side when "
+        "building consensus padding (default: 30000).",
+        required=False,
+        type=int,
+        default=30000,
+    )
+    parser_run_wf.add_argument(
         "--min-alt-reads",
         help="minimum alternative reads",
         required=False,

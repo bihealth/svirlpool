@@ -78,6 +78,7 @@ cr_merge_buffer=config["cr_merge_buffer"]
 # consensus
 lamassemble_mat = config.get("lamassemble_mat", None)
 consensus_method = config.get("consensus_method", "lamassemble")
+reference_padding_size = config.get("reference_padding_size", 30000)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -585,6 +586,8 @@ rule consensus_consensus:
         lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
         log_level=log_level,
         consensus_method=consensus_method,
+        reference=reference,
+        reference_padding_size=reference_padding_size,
     threads:
         get_consensus_threads
     conda:
@@ -601,6 +604,8 @@ rule consensus_consensus:
         python3 -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
         -cn {input.copynumbertracks} \
+        -r {params.reference} \
+        --reference-padding-size {params.reference_padding_size} \
         {params.lamassemble_mat_arg} \
         --consensus-method {params.consensus_method} \
         -i {input.containers} \
