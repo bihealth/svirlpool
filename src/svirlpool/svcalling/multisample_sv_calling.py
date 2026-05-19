@@ -1271,44 +1271,44 @@ def genotype_likelihood(
         return {"0/0": 1.0, "0/1": 0.0, "1/1": 0.0}
 
     # Generate all possible genotypes for this copy number
-    # For CN=n, we can have 0 to n copies of the alt allele
+    # For CN=n, we can have 0 to n copies of the alt allele.
+    # Use a small error rate epsilon to model read noise/ref-overcounting.
+    epsilon = 0.05
     genotype_probs = {}
 
     if cn == 1:
         # Haploid (e.g., male X/Y chromosomes, or deletions reducing CN to 1)
         # Possible genotypes: 0 (ref) or 1 (alt)
         genotype_probs = {
-            "0": 0.01,  # ~0% alt reads expected
-            "1": 0.50,  # ~50% alt reads expected (bias towards variant calling)
+            "0": epsilon,  # ~0% alt reads expected, allowing noise
+            "1": 1.0 - epsilon,  # ~100% alt reads expected, allowing occasional ref reads
         }
     elif cn == 2:
         # Diploid (normal autosomal)
         # Possible genotypes: 0/0, 0/1, 1/1
         genotype_probs = {
-            "0/0": 0.01,  # ~0% alt reads expected
-            "0/1": 0.45,  # ~45% alt reads expected
-            "1/1": (
-                0.90  # ~90% alt reads expected (compensate n_total_reads overestimation)
-            ),
+            "0/0": epsilon,  # ~0% alt reads expected
+            "0/1": 0.5,  # exact half alt reads expected
+            "1/1": 1.0 - epsilon,  # ~100% alt reads expected
         }
     elif cn == 3:
         # Triploid (duplication)
         # Possible genotypes: 0/0/0, 0/0/1, 0/1/1, 1/1/1
         genotype_probs = {
-            "0/0/0": 0.01,  # ~0% alt reads
-            "0/0/1": 1.0 / 3.0,  # ~33% alt reads
-            "0/1/1": 2.0 / 3.0,  # ~67% alt reads
-            "1/1/1": 0.99,  # ~100% alt reads
+            "0/0/0": epsilon,
+            "0/0/1": 1.0 / 3.0,
+            "0/1/1": 2.0 / 3.0,
+            "1/1/1": 1.0 - epsilon,
         }
     elif cn == 4:
         # Tetraploid
         # Possible genotypes: 0/0/0/0, 0/0/0/1, 0/0/1/1, 0/1/1/1, 1/1/1/1
         genotype_probs = {
-            "0/0/0/0": 0.01,  # ~0% alt reads
-            "0/0/0/1": 0.25,  # ~25% alt reads
-            "0/0/1/1": 0.50,  # ~50% alt reads
-            "0/1/1/1": 0.75,  # ~75% alt reads
-            "1/1/1/1": 0.99,  # ~100% alt reads
+            "0/0/0/0": epsilon,
+            "0/0/0/1": 0.25,
+            "0/0/1/1": 0.50,
+            "0/1/1/1": 0.75,
+            "1/1/1/1": 1.0 - epsilon,
         }
     else:
         # General case for CN > 4 or CN == 0
@@ -1320,11 +1320,7 @@ def genotype_likelihood(
         for n_alt_copies in range(cn + 1):
             genotype = "/".join(["1" if i < n_alt_copies else "0" for i in range(cn)])
             expected_alt_fraction = n_alt_copies / cn if cn > 0 else 0.0
-            # Use small epsilon for 0 and 1 to avoid edge effects
-            if expected_alt_fraction == 0.0:
-                expected_alt_fraction = 0.01
-            elif expected_alt_fraction == 1.0:
-                expected_alt_fraction = 0.99
+            expected_alt_fraction = min(max(expected_alt_fraction, epsilon), 1.0 - epsilon)
             genotype_probs[genotype] = expected_alt_fraction
 
     # Compute binomial probabilities for each genotype
