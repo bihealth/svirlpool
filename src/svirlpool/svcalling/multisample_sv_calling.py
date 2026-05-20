@@ -483,24 +483,30 @@ class SVcall:
                 len(ref_seq) > symbolic_threshold or len(alt_seq) > symbolic_threshold
             )
 
-            if self.svtype == "INV":
-                # Inversions always use symbolic notation.  The assembled consensus
-                # sequence stored in get_sequence() is the inverted (alt) allele.
-                # get_ref_sequence() returns the same assembled sequence, so writing
-                # explicit REF/ALT sequences would always produce REF == ALT, causing
-                # htsjdk/IGV to throw "Duplicate allele added to VariantContext".
-                # The proper REF for an inversion is the reverse complement of the alt,
-                # which is not available here without querying the reference genome.
-                use_symbolic = True
-
             if not use_symbolic and ref_seq == alt_seq and (ref_seq or alt_seq):
-                # Safety fallback: identical REF/ALT sequences would still cause a
-                # duplicate allele error in htsjdk.
-                log.warning(
-                    f"to_vcf_line: ref_seq == alt_seq for {self.chrname}:{self.start} "
-                    f"({self.svtype}), forcing symbolic notation to avoid duplicate allele."
+                # REF == ALT must never reach the VCF: htsjdk/IGV (and bcftools)
+                # reject this as "Duplicate allele added to VariantContext".  This
+                # typically indicates a bug in how the alt sequence is derived for
+                # the given SV type (e.g. missing reverse-complement for an
+                # inversion whose consensus slice matches the reference strand).
+                raise ValueError(
+                    "to_vcf_line: REF sequence is identical to ALT sequence — "
+                    "this would produce an invalid VCF record.\n"
+                    f"  locus              : {self.chrname}:{self.start}-{self.end} (1-based start: {self.start + ONE_BASED})\n"
+                    f"  svtype             : {self.svtype}\n"
+                    f"  svlen              : {self.svlen}\n"
+                    f"  vcfID              : {vcfID}\n"
+                    f"  consensusIDs       : {','.join(self.consensusIDs)}\n"
+                    f"  mateid             : {self.mateid or 'NA'}\n"
+                    f"  symbolic_threshold : {symbolic_threshold}\n"
+                    f"  ref_seq length     : {len(ref_seq)}\n"
+                    f"  alt_seq length     : {len(alt_seq)}\n"
+                    f"  ref_seq[:80]       : {ref_seq[:80]!r}\n"
+                    f"  alt_seq[:80]       : {alt_seq[:80]!r}\n"
+                    "  Hint: for inversions, the alt allele must be returned in "
+                    "reference-forward orientation as the reverse complement of "
+                    "the assembled consensus slice."
                 )
-                use_symbolic = True
 
             if use_symbolic:
                 # Use symbolic allele notation

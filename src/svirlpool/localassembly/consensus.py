@@ -2503,12 +2503,22 @@ def create_padding_for_consensus(
     if crs_dict is None or reference_fasta is None:
         left_ref_iv: tuple[str, int, int] | None = None
         right_ref_iv: tuple[str, int, int] | None = None
+        consensus_reverse = False
     else:
         left_ref_iv, right_ref_iv = _determine_reference_padding_intervals(
             consensus_object=consensus_object,
             crs_dict=crs_dict,
             reference_padding_size=reference_padding_size,
         )
+        consensus_reverse = _consensus_is_reverse_wrt_reference(
+            consensus_object=consensus_object, crs_dict=crs_dict
+        )
+        # If the consensus is reverse-complemented relative to the reference,
+        # the upstream reference flank actually lies on the right of the
+        # consensus (and vice versa) and must be reverse-complemented when
+        # fetched. Read-based sides already handle orientation per-read.
+        if consensus_reverse:
+            left_ref_iv, right_ref_iv = right_ref_iv, left_ref_iv
 
     # Only compute read-based padding info if at least one side needs it.
     if left_ref_iv is None or right_ref_iv is None:
@@ -2536,6 +2546,7 @@ def create_padding_for_consensus(
         ref_iv=left_ref_iv,
         is_left=True,
         reference_fasta=reference_fasta,
+        reverse_complement_ref=consensus_reverse,
         read_paddings_for_consensus=read_paddings_for_consensus,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
@@ -2545,6 +2556,7 @@ def create_padding_for_consensus(
         ref_iv=right_ref_iv,
         is_left=False,
         reference_fasta=reference_fasta,
+        reverse_complement_ref=consensus_reverse,
         read_paddings_for_consensus=read_paddings_for_consensus,
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
@@ -2674,10 +2686,61 @@ def _right_ref_interval(
     return (cr.chr, cr.referenceEnd, cr.referenceEnd + padding_size)
 
 
+def _consensus_is_reverse_wrt_reference(
+    consensus_object: consensus_class.Consensus,
+    crs_dict: dict[int, datatypes.CandidateRegion],
+) -> bool:
+    """Decide whether the consensus assembly is reverse-complemented relative to the reference.
+
+    For every read used in this consensus, compares its read->reference
+    orientation (from ``ExtendedSVsignal.forward`` carried by the candidate
+    region SV signals) to its trimmed-read->consensus orientation (from
+    ``Consensus.intervals_cutread_alignments``). If both agree the read votes
+    "forward"; if they disagree it votes "reverse". The majority wins.
+    Ties and an empty intersection both default to "forward" (no swap).
+    """
+    # consensus orientation per read (True = forward on consensus)
+    consensus_forward: dict[str, bool] = {}
+    for _start, _end, readname, forward in consensus_object.intervals_cutread_alignments:
+        if readname in consensus_forward and consensus_forward[readname] != forward:
+            # Inconsistent orientation for the same read on the consensus.
+            # Drop it from the vote rather than failing the whole consensus.
+            consensus_forward[readname] = consensus_forward[readname]  # keep first
+        else:
+            consensus_forward.setdefault(readname, forward)
+
+    # reference orientation per read (True = forward on reference)
+    reference_forward: dict[str, bool] = {}
+    for crID in consensus_object.crIDs:
+        if crID not in crs_dict:
+            continue
+        for s in crs_dict[crID].sv_signals:
+            ref_fwd = bool(s.forward)
+            if s.readname in reference_forward and reference_forward[s.readname] != ref_fwd:
+                # Inconsistent (e.g. supplementary alignments on both strands);
+                # keep the first observation.
+                continue
+            reference_forward.setdefault(s.readname, ref_fwd)
+
+    forward_votes = 0
+    reverse_votes = 0
+    for readname, cons_fwd in consensus_forward.items():
+        ref_fwd = reference_forward.get(readname)
+        if ref_fwd is None:
+            continue
+        if cons_fwd == ref_fwd:
+            forward_votes += 1
+        else:
+            reverse_votes += 1
+
+    return reverse_votes > forward_votes
+
+
 def _build_padding_side(
     ref_iv: tuple[str, int, int] | None,
     is_left: bool,
     reference_fasta: pysam.FastaFile,
+    reverse_complement_ref: bool,
     read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
@@ -2688,6 +2751,9 @@ def _build_padding_side(
         chrom, start, end = ref_iv
         # pysam.FastaFile.fetch truncates at contig ends.
         seq = Seq(reference_fasta.fetch(chrom, start, end))
+        if reverse_complement_ref:
+            seq = seq.reverse_complement()
+            return seq, f"REF_RC:{chrom}:{start}-{end}"
         return seq, f"REF:{chrom}:{start}-{end}"
 
     side_index = 0 if is_left else 1
