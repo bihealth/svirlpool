@@ -483,6 +483,25 @@ class SVcall:
                 len(ref_seq) > symbolic_threshold or len(alt_seq) > symbolic_threshold
             )
 
+            if self.svtype == "INV":
+                # Inversions always use symbolic notation.  The assembled consensus
+                # sequence stored in get_sequence() is the inverted (alt) allele.
+                # get_ref_sequence() returns the same assembled sequence, so writing
+                # explicit REF/ALT sequences would always produce REF == ALT, causing
+                # htsjdk/IGV to throw "Duplicate allele added to VariantContext".
+                # The proper REF for an inversion is the reverse complement of the alt,
+                # which is not available here without querying the reference genome.
+                use_symbolic = True
+
+            if not use_symbolic and ref_seq == alt_seq and (ref_seq or alt_seq):
+                # Safety fallback: identical REF/ALT sequences would still cause a
+                # duplicate allele error in htsjdk.
+                log.warning(
+                    f"to_vcf_line: ref_seq == alt_seq for {self.chrname}:{self.start} "
+                    f"({self.svtype}), forcing symbolic notation to avoid duplicate allele."
+                )
+                use_symbolic = True
+
             if use_symbolic:
                 # Use symbolic allele notation
                 ref_str = refbase  # Just the anchor base
