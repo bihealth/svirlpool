@@ -214,6 +214,13 @@ def get_parser():
         action="store_true",
         default=False,
     )
+    parser_run_wf.add_argument(
+        "--reference-padding-size",
+        help="Size of padding sequence from reference genome for consensus sequences (default: 30000 bp).",
+        required=False,
+        type=int,
+        default=30000,
+    )
 
     parser_run_wf.set_defaults(fast=False, func=run_wf.run_wf)
 
