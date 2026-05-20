@@ -542,6 +542,8 @@ def _single_evidence_genotype(
     Any alt read(s) make the call; complete absence of noise is assumed.
     Returns the genotype string and a fixed likelihood of 1.0.
     """
+    if copy_number == 0:
+        return "0", 1.0  # Homozygous reference if no copies are present
     if n_alt_reads == 0:
         gt = "0/0" if copy_number >= 2 else "0"
     elif copy_number == 1:
