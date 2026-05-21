@@ -2495,7 +2495,8 @@ def create_padding_for_consensus(
     Uses reference-based padding (flanks fetched from the reference genome) for
     each side where the candidate-region topology unambiguously identifies a
     closed reference flank. Falls back to read-based padding for sides where
-    such an unambiguous flank cannot be determined.
+    such an unambiguous flank cannot be determined, or when the orientation of
+    the consensus relative to the reference cannot be resolved unambiguously.
 
     When ``crs_dict`` or ``reference_fasta`` is ``None``, the read-based fallback
     is used for both sides (mainly intended for unit tests).
@@ -2510,15 +2511,30 @@ def create_padding_for_consensus(
             crs_dict=crs_dict,
             reference_padding_size=reference_padding_size,
         )
-        consensus_reverse = _consensus_is_reverse_wrt_reference(
-            consensus_object=consensus_object, crs_dict=crs_dict
-        )
-        # If the consensus is reverse-complemented relative to the reference,
-        # the upstream reference flank actually lies on the right of the
-        # consensus (and vice versa) and must be reverse-complemented when
-        # fetched. Read-based sides already handle orientation per-read.
-        if consensus_reverse:
-            left_ref_iv, right_ref_iv = right_ref_iv, left_ref_iv
+        # Only resolve orientation if at least one side wants reference padding.
+        if left_ref_iv is None and right_ref_iv is None:
+            consensus_reverse = False
+        else:
+            orientation = _consensus_orientation_wrt_reference(
+                consensus_object=consensus_object, crs_dict=crs_dict
+            )
+            if orientation is None:
+                # Conflict or no information: fall back to read padding on both sides.
+                log.warning(
+                    "Consensus %s: orientation vs reference is ambiguous; "
+                    "falling back to read-based padding on both sides.",
+                    consensus_object.ID,
+                )
+                left_ref_iv = None
+                right_ref_iv = None
+                consensus_reverse = False
+            else:
+                consensus_reverse = not orientation
+                if consensus_reverse:
+                    # The consensus runs in the reverse-complement of the
+                    # reference, so the upstream-of-CR reference flank lies on
+                    # the right of the consensus, and vice versa.
+                    left_ref_iv, right_ref_iv = right_ref_iv, left_ref_iv
 
     # Only compute read-based padding info if at least one side needs it.
     if left_ref_iv is None or right_ref_iv is None:
@@ -2686,54 +2702,78 @@ def _right_ref_interval(
     return (cr.chr, cr.referenceEnd, cr.referenceEnd + padding_size)
 
 
-def _consensus_is_reverse_wrt_reference(
+def _consensus_orientation_wrt_reference(
     consensus_object: consensus_class.Consensus,
     crs_dict: dict[int, datatypes.CandidateRegion],
-) -> bool:
-    """Decide whether the consensus assembly is reverse-complemented relative to the reference.
+) -> bool | None:
+    """Decide whether the consensus is in the same orientation as the reference.
 
     For every read used in this consensus, compares its read->reference
     orientation (from ``ExtendedSVsignal.forward`` carried by the candidate
     region SV signals) to its trimmed-read->consensus orientation (from
-    ``Consensus.intervals_cutread_alignments``). If both agree the read votes
-    "forward"; if they disagree it votes "reverse". The majority wins.
-    Ties and an empty intersection both default to "forward" (no swap).
-    """
-    # consensus orientation per read (True = forward on consensus)
-    consensus_forward: dict[str, bool] = {}
-    for _start, _end, readname, forward in consensus_object.intervals_cutread_alignments:
-        if readname in consensus_forward and consensus_forward[readname] != forward:
-            # Inconsistent orientation for the same read on the consensus.
-            # Drop it from the vote rather than failing the whole consensus.
-            consensus_forward[readname] = consensus_forward[readname]  # keep first
-        else:
-            consensus_forward.setdefault(readname, forward)
+    ``Consensus.intervals_cutread_alignments``).
 
-    # reference orientation per read (True = forward on reference)
-    reference_forward: dict[str, bool] = {}
+    Returns:
+        ``True``  if all informative reads agree that the consensus is in the
+                  same orientation as the reference (use forward reference seq).
+        ``False`` if all informative reads agree that the consensus is the
+                  reverse-complement of the reference (use reverse-complemented
+                  reference seq).
+        ``None``  on conflict (reads disagree) or when no informative read is
+                  available; the caller should fall back to read-based padding.
+
+    A read is "informative" only if (a) its trimmed-read->consensus orientation
+    is consistent in ``intervals_cutread_alignments`` and (b) its
+    read->reference orientation is consistent across all SV signals in any of
+    the consensus' CRs. Reads with internal conflicts in either source are
+    treated as non-informative (dropped) rather than poisoning the vote.
+    """
+    # Consensus orientation per read (True = trimmed read aligned forward to
+    # consensus). Reads with inconsistent observations are dropped.
+    consensus_forward: dict[str, bool | None] = {}
+    for _start, _end, readname, forward in consensus_object.intervals_cutread_alignments:
+        fwd = bool(forward)
+        if readname not in consensus_forward:
+            consensus_forward[readname] = fwd
+        elif consensus_forward[readname] is not None and consensus_forward[readname] != fwd:
+            consensus_forward[readname] = None  # mark as inconsistent
+
+    # Reference orientation per read (True = read aligned forward to reference).
+    # Reads with inconsistent observations across signals are dropped.
+    reference_forward: dict[str, bool | None] = {}
     for crID in consensus_object.crIDs:
         if crID not in crs_dict:
             continue
         for s in crs_dict[crID].sv_signals:
             ref_fwd = bool(s.forward)
-            if s.readname in reference_forward and reference_forward[s.readname] != ref_fwd:
-                # Inconsistent (e.g. supplementary alignments on both strands);
-                # keep the first observation.
-                continue
-            reference_forward.setdefault(s.readname, ref_fwd)
+            if s.readname not in reference_forward:
+                reference_forward[s.readname] = ref_fwd
+            elif (
+                reference_forward[s.readname] is not None
+                and reference_forward[s.readname] != ref_fwd
+            ):
+                reference_forward[s.readname] = None
 
-    forward_votes = 0
-    reverse_votes = 0
+    same = False
+    different = False
     for readname, cons_fwd in consensus_forward.items():
+        if cons_fwd is None:
+            continue
         ref_fwd = reference_forward.get(readname)
         if ref_fwd is None:
             continue
         if cons_fwd == ref_fwd:
-            forward_votes += 1
+            same = True
         else:
-            reverse_votes += 1
+            different = True
 
-    return reverse_votes > forward_votes
+    if same and different:
+        return None  # conflict
+    if same:
+        return True
+    if different:
+        return False
+    return None  # no informative read
 
 
 def _build_padding_side(
