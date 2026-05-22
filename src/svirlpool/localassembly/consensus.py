@@ -2888,6 +2888,7 @@ def process_consensus_container(
 
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
+
     res = consensus_while_clustering_with_kmeans(
         samplename=samplename,
         dict_summed_indels=dict_summed_indels,

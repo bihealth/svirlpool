@@ -53,9 +53,8 @@ SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInsertion,
     SVpatterns.SVpatternDeletion,
     SVpatterns.SVpatternInversion,
-    SVpatterns.SVpatternAdjacency,
 })
-
+#    SVpatterns.SVpatternAdjacency,
 #    SVpatterns.SVpatternSingleBreakend,
 
 
