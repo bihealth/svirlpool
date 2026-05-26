@@ -440,7 +440,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
                 margin = bnd_region_radius
             elif sv_type in (1, 2):
                 margin = max(
-                    50, int(abs(s[4].size) * 0.5)
+                    50, int(abs(s[4].size) * 0.1)
                 )  # half deletion size per seed
             else:
                 margin = 50
