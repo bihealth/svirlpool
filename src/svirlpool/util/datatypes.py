@@ -240,13 +240,13 @@ class CandidateRegion:
         chr = sv_signals[0].chr
         referenceID = sv_signals[0].chrID
         # Scale buffer for large deletions: each anchor should be at least as large as the deletion
-        max_del_size = max(
-            (abs(s.size) for s in sv_signals if s.sv_type in (1, 2)),
-            default=0,
-        )
+        # max_del_size = max(
+        #     (abs(s.size) for s in sv_signals if s.sv_type in (1, 2)),
+        #     default=0,
+        # )
         effective_buffer = max(buffer, max_del_size)
-        referenceStart = max(0, min(s.ref_start for s in sv_signals) - effective_buffer)
-        referenceEnd = max(s.ref_end for s in sv_signals) + effective_buffer
+        referenceStart = max(0, min(s.ref_start for s in sv_signals) - 50)
+        referenceEnd = max(s.ref_end for s in sv_signals) + 50
         return cls(
             crID=crID,
             chr=chr,

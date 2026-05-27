@@ -21,7 +21,6 @@ import psutil
 from tqdm import tqdm
 
 from ..svcalling.svcomposite_utils import cohens_d
-
 # %%
 from ..util import datatypes, util
 
@@ -441,7 +440,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
             elif sv_type in (1, 2):
                 margin = max(
                     50, int(abs(s[4].size) * 0.1)
-                )  # half deletion size per seed
+                )  # 10% deletion size per seed
             else:
                 margin = 50
             start = max(0, s[1] - margin)
