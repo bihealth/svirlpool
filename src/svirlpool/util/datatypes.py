@@ -244,7 +244,7 @@ class CandidateRegion:
         #     (abs(s.size) for s in sv_signals if s.sv_type in (1, 2)),
         #     default=0,
         # )
-        effective_buffer = max(buffer, max_del_size)
+        #effective_buffer = max(buffer, max_del_size)
         referenceStart = max(0, min(s.ref_start for s in sv_signals) - 50)
         referenceEnd = max(s.ref_end for s in sv_signals) + 50
         return cls(
