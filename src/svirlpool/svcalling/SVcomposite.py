@@ -292,9 +292,7 @@ class SVcomposite:
         # reference at the locus).  The biological alt allele is the reverse
         # complement of that — that is what should be reported in VCF.
         if issubclass(self.sv_type, SVpatterns.SVpatternInversion):
-            concatenated_sequence = str(
-                Seq(concatenated_sequence).reverse_complement()
-            )
+            concatenated_sequence = str(Seq(concatenated_sequence).reverse_complement())
 
         return concatenated_sequence[:size] if size > 0 else ""
 

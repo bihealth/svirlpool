@@ -38,6 +38,7 @@ from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
 from . import consensus_class, consensus_lib
+from . import read_cache as read_cache_mod
 
 matplotlib.use("Agg")  # Use non-interactive backend
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
@@ -2765,7 +2766,7 @@ def print_indel_distribution(read_sum_signals: dict[str, list[int]]) -> None:
 def process_consensus_container(
     samplename: str,
     crs_dict: dict[int, datatypes.CandidateRegion],
-    path_alignments: Path,
+    read_cache: "read_cache_mod.ReadSequenceCache",
     copy_number_tracks: Path,
     lamassemble_mat: Path | str | None,
     timeout: int,
@@ -2807,37 +2808,21 @@ def process_consensus_container(
         log.warning(
             f"Maximum copy number {max_copy_number} exceeds threshold of 4. Skipping consensus building for this container."
         )
-        # parse unused reads to datatypes.SequenceObject
-        dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: {signal.readname for signal in cr.sv_signals}
-            for cr in crs_dict.values()
-        }
-        dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
-            crID: [] for crID in dict_unused_read_names
-        }
-        for crID, readnames in dict_unused_read_names.items():
-            for readname in readnames:
-                # get the read sequence from the alignment file
-                with pysam.AlignmentFile(str(path_alignments), "rb") as samfile:
-                    read_seqRecord = samfile.fetch(contig=readname)
-                    for read in read_seqRecord:
-                        read_sequence_object = datatypes.SequenceObject(
-                            id=read.query_name,
-                            name=read.query_name,
-                            sequence=read.query_sequence,
-                            description=read.query_name,
-                            qualities=(
-                                read.query_qualities
-                                if read.query_qualities is not None
-                                else None
-                            ),
-                        )
-                        dict_unused_reads[crID].append(read_sequence_object)
-        return {}, dict_unused_reads
+        # Unused-reads aggregation is currently disabled downstream
+        # (`crs_containers_to_consensus` does not propagate them), so we
+        # return empty dicts and avoid the previously broken per-readname
+        # BAM fetch that triggered for these high-CN regions.
+        return {}, {}
 
-    alns, _alns_wt = get_read_alignments_for_crs(
-        crs=list(crs_dict.values()), alignments=path_alignments
-    )
+    # Fetch alignments and full read sequences for every CR via the
+    # shared sliding cache. The cache deduplicates across CRs in the
+    # same batch and avoids reopening the BAM file.
+    alns: dict[int, list[pysam.AlignedSegment]] = {}
+    read_records: dict[str, SeqRecord] = {}
+    for cr in crs_dict.values():
+        cr_alns, cr_seqs = read_cache.fetch_for_cr(cr)
+        alns[cr.crID] = cr_alns
+        read_records.update(cr_seqs)
     if verbose:
         # print the qname and reference intervals of the alignments in alns for each alignment
         for crID, alnlist in alns.items():
@@ -2866,9 +2851,6 @@ def process_consensus_container(
     )
     if verbose:
         print(f"max_intervals: {max_intervals}")
-    read_records: dict[str, SeqRecord] = get_full_read_sequences_of_alignments(
-        dict_alignments=alns, path_alignments=path_alignments
-    )
     log.info("cutting reads from alignments")
     cutreads: dict[str, SeqRecord] = trim_reads(
         dict_alignments=alns, intervals=max_intervals, read_records=read_records
@@ -3051,6 +3033,35 @@ def load_crIDs_from_containers_db(path_db: Path) -> list[int]:
     return crIDs
 
 
+def _load_crIDs_from_batch_tsv(batch_tsv: Path, batch_id: int) -> list[int]:
+    """Return the comma-separated crID list of the requested batch row.
+
+    The TSV is written by :mod:`svirlpool.candidateregions.crs_to_batches`
+    with columns ``batch_id\tchr\tstart\tend\tcrIDs`` (header row).
+    """
+    if not batch_tsv.exists():
+        raise FileNotFoundError(f"Batch TSV {batch_tsv} does not exist.")
+    with open(batch_tsv) as f:
+        header = f.readline().rstrip("\n").split("\t")
+        try:
+            batch_id_col = header.index("batch_id")
+            crIDs_col = header.index("crIDs")
+        except ValueError as e:
+            raise ValueError(
+                f"Batch TSV {batch_tsv} is missing expected columns 'batch_id' / 'crIDs'."
+            ) from e
+        for line in f:
+            fields = line.rstrip("\n").split("\t")
+            if not fields or not fields[0]:
+                continue
+            if int(fields[batch_id_col]) == batch_id:
+                csv = fields[crIDs_col].strip()
+                if not csv:
+                    return []
+                return [int(x) for x in csv.split(",")]
+    raise ValueError(f"Batch id {batch_id} not found in {batch_tsv}.")
+
+
 def crs_containers_to_consensus(
     samplename: str,
     input: Path,
@@ -3073,6 +3084,16 @@ def crs_containers_to_consensus(
     reference: Path | None = None,
     reference_padding_size: int = 30000,
 ) -> None:
+    """Batch driver: process a list of containers and stream JSONL results.
+
+    Containers are sorted by genomic coordinate within their chromosome
+    and processed in order so that a single
+    :class:`read_cache_mod.ReadSequenceCache` (one open BAM handle) can
+    be shared across the whole batch. Each container produces one line
+    of JSON (a serialised :class:`consensus_class.CrsContainerResult`)
+    that is written incrementally to ``output``; nothing accumulates in
+    memory.
+    """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
             f"lamassemble matrix file {lamassemble_mat} does not exist."
@@ -3107,91 +3128,136 @@ def crs_containers_to_consensus(
         # if no real crIDs are left, return with warning
         if not any(crID in existing_crIDs for crID in crIDs):
             log.error("No crIDs to process. Exiting.")
+            # still create an empty output file so snakemake sees the target
+            with open(output, "w"):
+                pass
             return
     log.info(f"Loading crs containers from database at {input}.")
     containers = load_crs_containers_from_db(path_db=input, crIDs=crIDs)
     log.info("loaded data")
-    all_consensuses: dict[str, consensus_class.Consensus] = {}
-    all_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
+
+    # Sort containers by genomic coordinate so the sliding cache stays
+    # efficient. Key by (chromosome, leftmost CR start, representative
+    # crID) for deterministic order.
+    def _container_sort_key(item):
+        rep_crID, container = item
+        crs = container["crs"]
+        chrs = [cr.chr for cr in crs]
+        min_start = min(cr.referenceStart for cr in crs)
+        primary_chr = min(chrs)
+        return (primary_chr, min_start, rep_crID)
+
+    sorted_containers = sorted(containers.items(), key=_container_sort_key)
+    n_containers = len(sorted_containers)
+
     _ref_fasta: pysam.FastaFile | None = (
         pysam.FastaFile(str(reference)) if reference is not None else None
     )
+    cache = read_cache_mod.ReadSequenceCache(path_alignments=path_alignments)
+    n_written = 0
     try:
-        for crID, container in containers.items():
-            log.info(f"Processing crID {crID}.")
-            crs_dict = {cr.crID: cr for cr in container["crs"]}
-            # connecting_reads = container['connecting_reads']
-            consensuses, unused_reads = process_consensus_container(
-                samplename=samplename,
-                crs_dict=crs_dict,
-                tmp_dir_path=tmp_dir_path,
-                path_alignments=path_alignments,
-                copy_number_tracks=copy_number_tracks,
-                threads=1,
-                buffer_clipped_length=buffer_clipped_sequence,
-                lamassemble_mat=lamassemble_mat,
-                timeout=timeout,
-                figures_dir=figures_dir,
-                verbose=verbose,
-                densities_weight=densities_weight,
-                max_intra_distance=max_intra_distance,
-                cn_override=cn_override,
-                consensus_method=consensus_method,
-                reference_fasta=_ref_fasta,
-                reference_padding_size=reference_padding_size,
-            )
-            all_unused_reads.update(unused_reads)
-            if not consensuses:
-                continue
-            all_consensuses.update(consensuses)
+        with open(output, "w") as out_f:
+            for idx, (rep_crID, container) in enumerate(sorted_containers):
+                log.info(
+                    f"PROGRESS [{idx + 1}/{n_containers}] Processing container (representative crID {rep_crID})."
+                )
+                crs_dict = {cr.crID: cr for cr in container["crs"]}
+                consensuses, _unused = process_consensus_container(
+                    samplename=samplename,
+                    crs_dict=crs_dict,
+                    read_cache=cache,
+                    tmp_dir_path=tmp_dir_path,
+                    copy_number_tracks=copy_number_tracks,
+                    threads=1,
+                    buffer_clipped_length=buffer_clipped_sequence,
+                    lamassemble_mat=lamassemble_mat,
+                    timeout=timeout,
+                    figures_dir=figures_dir,
+                    verbose=verbose,
+                    densities_weight=densities_weight,
+                    max_intra_distance=max_intra_distance,
+                    cn_override=cn_override,
+                    consensus_method=consensus_method,
+                    reference_fasta=_ref_fasta,
+                    reference_padding_size=reference_padding_size,
+                )
+
+                # Validate consensuses immediately so the offending container
+                # is identified in the log if validation fails.
+                for consensusID, consensus in consensuses.items():
+                    if len(consensus.original_regions) == 0:
+                        raise ValueError(
+                            f"Consensus {consensusID} has no original regions."
+                        )
+
+                # Stream this container's result as one JSONL record. Even
+                # when no consensus could be built we emit an empty result
+                # so the line count matches the container count.
+                container_result = consensus_class.CrsContainerResult(
+                    consensus_dicts=consensuses,
+                    unused_reads={},
+                )
+                out_f.write(json.dumps(container_result.unstructure()) + "\n")
+                out_f.flush()
+                n_written += 1
+
+                if verbose and consensuses:
+                    log.info(
+                        f"Container {rep_crID}: {len(consensuses)} consensuses; cache holds {cache.current_size_reads()} reads ({cache.current_size_bp()} bp)."
+                    )
+
+                if fasta_debug_path is not None:
+                    _mode = "w" if idx == 0 else "a"
+                    with open(fasta_debug_path, _mode) as f_debug:
+                        for consensusID, consensus in consensuses.items():
+                            if consensus.consensus_padding is not None:
+                                f_debug.write(
+                                    f">{consensusID}\n{consensus.consensus_padding.sequence}\n"
+                                )
+                if verbose and tmp_dir_path is not None:
+                    fasta_path = (
+                        Path(tmp_dir_path)
+                        / f"{samplename}_consensus_padded_sequences.fasta"
+                    )
+                    _mode = "w" if idx == 0 else "a"
+                    with open(fasta_path, _mode) as f_tmp:
+                        for consensusID, consensus in consensuses.items():
+                            if consensus.consensus_padding is not None:
+                                f_tmp.write(
+                                    f">{consensusID}\n{consensus.consensus_padding.sequence}\n"
+                                )
+
+                # Advance the sliding window so the cache can evict any
+                # read whose alignment ends before the next container
+                # starts on the same chromosome.
+                next_window_start: int | float
+                if idx + 1 < n_containers:
+                    next_rep, next_container = sorted_containers[idx + 1]
+                    next_chrs = {cr.chr for cr in next_container["crs"]}
+                    cur_chrs = {cr.chr for cr in container["crs"]}
+                    if next_chrs == cur_chrs and len(cur_chrs) == 1:
+                        next_window_start = min(
+                            cr.referenceStart for cr in next_container["crs"]
+                        )
+                    else:
+                        # chromosome change is handled by the cache itself
+                        # on the next fetch_for_cr call; evict everything
+                        # now to bound memory.
+                        next_window_start = float("inf")
+                else:
+                    next_window_start = float("inf")
+                cache.advance(window_start=next_window_start)
     finally:
         if _ref_fasta is not None:
             _ref_fasta.close()
-    # do nothing and log a warning if no consensuses were generated
-    result = consensus_class.CrsContainerResult(
-        consensus_dicts=all_consensuses, unused_reads=all_unused_reads
+        cache.close()
+
+    log.info(
+        f"Wrote {n_written} container results to {output}; "
+        f"cache stats: {cache.fetch_calls} fetch calls, "
+        f"{cache.cache_misses_reads} new reads loaded, "
+        f"{cache.cache_hits_reads} reused from cache."
     )
-
-    # for debugging, check if all consensus objects in result.consensus_dicts have non empty original_regions
-    for consensusID, consensus in result.consensus_dicts.items():
-        if len(consensus.original_regions) == 0:
-            raise ValueError(f"Consensus {consensusID} has no original regions.")
-
-    if verbose:
-        # list each consensus by name and the number of reads that were used to generate it
-        log.info(
-            f"A total of {len(result.consensus_dicts)} consensuses were generated."
-        )
-        for consensusID, consensus in result.consensus_dicts.items():
-            log.info(
-                f"Consensus {consensusID} was generated with {len(set(consensus.get_used_readnames()))} reads and max depth {consensus.get_max_cutread_coverage()}."
-            )
-        for crID, unused_reads in result.unused_reads.items():
-            log.info(
-                f"crID {crID} has {len(unused_reads)} unused reads: {[seqobj.id for seqobj in unused_reads]}"
-            )
-
-    if verbose and tmp_dir_path is not None:
-        # write all consensus padded sequences to a fasta file in the tmp dir
-        fasta_path = (
-            Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
-        )
-        log.info(f"Writing padded consensus sequences to {fasta_path}.")
-        with open(fasta_path, "w") as f:
-            for consensusID, consensus in result.consensus_dicts.items():
-                if consensus.consensus_padding is not None:
-                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
-
-    if fasta_debug_path is not None:
-        log.info(f"Writing padded consensus sequences to {fasta_debug_path}.")
-        with open(fasta_debug_path, "w") as f:
-            for consensusID, consensus in result.consensus_dicts.items():
-                if consensus.consensus_padding is not None:
-                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
-
-    log.info(f"Writing result to {output}.")
-    with open(output, "w") as f:
-        print(json.dumps(result.unstructure()), file=f)
     log.info("done")
 
 
@@ -3199,6 +3265,14 @@ def run_consensus_script(args, **kwargs):
     if args.consensus_method == "lamassemble" and args.lamassemble_mat is None:
         raise ValueError(
             "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+        )
+    crIDs = args.crIDs
+    if getattr(args, "batch_tsv", None) is not None:
+        if getattr(args, "batch_id", None) is None:
+            raise ValueError("--batch-id is required when --batch-tsv is given.")
+        crIDs = _load_crIDs_from_batch_tsv(Path(args.batch_tsv), int(args.batch_id))
+        log.info(
+            f"Loaded {len(crIDs)} container crIDs for batch {args.batch_id} from {args.batch_tsv}."
         )
     crs_containers_to_consensus(
         samplename=args.samplename,
@@ -3208,7 +3282,7 @@ def run_consensus_script(args, **kwargs):
         output=args.output,
         lamassemble_mat=args.lamassemble_mat,
         threads=args.threads,
-        crIDs=args.crIDs,
+        crIDs=crIDs,
         buffer_clipped_sequence=args.buffer_clipped_sequence,
         timeout=args.timeout,
         tmp_dir_path=args.tmp_dir_path,
@@ -3291,7 +3365,22 @@ def get_consensus_parser(
         required=False,
         default=None,
         nargs="+",
-        help="List of crIDs to process. If not given, all crIDs are processed.",
+        help="List of crIDs to process. If not given, all crIDs are processed. Ignored when --batch-tsv is set.",
+    )
+    parser.add_argument(
+        "--batch-tsv",
+        type=Path,
+        required=False,
+        default=None,
+        help="Path to a batches TSV produced by svirlpool.candidateregions.crs_to_batches. "
+        "When given together with --batch-id, the crIDs to process are loaded from the matching row.",
+    )
+    parser.add_argument(
+        "--batch-id",
+        type=int,
+        required=False,
+        default=None,
+        help="Integer id of the batch in --batch-tsv to process.",
     )
     parser.add_argument(
         "--cn-override",
@@ -3373,8 +3462,8 @@ def get_consensus_parser(
         required=False,
         default=None,
         help="Path to the reference FASTA file (must have a .fai index). "
-             "When provided, reference-based padding is used where the candidate-region "
-             "topology permits it.",
+        "When provided, reference-based padding is used where the candidate-region "
+        "topology permits it.",
     )
     parser.add_argument(
         "--reference-padding-size",
@@ -3382,7 +3471,7 @@ def get_consensus_parser(
         required=False,
         default=30000,
         help="Number of reference bases to fetch for each padding flank when using "
-             "reference-based padding (default: 30000).",
+        "reference-based padding (default: 30000).",
     )
     return parser
 

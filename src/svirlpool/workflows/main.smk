@@ -120,7 +120,9 @@ cores = workflow.cores #config["cores"]
 
 
 wildcard_constraints:
-    sampleID = r'\d+'
+    sampleID = r'\d+',
+    batch_id = r'\d+',
+    batchdir = r'\d+',
 
 
 ref_name = Path(reference).stem
@@ -568,18 +570,64 @@ checkpoint candidate_regions_crs_to_containers:
         --crIDs {output.crIDs_file} \
         --log-level {params.log_level}"""
 
+
+# Batching configuration for the consensus stage.
+consensus_batch_size = config.get("consensus_batch_size", 100)
+consensus_max_batch_span = config.get("consensus_max_batch_span", 20_000_000)
+
+
+checkpoint consensus_make_batches:
+    input:
+        containers='crs_containers.db'
+    output:
+        tsv='consensus_batches.tsv',
+        ids='consensus_batch_ids.txt'
+    params:
+        log_level=log_level,
+        batch_size=consensus_batch_size,
+        max_batch_span=consensus_max_batch_span,
+    resources:
+        mem_mb=4*1024,
+        runtime=20
+    benchmark:
+        "benchmarks/consensus_make_batches.txt"
+    threads:
+        1
+    conda:
+        "envs/svirlpool.yml"
+    shell:
+        """python3 -m svirlpool.candidateregions.crs_to_batches \
+        -i {input.containers} \
+        -t {output.tsv} \
+        --ids {output.ids} \
+        --batch-size {params.batch_size} \
+        --max-batch-span {params.max_batch_span} \
+        --log-level {params.log_level}"""
+
+
+def get_batch_outputs(wildcards):
+    checkpoints.consensus_make_batches.get(**wildcards)
+    with open('consensus_batch_ids.txt') as f:
+        batch_ids = [int(line.strip()) for line in f if line.strip()]
+    return [
+        f"consensus/{str(int(bid / N_files_per_dir))}/consensus.batch_{bid}.jsonl"
+        for bid in batch_ids
+    ]
+
+
 # # -----------------------------------------------------------------------------
 # # CONSENSUS
 # # -----------------------------------------------------------------------------
 
-# # assemble the cut reads
+# # assemble the cut reads (one job per batch of adjacent containers)
 rule consensus_consensus:
     input:
         containers='crs_containers.db',
+        batches='consensus_batches.tsv',
         copynumbertracks='copy_number_tracks.bed.gz',
     output:
-        container="consensus/{crIDdir}/consensus.{crID}.txt",
-        log="consensus/{crIDdir}/consensus.{crID}.log",
+        container="consensus/{batchdir}/consensus.batch_{batch_id}.jsonl",
+        log="consensus/{batchdir}/consensus.batch_{batch_id}.log",
     params:
         alignments=alignments,
         samplename=samplename,
@@ -598,7 +646,7 @@ rule consensus_consensus:
         _attempt=lambda wildcards, attempt: attempt,
         timeout=get_consensus_timeout
     benchmark:
-        "benchmarks/consensus/consensus.{crID}.{crIDdir}.txt"
+        "benchmarks/consensus/consensus.batch_{batch_id}.{batchdir}.txt"
     shell:
         """set -x
         python3 -m svirlpool.localassembly.consensus \
@@ -607,12 +655,13 @@ rule consensus_consensus:
         {params.lamassemble_mat_arg} \
         --consensus-method {params.consensus_method} \
         -i {input.containers} \
+        --batch-tsv {input.batches} \
+        --batch-id {wildcards.batch_id} \
         -a {params.alignments} \
         -r {params.reference} \
         --reference-padding-size {params.reference_padding_size} \
         -o {output.container} \
         -t {threads} \
-        -c {wildcards.crID} \
         --logfile {output.log} \
         --log-level {params.log_level} \
         --timeout {resources.timeout}"""
@@ -621,7 +670,7 @@ rule consensus_consensus:
 
 rule consensus_aggregate_consensuses:
     input:
-        consensus_paths=get_crIDs,
+        consensus_paths=get_batch_outputs,
     output:
         "consensus_containers.txt",
     threads:

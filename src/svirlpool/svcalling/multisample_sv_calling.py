@@ -576,7 +576,9 @@ def _single_evidence_genotype(
         gt = "1/1" if n_ref_reads == 0 else "0/1"
     else:
         # Higher CN: count alt copies by rounding alt fraction to nearest integer
-        n_alt_copies = round(n_alt_reads / n_total_reads * copy_number) if n_total_reads > 0 else 0
+        n_alt_copies = (
+            round(n_alt_reads / n_total_reads * copy_number) if n_total_reads > 0 else 0
+        )
         n_alt_copies = max(0, min(n_alt_copies, copy_number))
         gt = "/".join(["1" if i < n_alt_copies else "0" for i in range(copy_number)])
     return gt, 1.0
@@ -1348,7 +1350,8 @@ def genotype_likelihood(
         # Possible genotypes: 0 (ref) or 1 (alt)
         genotype_probs = {
             "0": epsilon,  # ~0% alt reads expected, allowing noise
-            "1": 1.0 - epsilon,  # ~100% alt reads expected, allowing occasional ref reads
+            "1": 1.0
+            - epsilon,  # ~100% alt reads expected, allowing occasional ref reads
         }
     elif cn == 2:
         # Diploid (normal autosomal)
@@ -1387,7 +1390,9 @@ def genotype_likelihood(
         for n_alt_copies in range(cn + 1):
             genotype = "/".join(["1" if i < n_alt_copies else "0" for i in range(cn)])
             expected_alt_fraction = n_alt_copies / cn if cn > 0 else 0.0
-            expected_alt_fraction = min(max(expected_alt_fraction, epsilon), 1.0 - epsilon)
+            expected_alt_fraction = min(
+                max(expected_alt_fraction, epsilon), 1.0 - epsilon
+            )
             genotype_probs[genotype] = expected_alt_fraction
 
     # Compute binomial probabilities for each genotype
@@ -2192,8 +2197,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--single-evidence-gt",
         help="Experimental: assign genotypes based solely on read presence rather than a probabilistic model. "
-             "Any alt read(s) call the variant; any ref read(s) alongside alt make it heterozygous. "
-             "Avoids false HOM calls when a small number of ref reads are present.",
+        "Any alt read(s) call the variant; any ref read(s) alongside alt make it heterozygous. "
+        "Avoids false HOM calls when a small number of ref reads are present.",
         action="store_true",
         default=False,
     )

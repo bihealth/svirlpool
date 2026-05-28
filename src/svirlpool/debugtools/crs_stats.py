@@ -53,12 +53,12 @@ def crs_stats(crs: list[signalstrength_to_crs.datatypes.CandidateRegion]) -> Non
     print("")
 
     print("20 largest candidate regions:")
-    largest = sorted(crs, key=lambda x: x.referenceEnd - x.referenceStart, reverse=True)[:20]
+    largest = sorted(
+        crs, key=lambda x: x.referenceEnd - x.referenceStart, reverse=True
+    )[:20]
     for cr in largest:
         size = cr.referenceEnd - cr.referenceStart
-        print(
-            f"  {cr.chr}\t{cr.referenceStart}\t{cr.referenceEnd}\t{size}\t{cr.crID}"
-        )
+        print(f"  {cr.chr}\t{cr.referenceStart}\t{cr.referenceEnd}\t{size}\t{cr.crID}")
 
 
 def get_parser() -> argparse.ArgumentParser:
