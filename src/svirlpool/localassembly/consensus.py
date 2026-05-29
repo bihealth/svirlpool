@@ -1581,6 +1581,9 @@ def consensus_while_clustering(
                         similarity_matrix=similarity_matrix,
                         sim_read_names=sim_read_names,
                         cluster_read_names=_isolated_in_pool,
+                        pairwise_alignment_lengths_matrix=pairwise_alignment_lengths(
+                            ava_alignments=all_vs_all_alignments, read_names=sim_read_names
+                        ),
                     )
                     if consensus_method == "racon" and len(_isolated_in_pool) > 0
                     else None
@@ -3352,7 +3355,7 @@ def get_consensus_parser(
         "--consensus-method",
         type=str,
         choices=["lamassemble", "racon"],
-        default="racon",
+        default="lamassemble",
         help="Method used for consensus assembly. 'lamassemble' or 'racon' (default).",
     )
     parser.add_argument(
