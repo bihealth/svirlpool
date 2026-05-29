@@ -3439,7 +3439,7 @@ def get_consensus_parser(
         type=str,
         choices=["lamassemble", "racon", "gotoh-msa"],
         default="gotoh-msa",
-        help="Method used for consensus assembly: 'gotoh-msa' (default), 'lamassemble', or 'racon'.",
+        help="Method used for consensus assembly: 'gotoh-msa', 'lamassemble' (default), or 'racon'.",
     )
     parser.add_argument(
         "-t", "--threads", type=int, default=1, help="Number of threads to use."
