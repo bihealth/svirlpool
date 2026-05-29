@@ -77,7 +77,7 @@ cr_merge_buffer=config["cr_merge_buffer"]
 
 # consensus
 lamassemble_mat = config.get("lamassemble_mat", None)
-consensus_method = config.get("consensus_method", "lamassemble")
+consensus_method = config.get("consensus_method", "gotoh-msa")
 reference_padding_size = config.get("reference_padding_size", 30000)
 
 # min mapq

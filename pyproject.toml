@@ -48,6 +48,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.14.1",
     "syrupy>=4.8.1",
+    "gotoh @ git+https://github.com/rbturnbull/gotoh",
 ]
 
 [tool.hatch.envs.quality]

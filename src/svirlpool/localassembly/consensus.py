@@ -1111,9 +1111,80 @@ def prepare_and_run_racon(
     return consensus_sequence
 
 
-# This function is run after cut reads of one cluster have been aligned to their representative. This means that there are
-# cut reads of one cluster written to a file (use for lamassemble or racon), and alignments in sam format to be used with
-# racon, and the representative read in fasta format - to be used with racon.
+# =============================================================================
+# CONSENSUS GENERATION WITH GOTOH MSA
+# =============================================================================
+
+_DNA_MAP: dict[str, int] = {c: i for i, c in enumerate("ACGT")}
+_DNA_INV: dict[int, str] = {i: c for c, i in _DNA_MAP.items()}
+
+
+def _encode_seq(seq: str) -> "np.ndarray":
+    """Encode a DNA string as a 2D int64 array of shape (L, 1).
+
+    Unknown characters map to index 4 (treated as N in majority vote).
+    """
+    return np.array(
+        [[_DNA_MAP.get(c.upper(), 4)] for c in seq], dtype=np.int64
+    )
+
+
+def _consensus_from_msa_profile(profile: "np.ndarray") -> str:
+    """Majority-vote consensus from a gotoh MSA result array.
+
+    ``profile`` has shape ``(aligned_length, n_seqs)`` with ``-1`` for gaps.
+    All-gap columns are skipped.
+    """
+    result: list[str] = []
+    for row in profile:
+        non_gap = row[row >= 0]
+        if non_gap.size == 0:
+            continue
+        counts = np.bincount(non_gap.astype(np.intp), minlength=5)
+        result.append(_DNA_INV.get(int(counts.argmax()), "N"))
+    return "".join(result)
+
+
+def make_consensus_with_gotoh(sequences: list[str]) -> str | None:
+    """Build a consensus sequence via progressive Gotoh global MSA.
+
+    Sequences are sorted longest-first (most complete read becomes the
+    seed profile) and aligned one by one.  The final consensus is the
+    majority-vote character at each aligned column (gap columns are
+    dropped).
+
+    Args:
+        sequences: List of DNA strings for one cluster.
+
+    Returns:
+        Consensus string, or ``None`` if the input is empty.
+    """
+    if not sequences:
+        return None
+    if len(sequences) == 1:
+        return sequences[0]
+
+    try:
+        import gotoh
+    except ImportError:
+        log.error(
+            "The 'gotoh' package is not installed. "
+            "Install it with: pip install gotoh"
+        )
+        return None
+
+    # Longest read first → best seed for progressive alignment
+    seqs_sorted = sorted(sequences, key=len, reverse=True)
+    profile = _encode_seq(seqs_sorted[0])
+    for seq in seqs_sorted[1:]:
+        profile = gotoh.msa(profile, _encode_seq(seq), gap_open=-1, gap_extend=-0.1)
+    return _consensus_from_msa_profile(profile)
+
+
+# This function is run after cut reads of one cluster have been aligned to
+# their representative read (for racon/lamassemble). For gotoh-msa the FASTA
+# file is read back into memory and aligned in pure Python/Cython — no
+# external subprocess is required.
 def assemble_consensus(
     lamassemble_mat: Path | None | str,
     name: str,
@@ -1126,10 +1197,14 @@ def assemble_consensus(
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
 ) -> str | None:
-    if method not in ("lamassemble", "racon"):
+    if method not in ("lamassemble", "racon", "gotoh-msa"):
         raise ValueError(
-            f"Unknown consensus method '{method}'. Choose 'lamassemble' or 'racon'."
+            f"Unknown consensus method '{method}'. Choose 'lamassemble', 'racon', or 'gotoh-msa'."
         )
+
+    if method == "gotoh-msa":
+        seqs = [str(r.seq) for r in SeqIO.parse(reads_fasta, "fasta")]
+        return make_consensus_with_gotoh(seqs)
 
     with tempfile.TemporaryDirectory():
         if method == "racon":
@@ -3269,6 +3344,14 @@ def run_consensus_script(args, **kwargs):
         raise ValueError(
             "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
         )
+    if args.consensus_method == "gotoh-msa":
+        try:
+            import gotoh  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "The 'gotoh' package is required for --consensus-method gotoh-msa. "
+                "Install it with: pip install gotoh"
+            ) from None
     crIDs = args.crIDs
     if getattr(args, "batch_tsv", None) is not None:
         if getattr(args, "batch_id", None) is None:
@@ -3354,9 +3437,9 @@ def get_consensus_parser(
     parser.add_argument(
         "--consensus-method",
         type=str,
-        choices=["lamassemble", "racon"],
-        default="lamassemble",
-        help="Method used for consensus assembly. 'lamassemble' or 'racon' (default).",
+        choices=["lamassemble", "racon", "gotoh-msa"],
+        default="gotoh-msa",
+        help="Method used for consensus assembly: 'gotoh-msa' (default), 'lamassemble', or 'racon'.",
     )
     parser.add_argument(
         "-t", "--threads", type=int, default=1, help="Number of threads to use."

@@ -91,11 +91,11 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--consensus-method",
-        help="Method for consensus assembly: 'lamassemble' (default) or 'racon'.",
+        help="Method for consensus assembly: 'gotoh-msa' (default), 'lamassemble', or 'racon'.",
         required=False,
         type=str,
-        choices=["lamassemble", "racon"],
-        default="racon",
+        choices=["lamassemble", "racon", "gotoh-msa"],
+        default="gotoh-msa",
     )
     parser_run_wf.add_argument(
         "--threads", help="number of threads to use", required=True, type=int
