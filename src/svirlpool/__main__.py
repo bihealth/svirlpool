@@ -221,6 +221,16 @@ def get_parser():
         type=int,
         default=30000,
     )
+    parser_run_wf.add_argument(
+        "--rerun-triggers",
+        help="Snakemake rerun triggers. Comma-separated list of triggers that cause a rule to be rerun. "
+        "Allowed values: mtime, params, input, software-env, code. "
+        "Default is the Snakemake default (all triggers). "
+        "Use 'mtime' to skip reruns caused by code or parameter changes (useful when resuming after source-code edits).",
+        required=False,
+        type=str,
+        default=None,
+    )
 
     parser_run_wf.set_defaults(fast=False, func=run_wf.run_wf)
 
