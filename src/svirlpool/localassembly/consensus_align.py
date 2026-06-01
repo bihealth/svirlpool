@@ -686,6 +686,12 @@ def write_partitioned_alignments(
     # Parse BAM file and write alignments to partitioned files
     with AlignmentFile(str(input_bam), "rb") as bam_in:
         for pysam_aln in bam_in:
+            # unaligned reads are skipped
+            if pysam_aln.is_unmapped:
+                log.debug(
+                    f"Skipping unmapped consensus sequence {pysam_aln.query_name} in BAM file."
+                )
+                continue
             consensusID = pysam_aln.query_name
 
             if consensusID not in consensusID_to_index:
