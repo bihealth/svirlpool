@@ -702,7 +702,7 @@ rule consensus_align:
     threads:
         cores
     resources:
-        mem_mb=16*1024,
+        mem_mb=max(cores * 1024, 16*1024),
         runtime=60
     benchmark:
         "benchmarks/consensus/consensus_align_to_initial_reference.txt"
