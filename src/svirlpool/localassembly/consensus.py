@@ -300,26 +300,43 @@ def get_full_read_sequences_of_alignments(
                 f"Not all read sequences could be acquired: {found}/{total} found. "
                 f"Missing read(s): {', '.join(missing)}."
             )
-    # for all other alignments, just add the sequence and reverse flag
+    # for all other alignments, just add the sequence and reverse flag.
+    # Only accept alignments whose query_sequence length matches the inferred
+    # read length — otherwise the stored sequence would be a hard-clipped
+    # fragment rather than the full read DNA.
+    expected_readnames: set[str] = {
+        aln.query_name for crID in crIDs for aln in dict_alignments[crID]
+    }
     for crID in crIDs:
         for aln in dict_alignments[crID]:
-            if aln.query_name not in dict_read_sequences:
-                seq = (
-                    Seq(aln.query_sequence).reverse_complement()
-                    if aln.is_reverse
-                    else Seq(aln.query_sequence)
-                )
-                qualities = (
-                    {"phred_quality": aln.query_qualities}
-                    if aln.query_qualities
-                    else None
-                )
-                dict_read_sequences[aln.query_name] = SeqRecord(
-                    seq=seq,
-                    letter_annotations=qualities,
-                    id=aln.query_name,
-                    name=aln.query_name,
-                )
+            if aln.query_name in dict_read_sequences:
+                continue
+            if not aln.query_sequence:
+                continue
+            if aln.infer_read_length() != len(aln.query_sequence):
+                continue
+            seq = (
+                Seq(aln.query_sequence).reverse_complement()
+                if aln.is_reverse
+                else Seq(aln.query_sequence)
+            )
+            qualities = (
+                {"phred_quality": aln.query_qualities} if aln.query_qualities else None
+            )
+            dict_read_sequences[aln.query_name] = SeqRecord(
+                seq=seq,
+                letter_annotations=qualities,
+                id=aln.query_name,
+                name=aln.query_name,
+            )
+
+    unresolved = [rn for rn in expected_readnames if rn not in dict_read_sequences]
+    if unresolved:
+        log.warning(
+            f"Could not acquire full-length read sequence for {len(unresolved)}/"
+            f"{len(expected_readnames)} read(s): {', '.join(unresolved)}. "
+            "These reads will be excluded from the trimmed read set."
+        )
     return dict_read_sequences
 
 
@@ -536,15 +553,11 @@ def trim_reads(
     for crID in dict_alignments.keys():
         for aln in dict_alignments[crID]:
             if aln.query_name in intervals:
-                # fixed this :)
-                # if aln.cigartuples[-1][0] ==5 or aln.cigartuples[-1][0] == 5:
-                #     raise(f"hard clipped read {read_aug_name} found in alignments. The complete DNA sequence of the read cannot be extracted.")
                 if aln.query_name in cut_reads:
                     continue
-                if aln.infer_read_length() != len(read_records[aln.query_name]):
-                    raise ValueError(
-                        f"read length of {aln.query_name} does not match the length of the read record. read length from alignment: {aln.infer_read_length()}, read length from read record: {len(read_records[aln.query_name])}"
-                    )
+                if aln.query_name not in read_records:
+                    # full-length read sequence could not be acquired; skip
+                    continue
                 start, end, ref_start_chr, ref_start, ref_end_chr, ref_end = intervals[
                     aln.query_name
                 ]

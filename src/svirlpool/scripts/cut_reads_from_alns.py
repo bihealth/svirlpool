@@ -63,7 +63,7 @@ def cut_reads(
                     continue
                 if aln.infer_read_length() != len(read_records[aln.query_name]):
                     raise ValueError(
-                        f"read length of {aln.query_name} does not match the length of the read record. read length from alignment: {aln.infer_read_length()}, read length from read record: {len(read_records[aln.query_name])}"
+                        f"read length of {aln.query_name} does not match the length of the read record. read length from alignment: {aln.infer_read_length()}, read length from read record: {len(read_records[aln.query_name])}. The cigar string of the alignment is {aln.cigarstring}. This should not happen. Please check your alignments and read records for consistency."
                     )
                 start, end, ref_start, ref_end = intervals[aln.query_name]
                 record = read_records[aln.query_name][start:end]
