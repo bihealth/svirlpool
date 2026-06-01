@@ -45,6 +45,62 @@ logging.getLogger("matplotlib").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
+def _cpu_has_avx2() -> bool:
+    """Return True if the current CPU supports AVX2 instructions.
+
+    Reads /proc/cpuinfo on Linux; returns True on any other OS (non-Linux
+    platforms are assumed to be modern enough or are not the target platform).
+    """
+    import platform
+    if platform.system() != "Linux":
+        return True
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("flags") and " avx2" in line:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def require_avx2_for_lamassemble() -> None:
+    """Raise a descriptive RuntimeError when AVX2 is absent.
+
+    Call this before invoking lamassemble.  The underlying ``lastdb`` binary
+    shipped by bioconda is compiled with AVX2 support and will die with
+    SIGILL (signal 4 – Illegal Instruction) on CPUs that only have AVX/SSE4.
+    This check gives the user an actionable error message before any work is
+    wasted.
+    """
+    if _cpu_has_avx2():
+        return
+    raise RuntimeError(
+        "lamassemble requires AVX2 CPU instructions, but this CPU does not "
+        "support AVX2.\n"
+        "\n"
+        "Background:\n"
+        "  The bioconda 'last' package (which provides lastdb/lastal used "
+        "internally by lamassemble) is compiled with AVX2 optimisations.  "
+        "Running it on a pre-Haswell CPU (one that has AVX/SSE4 but not "
+        "AVX2) causes lastdb to crash with SIGILL (signal 4 – Illegal "
+        "Instruction) as soon as it tries to build an alignment database.\n"
+        "\n"
+        "How to fix:\n"
+        "  1. Re-run on a Haswell or newer compute node (AVX2 support "
+        "required).  On SLURM clusters add --constraint=haswell (or newer) "
+        "to your job submission so the scheduler places the job on a "
+        "compatible node.\n"
+        "  2. Switch to a CPU-agnostic consensus method by passing "
+        "--consensus-method gotoh-msa (pure Python/Cython, no external "
+        "binary required) or --consensus-method racon (uses minimap2/racon, "
+        "neither of which requires AVX2).\n"
+        "  3. Rebuild the 'last' package from source on the target node with "
+        "'make CXXFLAGS=\"-O3 -march=native\"' so the binary only uses "
+        "instructions available on that CPU."
+    )
+
+
 # =============================================================================
 # FILE I/O AND BAM/SAM PROCESSING
 # =============================================================================
@@ -1124,9 +1180,7 @@ def _encode_seq(seq: str) -> "np.ndarray":
 
     Unknown characters map to index 4 (treated as N in majority vote).
     """
-    return np.array(
-        [[_DNA_MAP.get(c.upper(), 4)] for c in seq], dtype=np.int64
-    )
+    return np.array([[_DNA_MAP.get(c.upper(), 4)] for c in seq], dtype=np.int64)
 
 
 def _consensus_from_msa_profile(profile: "np.ndarray") -> str:
@@ -1168,8 +1222,7 @@ def make_consensus_with_gotoh(sequences: list[str]) -> str | None:
         import gotoh
     except ImportError:
         log.error(
-            "The 'gotoh' package is not installed. "
-            "Install it with: pip install gotoh"
+            "The 'gotoh' package is not installed. Install it with: pip install gotoh"
         )
         return None
 
@@ -1657,7 +1710,8 @@ def consensus_while_clustering(
                         sim_read_names=sim_read_names,
                         cluster_read_names=_isolated_in_pool,
                         pairwise_alignment_lengths_matrix=pairwise_alignment_lengths(
-                            ava_alignments=all_vs_all_alignments, read_names=sim_read_names
+                            ava_alignments=all_vs_all_alignments,
+                            read_names=sim_read_names,
                         ),
                     )
                     if consensus_method == "racon" and len(_isolated_in_pool) > 0
@@ -3344,6 +3398,8 @@ def run_consensus_script(args, **kwargs):
         raise ValueError(
             "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
         )
+    if args.consensus_method == "lamassemble":
+        require_avx2_for_lamassemble()
     if args.consensus_method == "gotoh-msa":
         try:
             import gotoh  # noqa: F401
