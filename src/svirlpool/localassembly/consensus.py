@@ -52,6 +52,7 @@ def _cpu_has_avx2() -> bool:
     platforms are assumed to be modern enough or are not the target platform).
     """
     import platform
+
     if platform.system() != "Linux":
         return True
     try:
@@ -273,10 +274,31 @@ def get_full_read_sequences_of_alignments(
             ):
                 break
     # check if for each readname in dict_supplementary_positions, there is a SeqRecord in dict_read_sequences
-    for readname in dict_supplementary_positions.keys():
-        if readname not in dict_read_sequences:
+    if dict_supplementary_positions:
+        total = len(dict_supplementary_positions)
+        missing = [
+            rn for rn in dict_supplementary_positions if rn not in dict_read_sequences
+        ]
+        found = total - len(missing)
+
+        if total <= 3 and found == 0:
+            log.warning(
+                f"No read sequences could be acquired for {total} hard-clipped read(s): "
+                f"{', '.join(missing)}. Terminating assembly for this region."
+            )
+            return {}
+
+        if found / total < 0.8:
             raise ValueError(
-                f"readname {readname} not found in dict_read_sequences. Make sure that at least one alignment of the read brings the full read sequence with it."
+                f"Only {found}/{total} ({100 * found / total:.0f}%) read sequences could be acquired from "
+                f"supplementary alignments. Missing reads: {', '.join(missing)}. "
+                f"Make sure that at least one alignment of each read brings the full read sequence with it."
+            )
+
+        if missing:
+            log.warning(
+                f"Not all read sequences could be acquired: {found}/{total} found. "
+                f"Missing read(s): {', '.join(missing)}."
             )
     # for all other alignments, just add the sequence and reverse flag
     for crID in crIDs:
