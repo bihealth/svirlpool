@@ -22,6 +22,10 @@ from tqdm import tqdm
 
 from ..svcalling.svcomposite_utils import cohens_d
 
+# Worker processes (mp.Pool) may not inherit the parent's csv field limit
+# depending on the start method, so raise it at import time.
+csv.field_size_limit(sys.maxsize)
+
 # %%
 from ..util import datatypes, util
 
