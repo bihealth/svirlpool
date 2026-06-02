@@ -627,7 +627,9 @@ rule consensus_consensus:
         copynumbertracks='copy_number_tracks.bed.gz',
     output:
         container="consensus/{batchdir}/consensus.batch_{batch_id}.jsonl",
-        log="consensus/{batchdir}/consensus.batch_{batch_id}.log",
+    log:
+        algorithm="consensus/{batchdir}/consensus.batch_{batch_id}.log",
+        diag="consensus/{batchdir}/consensus.batch_{batch_id}.diag.log",
     params:
         alignments=alignments,
         samplename=samplename,
@@ -648,8 +650,17 @@ rule consensus_consensus:
     benchmark:
         "benchmarks/consensus/consensus.batch_{batch_id}.{batchdir}.txt"
     shell:
-        """set -x
-        python3 -m svirlpool.localassembly.consensus \
+        # Two log files are produced (declared via Snakemake's `log:` so they
+        # are retained on failure):
+        #   * {log.algorithm}: algorithm-oriented log (--logfile)
+        #   * {log.diag}: technical/diagnostic log (--diag-logfile) +
+        #     stdout/stderr piped through tee, so shell-level death messages
+        #     ("Killed", SIGSEGV, illegal-instruction reports) caused by
+        #     SLURM OOM kills or signals also land here.
+        # `python3 -u` keeps stderr unbuffered, `pipefail` ensures the shell
+        # exit status reflects the Python process and not `tee`.
+        """set -xeo pipefail
+        python3 -u -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
         -cn {input.copynumbertracks} \
         {params.lamassemble_mat_arg} \
@@ -662,9 +673,10 @@ rule consensus_consensus:
         --reference-padding-size {params.reference_padding_size} \
         -o {output.container} \
         -t {threads} \
-        --logfile {output.log} \
+        --logfile {log.algorithm} \
+        --diag-logfile {log.diag} \
         --log-level {params.log_level} \
-        --timeout {resources.timeout}"""
+        --timeout {resources.timeout} 2>&1 | tee -a {log.diag}"""
         # --verbose"""
 
 

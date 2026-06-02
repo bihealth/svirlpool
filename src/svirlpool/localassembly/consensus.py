@@ -20,6 +20,7 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -3589,6 +3590,17 @@ def get_consensus_parser(
         "--logfile", default=None, required=False, help="Path to the logfile."
     )
     parser.add_argument(
+        "--diag-logfile",
+        default=None,
+        required=False,
+        help="Path to a separate diagnostic/technical logfile. Captures runtime "
+        "environment (host, SLURM vars, cgroup memory limit), periodic RSS "
+        "samples, received signals (SIGTERM/SIGUSR1/SIGXCPU/...), uncaught "
+        "exceptions and peak memory at exit. Intended for diagnosing OOM "
+        "kills, time-limit terminations and similar HPC-side failures "
+        "without polluting --logfile.",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -3654,6 +3666,217 @@ def get_consensus_parser(
 
 
 # =============================================================================
+# DIAGNOSTIC LOGGING HELPERS
+# =============================================================================
+#
+# Two log streams are maintained:
+#   * ``log`` (this module's standard logger, propagating to root) — the
+#     algorithm-oriented log that goes to --logfile.
+#   * ``diag_log`` (dedicated, non-propagating) — a technical/diagnostic log
+#     for environment info, signal receipt, periodic RSS samples and uncaught
+#     exceptions. It writes to --diag-logfile (when given) and to stderr.
+#
+# Two streams keep the algorithm log readable while still preserving the
+# information needed to identify OOM kills, time-limit terminations,
+# illegal-instruction crashes, etc. on HPC nodes. SIGKILL leaves no Python
+# traceback, so the diagnostic handlers flush after every record.
+
+
+diag_log = logging.getLogger("svirlpool.consensus.diagnostics")
+diag_log.propagate = False
+
+
+def _read_cgroup_mem_limit_bytes():
+    for path in (
+        "/sys/fs/cgroup/memory.max",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+    ):
+        try:
+            with open(path) as fh:
+                value = fh.read().strip()
+            if value in ("", "max"):
+                return None
+            return int(value)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _current_rss_bytes():
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
+class _FlushingFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        try:
+            self.flush()
+        except Exception:
+            pass
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        try:
+            self.flush()
+        except Exception:
+            pass
+
+
+def _flush_all_log_handlers():
+    for lg in (logging.getLogger(), diag_log):
+        for h in lg.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+
+def _log_environment_diagnostics():
+    import socket
+
+    diag_log.info("host=%s pid=%d", socket.gethostname(), os.getpid())
+    slurm_keys = (
+        "SLURM_JOB_ID",
+        "SLURM_RESTART_COUNT",
+        "SLURM_NODELIST",
+        "SLURM_MEM_PER_NODE",
+        "SLURM_MEM_PER_CPU",
+        "SLURM_CPUS_PER_TASK",
+        "SLURM_NTASKS",
+        "SLURM_JOB_NAME",
+    )
+    for k in slurm_keys:
+        if k in os.environ:
+            diag_log.info("%s=%s", k, os.environ[k])
+    cg = _read_cgroup_mem_limit_bytes()
+    if cg is not None:
+        diag_log.info(
+            "cgroup memory limit: %d bytes (%.1f MiB)", cg, cg / (1024 * 1024)
+        )
+    else:
+        diag_log.info("cgroup memory limit: unavailable")
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key.strip() in ("MemTotal", "MemAvailable"):
+                    diag_log.info("/proc/meminfo %s: %s", key.strip(), rest.strip())
+    except OSError:
+        pass
+
+
+def _install_excepthook():
+    def _hook(exc_type, exc_value, exc_tb):
+        diag_log.critical(
+            "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
+        )
+        _flush_all_log_handlers()
+
+    sys.excepthook = _hook
+
+
+def _install_signal_handlers():
+    import signal
+
+    # SLURM sends SIGUSR1 (when --signal=USR1@... is configured) before a job
+    # is killed for time-limit; SIGTERM precedes the SIGKILL on cancellation;
+    # SIGXCPU is raised when CPU time soft-limit is exceeded.
+    signals = [signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGXCPU]
+    for name in ("SIGUSR1", "SIGUSR2"):
+        if hasattr(signal, name):
+            signals.append(getattr(signal, name))
+
+    def _handler(signum, frame):
+        try:
+            sig_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            sig_name = str(signum)
+        rss = _current_rss_bytes()
+        rss_str = f"{rss / (1024 * 1024):.1f} MiB" if rss else "unknown"
+        diag_log.critical(
+            "Received signal %s (%d). Current RSS: %s", sig_name, signum, rss_str
+        )
+        _flush_all_log_handlers()
+        # Restore default disposition and re-raise so the exit status reflects
+        # the signal (Snakemake/SLURM accounting then shows the real cause).
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in signals:
+        try:
+            signal.signal(sig, _handler)
+        except (OSError, ValueError):
+            pass
+
+
+def _start_memory_monitor(interval_s: float = 10.0):
+    """Periodically log RSS so we can correlate the last log line with a sudden
+    SIGKILL (the OOM killer does not give the process a chance to log)."""
+    import threading
+
+    stop_event = threading.Event()
+
+    def _run():
+        while not stop_event.wait(interval_s):
+            rss = _current_rss_bytes()
+            if rss is not None:
+                diag_log.info("memory-monitor RSS=%.1f MiB", rss / (1024 * 1024))
+                _flush_all_log_handlers()
+
+    threading.Thread(target=_run, name="memory-monitor", daemon=True).start()
+    return stop_event
+
+
+def _register_peak_memory_atexit():
+    import atexit
+    import resource as _resource
+
+    def _log_peak():
+        try:
+            ru = _resource.getrusage(_resource.RUSAGE_SELF)
+            # ru_maxrss is in KiB on Linux
+            diag_log.info(
+                "exit: peak_rss=%.1f MiB user_cpu=%.1fs sys_cpu=%.1fs",
+                ru.ru_maxrss / 1024.0,
+                ru.ru_utime,
+                ru.ru_stime,
+            )
+        except Exception:
+            pass
+        _flush_all_log_handlers()
+
+    atexit.register(_log_peak)
+
+
+def _configure_diagnostic_logger(log_level: int, diag_logfile: str | None) -> None:
+    formatter = logging.Formatter(
+        "%(asctime)s - DIAG - %(levelname)s - %(message)s"
+    )
+    diag_log.setLevel(log_level)
+    diag_log.handlers.clear()
+
+    stderr_handler = _FlushingStreamHandler()
+    stderr_handler.setLevel(log_level)
+    stderr_handler.setFormatter(formatter)
+    diag_log.addHandler(stderr_handler)
+
+    if diag_logfile:
+        diag_file_handler = _FlushingFileHandler(diag_logfile, mode="w")
+        diag_file_handler.setLevel(log_level)
+        diag_file_handler.setFormatter(formatter)
+        diag_log.addHandler(diag_file_handler)
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -3663,37 +3886,45 @@ def main():
     parser = get_consensus_parser()
     args = parser.parse_args()
 
-    # Convert string log level to logging constant
     log_level = getattr(logging, args.log_level.upper())
-
-    # Configure logging formatter
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
-    # Get the root logger to ensure all loggers in the hierarchy are configured
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-
-    # Remove any existing handlers to avoid duplicates
     root_logger.handlers.clear()
 
-    # Add console handler
-    console_handler = logging.StreamHandler()
+    console_handler = _FlushingStreamHandler()
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # Add file handler if logfile is specified
     if args.logfile:
-        file_handler = logging.FileHandler(str(args.logfile), mode="w")
+        file_handler = _FlushingFileHandler(str(args.logfile), mode="w")
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
-    log.info(f"Starting consensus generation with log level {args.log_level}")
-    run_consensus_script(args)
+    _configure_diagnostic_logger(
+        log_level=log_level,
+        diag_logfile=str(args.diag_logfile) if args.diag_logfile else None,
+    )
+
+    _install_excepthook()
+    _install_signal_handlers()
+    _register_peak_memory_atexit()
+    _log_environment_diagnostics()
+    mem_monitor_stop = _start_memory_monitor(interval_s=10.0)
+
+    log.info("Starting consensus generation with log level %s", args.log_level)
+    diag_log.info("Starting consensus generation with log level %s", args.log_level)
+    try:
+        run_consensus_script(args)
+    finally:
+        mem_monitor_stop.set()
     log.info("Consensus generation completed")
+    diag_log.info("Consensus generation completed")
     return
 
 
