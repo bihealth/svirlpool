@@ -3776,9 +3776,7 @@ def _log_environment_diagnostics():
 
 def _install_excepthook():
     def _hook(exc_type, exc_value, exc_tb):
-        diag_log.critical(
-            "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
-        )
+        diag_log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
         _flush_all_log_handlers()
 
     sys.excepthook = _hook
@@ -3858,9 +3856,7 @@ def _register_peak_memory_atexit():
 
 
 def _configure_diagnostic_logger(log_level: int, diag_logfile: str | None) -> None:
-    formatter = logging.Formatter(
-        "%(asctime)s - DIAG - %(levelname)s - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - DIAG - %(levelname)s - %(message)s")
     diag_log.setLevel(log_level)
     diag_log.handlers.clear()
 

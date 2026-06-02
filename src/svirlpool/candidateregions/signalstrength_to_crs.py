@@ -619,7 +619,18 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
 
         previous_cr: datatypes.CandidateRegion | None = None
 
-        for row in reader:
+        row_iter = iter(reader)
+        while True:
+            try:
+                row = next(row_iter)
+            except StopIteration:
+                break
+            except csv.Error as e:
+                logger.warning(
+                    f"Chromosome {chr_name}: skipping unreadable row in "
+                    f"{proto_crs_file}: {e}"
+                )
+                continue
             cr_dict = json.loads(row[3])
             cr = cattrs.structure(cr_dict, datatypes.CandidateRegion)
 
