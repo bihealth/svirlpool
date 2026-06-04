@@ -531,13 +531,25 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
                 crID=0,  # Will be reassigned later
             )
 
-            read_counts.append(len(cr.get_read_names()))
-            writer.writerow([
-                cr.chr,
-                cr.referenceStart,
-                cr.referenceEnd,
-                json.dumps(cr.unstructure()),
-            ])
+            try:
+                json_str = json.dumps(cr.unstructure())
+                if len(json_str) > csv.field_size_limit():
+                    raise OverflowError(
+                        f"serialized size {len(json_str)} chars exceeds CSV field size limit "
+                        f"{csv.field_size_limit()}"
+                    )
+                read_counts.append(len(cr.get_read_names()))
+                writer.writerow([
+                    cr.chr,
+                    cr.referenceStart,
+                    cr.referenceEnd,
+                    json_str,
+                ])
+            except Exception as e:
+                logger.warning(
+                    f"Skipping proto-CR at {cr.chr}:{cr.referenceStart}-"
+                    f"{cr.referenceEnd} with {len(cr.get_read_names())} reads: {e}"
+                )
 
     # Compute statistics
     stats = {
