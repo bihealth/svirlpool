@@ -26,6 +26,27 @@ from ..svcalling.svcomposite_utils import cohens_d
 # depending on the start method, so raise it at import time.
 csv.field_size_limit(sys.maxsize)
 
+
+class _LineTracker:
+    """Wraps a text file iterator so the last line fed to csv.reader is accessible.
+
+    When csv.reader raises csv.Error (e.g. 'field larger than field limit'),
+    `last_line` holds the raw line that triggered the error.
+    """
+
+    def __init__(self, f):
+        self._f = f
+        self.last_line: str = ""
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = next(self._f)
+        self.last_line = line
+        return line
+
+
 # %%
 from ..util import datatypes, util
 
@@ -613,7 +634,8 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
         open(final_crs_file, "w") as fcf,
         open(dropped_crs_file, "w") as dcf,
     ):
-        reader = csv.reader(pcf, delimiter="\t", quotechar='"')
+        line_tracker = _LineTracker(pcf)
+        reader = csv.reader(line_tracker, delimiter="\t", quotechar='"')
         writer_final = csv.writer(fcf, delimiter="\t", quotechar='"')
         writer_dropped = csv.writer(dcf, delimiter="\t", quotechar='"')
 
@@ -626,9 +648,11 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
             except StopIteration:
                 break
             except csv.Error as e:
+                raw = line_tracker.last_line
                 logger.warning(
                     f"Chromosome {chr_name}: skipping unreadable row in "
-                    f"{proto_crs_file}: {e}"
+                    f"{proto_crs_file}: {e}. "
+                    f"Raw line ({len(raw)} chars): {raw!r}"
                 )
                 continue
             cr_dict = json.loads(row[3])
