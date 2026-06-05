@@ -2639,6 +2639,8 @@ def score_ras_from_alignments(
 #  consensus padding
 # =======================================================================================================================================================
 
+MAX_PADDING_SIZE = 100_000
+
 
 def parse_description(description: str) -> dict:
     result = {}
@@ -2791,6 +2793,8 @@ def _create_padding_object(
     # needs to be reverse complimented if the cutread alignment is reverse
     if not read_paddings_for_consensus[padding_reads[0]][4]:
         left_padding = left_padding.reverse_complement()
+    # cap padding length; keep the portion adjacent to the consensus
+    left_padding = left_padding[-MAX_PADDING_SIZE:]
 
     right_padding: Seq = read_records[padding_reads[1]].seq[
         padding_intervals[1][0] : padding_intervals[1][1]
@@ -2798,6 +2802,8 @@ def _create_padding_object(
     # needs to be reverse complimented if the cutread alignment is reverse
     if not read_paddings_for_consensus[padding_reads[1]][4]:
         right_padding = right_padding.reverse_complement()
+    # cap padding length; keep the portion adjacent to the consensus
+    right_padding = right_padding[:MAX_PADDING_SIZE]
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
         left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
