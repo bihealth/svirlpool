@@ -658,6 +658,7 @@ rule consensus_consensus:
     params:
         alignments=alignments,
         samplename=samplename,
+        reference=reference,
         lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
         log_level=log_level,
         consensus_method=consensus_method,
@@ -689,6 +690,7 @@ rule consensus_consensus:
         -cn {input.copynumbertracks} \
         {params.lamassemble_mat_arg} \
         --consensus-method {params.consensus_method} \
+        -r {params.reference} \
         -i {input.containers} \
         --batch-tsv {input.batches} \
         --batch-id {wildcards.batch_id} \

@@ -3245,6 +3245,7 @@ def crs_containers_to_consensus(
     buffer_clipped_sequence: int,
     timeout: int,
     consensus_method: str,
+    reference: Path,
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -3461,6 +3462,7 @@ def run_consensus_script(args, **kwargs):
         copy_number_tracks=args.copy_number_tracks,
         output=args.output,
         lamassemble_mat=args.lamassemble_mat,
+        reference=args.reference,
         threads=args.threads,
         crIDs=crIDs,
         buffer_clipped_sequence=args.buffer_clipped_sequence,
@@ -3519,6 +3521,13 @@ def get_consensus_parser(
         type=Path,
         required=True,
         help="Path to the output file that is an unstructured CrsContainerResult object.",
+    )
+    parser.add_argument(
+        "-r",
+        "--reference",
+        type=Path,
+        required=True,
+        help="Path to the reference genome in FASTA(.gz) format.",
     )
     parser.add_argument(
         "--lamassemble-mat",
