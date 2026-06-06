@@ -690,7 +690,7 @@ rule consensus_consensus:
         -cn {input.copynumbertracks} \
         {params.lamassemble_mat_arg} \
         --consensus-method {params.consensus_method} \
-        -r {params.reference} \
+        --reference {params.reference} \
         -i {input.containers} \
         --batch-tsv {input.batches} \
         --batch-id {wildcards.batch_id} \
