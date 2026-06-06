@@ -215,11 +215,11 @@ def get_parser():
         default=False,
     )
     parser_run_wf.add_argument(
-        "--reference-padding-size",
-        help="Size of padding sequence from reference genome for consensus sequences (default: 30000 bp).",
+        "--min-padding-size",
+        help="Maximum number of bases to use for padding flanks (default: 100000).",
         required=False,
         type=int,
-        default=30000,
+        default=10000,
     )
     parser_run_wf.add_argument(
         "--rerun-triggers",

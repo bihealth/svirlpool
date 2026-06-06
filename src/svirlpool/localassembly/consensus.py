@@ -2639,7 +2639,6 @@ def score_ras_from_alignments(
 #  consensus padding
 # =======================================================================================================================================================
 
-MAX_PADDING_SIZE = 100_000
 
 
 def parse_description(description: str) -> dict:
@@ -2657,9 +2656,7 @@ def create_padding_for_consensus(
     consensus_object: consensus_class.Consensus,
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
-    crs_dict: dict[int, datatypes.CandidateRegion] | None = None,
-    reference_fasta: pysam.FastaFile | None = None,
-    reference_padding_size: int = 30000,
+    min_padding_size:int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
 
@@ -2685,6 +2682,7 @@ def create_padding_for_consensus(
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
+        min_padding_size=min_padding_size,
     )
     return padding
 
@@ -2784,8 +2782,11 @@ def _create_padding_object(
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
+    min_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a new ConsensusPadding object with the padding sequence and the read names."""
+
+    used_padding_size :int = max(len(cons.consensus_sequence) * 2, min_padding_size)
 
     left_padding: Seq = read_records[padding_reads[0]].seq[
         padding_intervals[0][0] : padding_intervals[0][1]
@@ -2794,7 +2795,7 @@ def _create_padding_object(
     if not read_paddings_for_consensus[padding_reads[0]][4]:
         left_padding = left_padding.reverse_complement()
     # cap padding length; keep the portion adjacent to the consensus
-    left_padding = left_padding[-MAX_PADDING_SIZE:]
+    left_padding = left_padding[-used_padding_size:]
 
     right_padding: Seq = read_records[padding_reads[1]].seq[
         padding_intervals[1][0] : padding_intervals[1][1]
@@ -2803,7 +2804,7 @@ def _create_padding_object(
     if not read_paddings_for_consensus[padding_reads[1]][4]:
         right_padding = right_padding.reverse_complement()
     # cap padding length; keep the portion adjacent to the consensus
-    right_padding = right_padding[:MAX_PADDING_SIZE]
+    right_padding = right_padding[:used_padding_size]
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
         left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
@@ -2946,6 +2947,7 @@ def process_consensus_container(
     timeout: int,
     buffer_clipped_length: int,
     consensus_method: str,
+    min_padding_size:int,
     threads: int = 1,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -2953,8 +2955,6 @@ def process_consensus_container(
     densities_weight: float = 1.0,
     max_intra_distance: float = -1.0,
     cn_override: int | None = None,
-    reference_fasta: pysam.FastaFile | None = None,
-    reference_padding_size: int = 30000,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3188,9 +3188,7 @@ def process_consensus_container(
             consensus_object=consensus,
             cutreads=cutreads,
             read_records=read_records,
-            crs_dict=crs_dict,
-            reference_fasta=reference_fasta,
-            reference_padding_size=reference_padding_size,
+            min_padding_size=min_padding_size,
         )
 
     # for each consensus, create a dict
@@ -3255,8 +3253,7 @@ def crs_containers_to_consensus(
     max_intra_distance: float = -1.0,
     fasta_debug_path: Path | None = None,
     cn_override: int | None = None,
-    reference: Path | None = None,
-    reference_padding_size: int = 30000,
+    min_padding_size: int = 30000,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3352,8 +3349,7 @@ def crs_containers_to_consensus(
                     max_intra_distance=max_intra_distance,
                     cn_override=cn_override,
                     consensus_method=consensus_method,
-                    reference_fasta=_ref_fasta,
-                    reference_padding_size=reference_padding_size,
+                    min_padding_size=min_padding_size,
                 )
 
                 # Validate consensuses immediately so the offending container
@@ -3477,8 +3473,7 @@ def run_consensus_script(args, **kwargs):
         fasta_debug_path=args.fasta_debug_path,
         cn_override=args.cn_override,
         consensus_method=args.consensus_method,
-        reference=args.reference,
-        reference_padding_size=args.reference_padding_size,
+        min_padding_size=args.min_padding_size,
     )
 
 
@@ -3651,22 +3646,11 @@ def get_consensus_parser(
         help="If provided, write the final padded consensus sequences to a FASTA file at this path.",
     )
     parser.add_argument(
-        "-r",
-        "--reference",
-        type=Path,
-        required=False,
-        default=None,
-        help="Path to the reference FASTA file (must have a .fai index). "
-        "When provided, reference-based padding is used where the candidate-region "
-        "topology permits it.",
-    )
-    parser.add_argument(
-        "--reference-padding-size",
+        "--min-padding-size",
         type=int,
         required=False,
-        default=30000,
-        help="Number of reference bases to fetch for each padding flank when using "
-        "reference-based padding (default: 30000).",
+        default=10000,
+        help="Minimum number of bases to use for padding flanks (default: 10000).",
     )
     return parser
 
