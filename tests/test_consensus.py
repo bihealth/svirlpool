@@ -129,6 +129,7 @@ def test_create_padding_for_consensus() -> None:
             consensus_object=consensus_object1,
             cutreads=cutreads1,
             read_records=read_records1,
+            max_padding_size=999999999,
         )
     # print all but not the sequences
     expected_1 = consensus_class.ConsensusPadding(
@@ -181,6 +182,7 @@ def test_create_padding_for_consensus() -> None:
         consensus_object=consensus_object2,
         cutreads=cutreads2,
         read_records=read_records2,
+        max_padding_size=999999999,
     )
     expected_2 = consensus_class.ConsensusPadding(
         sequence="",
@@ -235,6 +237,7 @@ def test_create_padding_for_consensus_forward_breakends() -> None:
             consensus_object=consensus_object,
             cutreads=cutreads,
             read_records=read_records,
+            max_padding_size=999999999,
         )
 
     expected = consensus_class.ConsensusPadding(

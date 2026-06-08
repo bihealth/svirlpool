@@ -2640,7 +2640,6 @@ def score_ras_from_alignments(
 # =======================================================================================================================================================
 
 
-
 def parse_description(description: str) -> dict:
     result = {}
     for key_value in description.split(","):
@@ -2656,7 +2655,7 @@ def create_padding_for_consensus(
     consensus_object: consensus_class.Consensus,
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
-    min_padding_size:int,
+    max_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
 
@@ -2682,7 +2681,7 @@ def create_padding_for_consensus(
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
-        min_padding_size=min_padding_size,
+        max_padding_size=max_padding_size,
     )
     return padding
 
@@ -2782,11 +2781,11 @@ def _create_padding_object(
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
-    min_padding_size: int,
+    max_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a new ConsensusPadding object with the padding sequence and the read names."""
 
-    used_padding_size :int = max(len(cons.consensus_sequence) * 2, min_padding_size)
+    used_padding_size: int = max(len(cons.consensus_sequence) * 2, max_padding_size)
 
     left_padding: Seq = read_records[padding_reads[0]].seq[
         padding_intervals[0][0] : padding_intervals[0][1]
@@ -2947,7 +2946,7 @@ def process_consensus_container(
     timeout: int,
     buffer_clipped_length: int,
     consensus_method: str,
-    min_padding_size:int,
+    max_padding_size: int,
     threads: int = 1,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -3188,7 +3187,7 @@ def process_consensus_container(
             consensus_object=consensus,
             cutreads=cutreads,
             read_records=read_records,
-            min_padding_size=min_padding_size,
+            max_padding_size=max_padding_size,
         )
 
     # for each consensus, create a dict
@@ -3254,7 +3253,7 @@ def crs_containers_to_consensus(
     max_intra_distance: float = -1.0,
     fasta_debug_path: Path | None = None,
     cn_override: int | None = None,
-    min_padding_size: int = 30000,
+    max_padding_size: int = 30000,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3350,7 +3349,7 @@ def crs_containers_to_consensus(
                     max_intra_distance=max_intra_distance,
                     cn_override=cn_override,
                     consensus_method=consensus_method,
-                    min_padding_size=min_padding_size,
+                    max_padding_size=max_padding_size,
                 )
 
                 # Validate consensuses immediately so the offending container
@@ -3475,7 +3474,7 @@ def run_consensus_script(args, **kwargs):
         fasta_debug_path=args.fasta_debug_path,
         cn_override=args.cn_override,
         consensus_method=args.consensus_method,
-        min_padding_size=args.min_padding_size,
+        max_padding_size=args.max_padding_size,
     )
 
 
@@ -3655,7 +3654,7 @@ def get_consensus_parser(
         help="If provided, write the final padded consensus sequences to a FASTA file at this path.",
     )
     parser.add_argument(
-        "--min-padding-size",
+        "--max-padding-size",
         type=int,
         required=False,
         default=100000,

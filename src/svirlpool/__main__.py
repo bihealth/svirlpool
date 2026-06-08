@@ -215,7 +215,7 @@ def get_parser():
         default=False,
     )
     parser_run_wf.add_argument(
-        "--min-padding-size",
+        "--max-padding-size",
         help="Maximum number of bases to use for padding flanks (default: 100000).",
         required=False,
         type=int,

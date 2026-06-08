@@ -78,7 +78,7 @@ cr_merge_buffer=config["cr_merge_buffer"]
 # consensus
 lamassemble_mat = config.get("lamassemble_mat", None)
 consensus_method = config.get("consensus_method", "lamassemble")
-min_padding_size = config.get("min_padding_size", 100000)
+max_padding_size = config.get("max_padding_size", 100000)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -662,7 +662,7 @@ rule consensus_consensus:
         lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
         log_level=log_level,
         consensus_method=consensus_method,
-        min_padding_size=min_padding_size,
+        max_padding_size=max_padding_size,
     threads:
         get_consensus_threads
     conda:
@@ -695,7 +695,7 @@ rule consensus_consensus:
         --batch-tsv {input.batches} \
         --batch-id {wildcards.batch_id} \
         -a {params.alignments} \
-        --min-padding-size {params.min_padding_size} \
+        --max-padding-size {params.max_padding_size} \
         -o {output.container} \
         -t {threads} \
         --logfile {log.algorithm} \

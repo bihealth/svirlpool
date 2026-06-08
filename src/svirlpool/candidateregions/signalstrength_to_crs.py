@@ -21,6 +21,7 @@ import psutil
 from tqdm import tqdm
 
 from ..svcalling.svcomposite_utils import cohens_d
+from ..util import datatypes, util
 
 # Worker processes (mp.Pool) may not inherit the parent's csv field limit
 # depending on the start method, so raise it at import time.
@@ -46,11 +47,6 @@ class _LineTracker:
         self.last_line = line
         return line
 
-
-# %%
-from ..util import datatypes, util
-
-# %%
 
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
