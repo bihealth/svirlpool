@@ -33,20 +33,6 @@ from .svcomposite_utils import _svcomposite_log_id
 log = logging.getLogger(__name__)
 
 
-# ---- Logging helper functions (imported from svcomposite_utils) ---- #
-
-
-def _crIDs_from_svpattern(svp: SVpatterns.SVpatternType) -> int:
-    """Extract crID from an SVpattern. The crID is the integer prefix of the consensusID (format: crID.subID)."""
-    try:
-        return int(svp.consensusID.split(".")[0])
-    except (ValueError, IndexError):
-        return -1
-
-
-# ---- End logging helpers ---- #
-
-
 SUPPORTED_SV_TYPES: frozenset[type[SVpatterns.SVpatternType]] = frozenset({
     SVpatterns.SVpatternInversionDeletion,
     SVpatterns.SVpatternInversionDuplication,

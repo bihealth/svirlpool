@@ -76,8 +76,10 @@ min_cr_size=config["min_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
 
 # consensus
-lamassemble_mat = config.get("lamassemble_mat", None)
-consensus_method = config.get("consensus_method", "lamassemble")
+extra_clusters = config.get("extra_clusters", 2)
+kmer_size = config.get("kmer_size", 8)
+pca_components = config.get("pca_components", 20)
+clustering_algorithm = config.get("clustering_algorithm", "kmeans")
 min_padding_size = config.get("min_padding_size", 100000)
 
 # min mapq
@@ -659,9 +661,11 @@ rule consensus_consensus:
         alignments=alignments,
         samplename=samplename,
         reference=reference,
-        lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
+        extra_clusters=extra_clusters,
+        kmer_size=kmer_size,
+        pca_components=pca_components,
+        clustering_algorithm=clustering_algorithm,
         log_level=log_level,
-        consensus_method=consensus_method,
         min_padding_size=min_padding_size,
     threads:
         get_consensus_threads
@@ -688,8 +692,10 @@ rule consensus_consensus:
         python3 -u -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
         -cn {input.copynumbertracks} \
-        {params.lamassemble_mat_arg} \
-        --consensus-method {params.consensus_method} \
+        --extra-clusters {params.extra_clusters} \
+        --kmer-size {params.kmer_size} \
+        --pca-components {params.pca_components} \
+        --clustering-algorithm {params.clustering_algorithm} \
         --reference {params.reference} \
         -i {input.containers} \
         --batch-tsv {input.batches} \

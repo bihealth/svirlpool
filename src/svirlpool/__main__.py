@@ -83,19 +83,34 @@ def get_parser():
         type=os.path.abspath,
     )
     parser_run_wf.add_argument(
-        "--lamassemble-mat",
-        help="lamassamble matrix file used for the final consensus assembly. Required when --consensus-method is 'lamassemble'.",
+        "--extra-clusters",
+        help="Number of clusters in addition to the local copy number used for "
+        "k-mer/PCA read clustering (n_clusters = copy_number + extra_clusters) [2]",
         required=False,
-        default=None,
-        type=os.path.abspath,
+        type=int,
+        default=2,
     )
     parser_run_wf.add_argument(
-        "--consensus-method",
-        help="Method for consensus assembly: 'gotoh-msa', 'lamassemble' (default), or 'racon'.",
+        "--kmer-size",
+        help="k-mer size used to build the read/consensus feature vectors [8]",
+        required=False,
+        type=int,
+        default=8,
+    )
+    parser_run_wf.add_argument(
+        "--pca-components",
+        help="Number of leading PCA components used for clustering [2]",
+        required=False,
+        type=int,
+        default=20,
+    )
+    parser_run_wf.add_argument(
+        "--clustering-algorithm",
+        help="Clustering algorithm used on the PCA-reduced k-mer matrix [kmeans]",
         required=False,
         type=str,
-        choices=["lamassemble", "racon", "gotoh-msa"],
-        default="lamassemble",
+        choices=["kmeans", "agglomerative", "spectral", "gmm"],
+        default="kmeans",
     )
     parser_run_wf.add_argument(
         "--threads", help="number of threads to use", required=True, type=int
@@ -216,7 +231,7 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--min-padding-size",
-        help="Maximum number of bases to use for padding flanks (default: 100000).",
+        help="Minimum number of bases to use for padding flanks (default: 10000).",
         required=False,
         type=int,
         default=10000,
