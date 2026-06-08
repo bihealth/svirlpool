@@ -219,7 +219,7 @@ def get_parser():
         help="Maximum number of bases to use for padding flanks (default: 100000).",
         required=False,
         type=int,
-        default=10000,
+        default=100000,
     )
     parser_run_wf.add_argument(
         "--rerun-triggers",

@@ -3658,7 +3658,7 @@ def get_consensus_parser(
         "--min-padding-size",
         type=int,
         required=False,
-        default=10000,
+        default=100000,
         help="Minimum number of bases to use for padding flanks (default: 10000).",
     )
     return parser
