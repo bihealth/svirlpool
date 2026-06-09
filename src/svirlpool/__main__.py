@@ -222,6 +222,17 @@ def get_parser():
         default=100000,
     )
     parser_run_wf.add_argument(
+        "--max-consensus-copy-number",
+        help="Maximum estimated copy number of a candidate-region container for which a "
+        "consensus is still attempted (default: 4). Containers exceeding this threshold are "
+        "skipped as too complex and produce no consensus (and therefore no SV calls) for that "
+        "region. Raise (e.g. 6-8) to recover SVs in higher-copy / complex tandem-repeat regions "
+        "at the cost of runtime and potential noise.",
+        required=False,
+        type=int,
+        default=4,
+    )
+    parser_run_wf.add_argument(
         "--rerun-triggers",
         help="Snakemake rerun triggers. Comma-separated list of triggers that cause a rule to be rerun. "
         "Allowed values: mtime, params, input, software-env, code. "

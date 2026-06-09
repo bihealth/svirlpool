@@ -2954,6 +2954,7 @@ def process_consensus_container(
     densities_weight: float = 1.0,
     max_intra_distance: float = -1.0,
     cn_override: int | None = None,
+    max_copy_number_threshold: int = 4,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -2976,10 +2977,10 @@ def process_consensus_container(
             ),
         )  # 2 minimum clusters - maybe this is really bad, idk.
         log.info(f"Maximum copy number for this container: {max_copy_number}")
-    if max_copy_number > 4:
+    if max_copy_number > max_copy_number_threshold:
         # don't process this container. Too complex.
         log.warning(
-            f"Maximum copy number {max_copy_number} exceeds threshold of 4. Skipping consensus building for this container."
+            f"Maximum copy number {max_copy_number} exceeds threshold of {max_copy_number_threshold}. Skipping consensus building for this container."
         )
         # Unused-reads aggregation is currently disabled downstream
         # (`crs_containers_to_consensus` does not propagate them), so we
@@ -3254,6 +3255,7 @@ def crs_containers_to_consensus(
     fasta_debug_path: Path | None = None,
     cn_override: int | None = None,
     max_padding_size: int = 30000,
+    max_copy_number_threshold: int = 4,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3350,6 +3352,7 @@ def crs_containers_to_consensus(
                     cn_override=cn_override,
                     consensus_method=consensus_method,
                     max_padding_size=max_padding_size,
+                    max_copy_number_threshold=max_copy_number_threshold,
                 )
 
                 # Validate consensuses immediately so the offending container
@@ -3475,6 +3478,7 @@ def run_consensus_script(args, **kwargs):
         cn_override=args.cn_override,
         consensus_method=args.consensus_method,
         max_padding_size=args.max_padding_size,
+        max_copy_number_threshold=args.max_copy_number,
     )
 
 
@@ -3575,6 +3579,17 @@ def get_consensus_parser(
         required=False,
         default=None,
         help="Instead of using the copy number from the estimation track, this fixed value is used.",
+    )
+    parser.add_argument(
+        "--max-copy-number",
+        type=int,
+        required=False,
+        default=4,
+        help="Maximum estimated copy number of a candidate-region container for which a "
+        "consensus is still attempted (default: 4). Containers exceeding this are skipped as "
+        "too complex, producing no consensus (and therefore no SV calls) for that region. "
+        "Raise (e.g. 6-8) to recover SVs in higher-copy/complex tandem-repeat regions at the "
+        "cost of runtime and potential noise.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",
