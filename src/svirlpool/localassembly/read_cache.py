@@ -120,9 +120,11 @@ class ReadSequenceCache:
         if _tracer is not None:
             sys.settrace(None)
         try:
-            _fetched = list(self._samfile.fetch(
-                cr.chr, max(int(cr.referenceStart), 0), int(cr.referenceEnd)
-            ))
+            _fetched = list(
+                self._samfile.fetch(
+                    cr.chr, max(int(cr.referenceStart), 0), int(cr.referenceEnd)
+                )
+            )
         finally:
             if _tracer is not None:
                 sys.settrace(_tracer)
