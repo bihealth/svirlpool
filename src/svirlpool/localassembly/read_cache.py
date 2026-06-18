@@ -18,6 +18,7 @@ design.
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import pysam
@@ -111,9 +112,21 @@ class ReadSequenceCache:
         new_alns_for_resolution: list[pysam.AlignedSegment] = []
 
         self.fetch_calls += 1
-        for aln in self._samfile.fetch(
-            cr.chr, max(int(cr.referenceStart), 0), int(cr.referenceEnd)
-        ):
+        # pysam is compiled with Cython `profile=True`, which does not handle the
+        # new PyTrace_STOP_ITERATION (event 10) added in Python 3.12.  Disabling
+        # the trace function for the duration of the pysam iterator avoids the
+        # resulting ValueError when coverage (or any tracer) is active.
+        _tracer = sys.gettrace()
+        if _tracer is not None:
+            sys.settrace(None)
+        try:
+            _fetched = list(self._samfile.fetch(
+                cr.chr, max(int(cr.referenceStart), 0), int(cr.referenceEnd)
+            ))
+        finally:
+            if _tracer is not None:
+                sys.settrace(_tracer)
+        for aln in _fetched:
             if aln.is_secondary:
                 continue
             qname = aln.query_name

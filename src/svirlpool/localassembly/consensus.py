@@ -2655,9 +2655,7 @@ def create_padding_for_consensus(
     consensus_object: consensus_class.Consensus,
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
-    crs_dict: dict[int, datatypes.CandidateRegion] | None = None,
-    reference_fasta: pysam.FastaFile | None = None,
-    reference_padding_size: int = 30000,
+    max_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
 
@@ -2683,6 +2681,7 @@ def create_padding_for_consensus(
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
+        max_padding_size=max_padding_size,
     )
     return padding
 
@@ -2782,8 +2781,11 @@ def _create_padding_object(
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
+    max_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a new ConsensusPadding object with the padding sequence and the read names."""
+
+    used_padding_size: int = max(len(cons.consensus_sequence) * 2, max_padding_size)
 
     left_padding: Seq = read_records[padding_reads[0]].seq[
         padding_intervals[0][0] : padding_intervals[0][1]
@@ -2791,6 +2793,8 @@ def _create_padding_object(
     # needs to be reverse complimented if the cutread alignment is reverse
     if not read_paddings_for_consensus[padding_reads[0]][4]:
         left_padding = left_padding.reverse_complement()
+    # cap padding length; keep the portion adjacent to the consensus
+    left_padding = left_padding[-used_padding_size:]
 
     right_padding: Seq = read_records[padding_reads[1]].seq[
         padding_intervals[1][0] : padding_intervals[1][1]
@@ -2798,6 +2802,8 @@ def _create_padding_object(
     # needs to be reverse complimented if the cutread alignment is reverse
     if not read_paddings_for_consensus[padding_reads[1]][4]:
         right_padding = right_padding.reverse_complement()
+    # cap padding length; keep the portion adjacent to the consensus
+    right_padding = right_padding[:used_padding_size]
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
         left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
@@ -2940,6 +2946,7 @@ def process_consensus_container(
     timeout: int,
     buffer_clipped_length: int,
     consensus_method: str,
+    max_padding_size: int,
     threads: int = 1,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -2947,8 +2954,7 @@ def process_consensus_container(
     densities_weight: float = 1.0,
     max_intra_distance: float = -1.0,
     cn_override: int | None = None,
-    reference_fasta: pysam.FastaFile | None = None,
-    reference_padding_size: int = 30000,
+    max_copy_number_threshold: int = 4,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -2971,10 +2977,10 @@ def process_consensus_container(
             ),
         )  # 2 minimum clusters - maybe this is really bad, idk.
         log.info(f"Maximum copy number for this container: {max_copy_number}")
-    if max_copy_number > 4:
+    if max_copy_number > max_copy_number_threshold:
         # don't process this container. Too complex.
         log.warning(
-            f"Maximum copy number {max_copy_number} exceeds threshold of 4. Skipping consensus building for this container."
+            f"Maximum copy number {max_copy_number} exceeds threshold of {max_copy_number_threshold}. Skipping consensus building for this container."
         )
         # Unused-reads aggregation is currently disabled downstream
         # (`crs_containers_to_consensus` does not propagate them), so we
@@ -3182,9 +3188,7 @@ def process_consensus_container(
             consensus_object=consensus,
             cutreads=cutreads,
             read_records=read_records,
-            crs_dict=crs_dict,
-            reference_fasta=reference_fasta,
-            reference_padding_size=reference_padding_size,
+            max_padding_size=max_padding_size,
         )
 
     # for each consensus, create a dict
@@ -3241,6 +3245,7 @@ def crs_containers_to_consensus(
     buffer_clipped_sequence: int,
     timeout: int,
     consensus_method: str,
+    reference: Path,
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -3249,8 +3254,8 @@ def crs_containers_to_consensus(
     max_intra_distance: float = -1.0,
     fasta_debug_path: Path | None = None,
     cn_override: int | None = None,
-    reference: Path | None = None,
-    reference_padding_size: int = 30000,
+    max_padding_size: int = 30000,
+    max_copy_number_threshold: int = 4,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3346,8 +3351,8 @@ def crs_containers_to_consensus(
                     max_intra_distance=max_intra_distance,
                     cn_override=cn_override,
                     consensus_method=consensus_method,
-                    reference_fasta=_ref_fasta,
-                    reference_padding_size=reference_padding_size,
+                    max_padding_size=max_padding_size,
+                    max_copy_number_threshold=max_copy_number_threshold,
                 )
 
                 # Validate consensuses immediately so the offending container
@@ -3459,6 +3464,7 @@ def run_consensus_script(args, **kwargs):
         copy_number_tracks=args.copy_number_tracks,
         output=args.output,
         lamassemble_mat=args.lamassemble_mat,
+        reference=args.reference,
         threads=args.threads,
         crIDs=crIDs,
         buffer_clipped_sequence=args.buffer_clipped_sequence,
@@ -3471,8 +3477,8 @@ def run_consensus_script(args, **kwargs):
         fasta_debug_path=args.fasta_debug_path,
         cn_override=args.cn_override,
         consensus_method=args.consensus_method,
-        reference=args.reference,
-        reference_padding_size=args.reference_padding_size,
+        max_padding_size=args.max_padding_size,
+        max_copy_number_threshold=args.max_copy_number,
     )
 
 
@@ -3518,6 +3524,13 @@ def get_consensus_parser(
         type=Path,
         required=True,
         help="Path to the output file that is an unstructured CrsContainerResult object.",
+    )
+    parser.add_argument(
+        "-r",
+        "--reference",
+        type=Path,
+        required=True,
+        help="Path to the reference genome in FASTA(.gz) format.",
     )
     parser.add_argument(
         "--lamassemble-mat",
@@ -3566,6 +3579,17 @@ def get_consensus_parser(
         required=False,
         default=None,
         help="Instead of using the copy number from the estimation track, this fixed value is used.",
+    )
+    parser.add_argument(
+        "--max-copy-number",
+        type=int,
+        required=False,
+        default=4,
+        help="Maximum estimated copy number of a candidate-region container for which a "
+        "consensus is still attempted (default: 4). Containers exceeding this are skipped as "
+        "too complex, producing no consensus (and therefore no SV calls) for that region. "
+        "Raise (e.g. 6-8) to recover SVs in higher-copy/complex tandem-repeat regions at the "
+        "cost of runtime and potential noise.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",
@@ -3645,22 +3669,11 @@ def get_consensus_parser(
         help="If provided, write the final padded consensus sequences to a FASTA file at this path.",
     )
     parser.add_argument(
-        "-r",
-        "--reference",
-        type=Path,
-        required=False,
-        default=None,
-        help="Path to the reference FASTA file (must have a .fai index). "
-        "When provided, reference-based padding is used where the candidate-region "
-        "topology permits it.",
-    )
-    parser.add_argument(
-        "--reference-padding-size",
+        "--max-padding-size",
         type=int,
         required=False,
-        default=30000,
-        help="Number of reference bases to fetch for each padding flank when using "
-        "reference-based padding (default: 30000).",
+        default=100000,
+        help="Minimum number of bases to use for padding flanks (default: 10000).",
     )
     return parser
 
@@ -3776,9 +3789,7 @@ def _log_environment_diagnostics():
 
 def _install_excepthook():
     def _hook(exc_type, exc_value, exc_tb):
-        diag_log.critical(
-            "Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)
-        )
+        diag_log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
         _flush_all_log_handlers()
 
     sys.excepthook = _hook
@@ -3858,9 +3869,7 @@ def _register_peak_memory_atexit():
 
 
 def _configure_diagnostic_logger(log_level: int, diag_logfile: str | None) -> None:
-    formatter = logging.Formatter(
-        "%(asctime)s - DIAG - %(levelname)s - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - DIAG - %(levelname)s - %(message)s")
     diag_log.setLevel(log_level)
     diag_log.handlers.clear()
 

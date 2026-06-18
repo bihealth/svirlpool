@@ -215,11 +215,22 @@ def get_parser():
         default=False,
     )
     parser_run_wf.add_argument(
-        "--reference-padding-size",
-        help="Size of padding sequence from reference genome for consensus sequences (default: 30000 bp).",
+        "--max-padding-size",
+        help="Maximum number of bases to use for padding flanks (default: 100000).",
         required=False,
         type=int,
-        default=30000,
+        default=100000,
+    )
+    parser_run_wf.add_argument(
+        "--max-consensus-copy-number",
+        help="Maximum estimated copy number of a candidate-region container for which a "
+        "consensus is still attempted (default: 4). Containers exceeding this threshold are "
+        "skipped as too complex and produce no consensus (and therefore no SV calls) for that "
+        "region. Raise (e.g. 6-8) to recover SVs in higher-copy / complex tandem-repeat regions "
+        "at the cost of runtime and potential noise.",
+        required=False,
+        type=int,
+        default=4,
     )
     parser_run_wf.add_argument(
         "--rerun-triggers",

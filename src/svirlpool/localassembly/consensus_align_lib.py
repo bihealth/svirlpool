@@ -132,15 +132,15 @@ def parse_sv_signals_from_consensus(
             sv_signal
             for sv_signal in sv_signals
             if not (
-                sv_signal.read_start > interval_core[0]
-                and sv_signal.read_end < interval_core[1]
+                sv_signal.read_start >= interval_core[0]
+                and sv_signal.read_end <= interval_core[1]
             )
         ]
         sv_signals = [
             sv_signal
             for sv_signal in sv_signals
-            if sv_signal.read_start > interval_core[0]
-            and sv_signal.read_end < interval_core[1]
+            if sv_signal.read_start >= interval_core[0]
+            and sv_signal.read_end <= interval_core[1]
         ]
         # also log the signals that were taken
         for signal in sv_signals:

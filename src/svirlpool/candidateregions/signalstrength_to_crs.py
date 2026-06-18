@@ -21,11 +21,32 @@ import psutil
 from tqdm import tqdm
 
 from ..svcalling.svcomposite_utils import cohens_d
-
-# %%
 from ..util import datatypes, util
 
-# %%
+# Worker processes (mp.Pool) may not inherit the parent's csv field limit
+# depending on the start method, so raise it at import time.
+csv.field_size_limit(sys.maxsize)
+
+
+class _LineTracker:
+    """Wraps a text file iterator so the last line fed to csv.reader is accessible.
+
+    When csv.reader raises csv.Error (e.g. 'field larger than field limit'),
+    `last_line` holds the raw line that triggered the error.
+    """
+
+    def __init__(self, f):
+        self._f = f
+        self.last_line: str = ""
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = next(self._f)
+        self.last_line = line
+        return line
+
 
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
@@ -506,13 +527,25 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
                 crID=0,  # Will be reassigned later
             )
 
-            read_counts.append(len(cr.get_read_names()))
-            writer.writerow([
-                cr.chr,
-                cr.referenceStart,
-                cr.referenceEnd,
-                json.dumps(cr.unstructure()),
-            ])
+            try:
+                json_str = json.dumps(cr.unstructure())
+                if len(json_str) > csv.field_size_limit():
+                    raise OverflowError(
+                        f"serialized size {len(json_str)} chars exceeds CSV field size limit "
+                        f"{csv.field_size_limit()}"
+                    )
+                read_counts.append(len(cr.get_read_names()))
+                writer.writerow([
+                    cr.chr,
+                    cr.referenceStart,
+                    cr.referenceEnd,
+                    json_str,
+                ])
+            except Exception as e:
+                logger.warning(
+                    f"Skipping proto-CR at {cr.chr}:{cr.referenceStart}-"
+                    f"{cr.referenceEnd} with {len(cr.get_read_names())} reads: {e}"
+                )
 
     # Compute statistics
     stats = {
@@ -609,13 +642,27 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
         open(final_crs_file, "w") as fcf,
         open(dropped_crs_file, "w") as dcf,
     ):
-        reader = csv.reader(pcf, delimiter="\t", quotechar='"')
+        line_tracker = _LineTracker(pcf)
+        reader = csv.reader(line_tracker, delimiter="\t", quotechar='"')
         writer_final = csv.writer(fcf, delimiter="\t", quotechar='"')
         writer_dropped = csv.writer(dcf, delimiter="\t", quotechar='"')
 
         previous_cr: datatypes.CandidateRegion | None = None
 
-        for row in reader:
+        row_iter = iter(reader)
+        while True:
+            try:
+                row = next(row_iter)
+            except StopIteration:
+                break
+            except csv.Error as e:
+                raw = line_tracker.last_line
+                logger.warning(
+                    f"Chromosome {chr_name}: skipping unreadable row in "
+                    f"{proto_crs_file}: {e}. "
+                    f"Raw line ({len(raw)} chars): {raw!r}"
+                )
+                continue
             cr_dict = json.loads(row[3])
             cr = cattrs.structure(cr_dict, datatypes.CandidateRegion)
 

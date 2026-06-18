@@ -728,6 +728,7 @@ def SVcalls_from_SVcomposite(
     find_leftmost_reference_position: bool,
     symbolic_threshold: int,
     single_evidence_gt: bool = False,
+    min_alt_reads: int = 3,
 ) -> list[SVcall]:
     # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
     #   have one chr, start, end on the reference
@@ -757,6 +758,7 @@ def SVcalls_from_SVcomposite(
             find_leftmost_reference_position=find_leftmost_reference_position,
             all_alt_reads=all_alt_reads,
             single_evidence_gt=single_evidence_gt,
+            min_alt_reads=min_alt_reads,
         )
         log.debug(
             f"TRANSFORMED::SVcalls_from_SVcomposite::svcall_object_from_svcomposite:(to DEL, INS, INV, BND) {composite_id}; TRANSFORMED TO: {res.to_log_id()}",
@@ -773,6 +775,7 @@ def SVcalls_from_SVcomposite(
             all_alt_reads=all_alt_reads,
             symbolic_threshold=symbolic_threshold,
             single_evidence_gt=single_evidence_gt,
+            min_alt_reads=min_alt_reads,
         )
         # log each res
         for _res in res:
@@ -794,6 +797,7 @@ def svcall_object_from_svcomposite(
     find_leftmost_reference_position: bool,
     all_alt_reads: dict[str, set[int]],
     single_evidence_gt: bool = False,
+    min_alt_reads: int = 3,
 ) -> SVcall:
     chrname, start, end = get_svComposite_interval_on_reference(
         svComposite=svComposite,
@@ -842,7 +846,8 @@ def svcall_object_from_svcomposite(
 
     # quality filters
     pass_altreads: bool = (
-        max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads >= 3
+        max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads
+        >= min_alt_reads
     )
     pass_gq = True
     passing: bool = pass_altreads and pass_gq
@@ -974,6 +979,7 @@ def svcall_objects_from_Adjacencies(
     all_alt_reads: dict[str, set[int]],
     symbolic_threshold: int,
     single_evidence_gt: bool = False,
+    min_alt_reads: int = 3,
 ) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
@@ -1111,7 +1117,7 @@ def svcall_objects_from_Adjacencies(
     max_var_reads_1 = max(genotypes_1.items(), key=lambda x: x[1].var_reads)[
         1
     ].var_reads
-    pass_altreads: bool = max(max_var_reads_0, max_var_reads_1) >= 3
+    pass_altreads: bool = max(max_var_reads_0, max_var_reads_1) >= min_alt_reads
 
     pass_gq = True
     passing: bool = pass_altreads and pass_gq
@@ -1852,6 +1858,7 @@ def multisample_sv_calling(
     skip_covtrees: bool = False,
     collapse_repeats: bool = True,
     single_evidence_gt: bool = False,
+    min_alt_reads: int = 3,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
@@ -1996,6 +2003,7 @@ def multisample_sv_calling(
             find_leftmost_reference_position=find_leftmost_reference_position,
             symbolic_threshold=symbolic_threshold,
             single_evidence_gt=single_evidence_gt,
+            min_alt_reads=min_alt_reads,
         )
     ]
 
@@ -2083,6 +2091,7 @@ def run(args) -> None:
         skip_covtrees=args.skip_covtrees,
         collapse_repeats=not args.dont_collapse_repeats,
         single_evidence_gt=args.single_evidence_gt,
+        min_alt_reads=args.min_alt_reads,
     )
 
 
@@ -2135,6 +2144,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Minimum SV size to include (default: 50).",
         type=int,
         default=50,
+    )
+    parser.add_argument(
+        "--min-alt-reads",
+        help="Minimum number of variant-supporting reads for a call to PASS the "
+        "quality filter (default: 3). Calls below this are emitted with FILTER=LowQual. "
+        "Lower (e.g. 2) to increase recall on low-coverage or noisy loci at some cost "
+        "to precision.",
+        type=int,
+        default=3,
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
