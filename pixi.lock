@@ -435,7 +435,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/5e/2e/b41d8a1a917d6581fc27a35d05561037b048e47df50f27f8ac9c7e27a710/freezegun-1.5.5-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a0/61/5c78b91c3143ed5c14207f463aecfc8f9dbb5092fb2869baf37c273b2705/gitdb-4.0.12-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6a/09/e21df6aef1e1ffc0c816f0522ddc3f6dcded766c3261813131c78a704470/gitpython-3.1.46-py3-none-any.whl
-      - pypi: git+https://github.com/rbturnbull/gotoh#ac6bf126f7f900bcbb5999d7fe7b9573f237df6c
       - pypi: https://files.pythonhosted.org/packages/9b/fb/6a1659424cfab2d8df49f3f02ca11bf7ca303775681f105239b556c9146c/gravis-0.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/f0/0f/310fb31e39e2d734ccaa2c0fb981ee41f7bd5056ce9bc29b2248bd569169/humanfriendly-10.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/f3/a5/5fda0ee4a261a85124011ac0750fec678f00e1b2d4a5502b149a3b4d86d9/immutables-0.21-cp313-cp313-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl
@@ -1184,12 +1183,6 @@ packages:
   purls: []
   size: 1930017
   timestamp: 1764199746105
-- pypi: git+https://github.com/rbturnbull/gotoh#ac6bf126f7f900bcbb5999d7fe7b9573f237df6c
-  name: gotoh
-  version: 0.2.0
-  requires_dist:
-  - numpy>=1.23.3
-  requires_python: '>=3.9,<3.15'
 - pypi: https://files.pythonhosted.org/packages/9b/fb/6a1659424cfab2d8df49f3f02ca11bf7ca303775681f105239b556c9146c/gravis-0.1.0-py3-none-any.whl
   name: gravis
   version: 0.1.0
@@ -4186,7 +4179,7 @@ packages:
 - pypi: ./
   name: svirlpool
   version: 0.1.2
-  sha256: 09c1503f0763f52886d375cd0b17878b072e55da29c52b296624522603002ac5
+  sha256: a53515d4e0eb97c2193dd8ae2c1651ff85724ff25399a8b492292a4a13ed0dc0
   requires_dist:
   - numpy>=2.3.4,<3
   - pandas>=2.3.3,<3
