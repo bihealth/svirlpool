@@ -37,7 +37,7 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "log_file",
+        "--log-file",
         type=Path,
         help="Path to the log file from multisample_sv_calling",
     )

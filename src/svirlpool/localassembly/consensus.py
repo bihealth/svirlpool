@@ -15,12 +15,13 @@ import hashlib
 import json
 import logging
 import os
+import random
 import shlex
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
-from copy import deepcopy
 from pathlib import Path
 
 import attrs
@@ -31,17 +32,74 @@ import pysam
 from Bio import SeqIO, SeqUtils
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from intervaltree import Interval, IntervalTree
-from scipy.sparse import csr_matrix
+from intervaltree import IntervalTree
 from sklearn.cluster import KMeans, SpectralClustering
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
-from . import consensus_class
+from . import consensus_class, consensus_lib
+from . import read_cache as read_cache_mod
 
 matplotlib.use("Agg")  # Use non-interactive backend
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
+
+
+def _cpu_has_avx2() -> bool:
+    """Return True if the current CPU supports AVX2 instructions.
+
+    Reads /proc/cpuinfo on Linux; returns True on any other OS (non-Linux
+    platforms are assumed to be modern enough or are not the target platform).
+    """
+    import platform
+
+    if platform.system() != "Linux":
+        return True
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("flags") and " avx2" in line:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def require_avx2_for_lamassemble() -> None:
+    """Raise a descriptive RuntimeError when AVX2 is absent.
+
+    Call this before invoking lamassemble.  The underlying ``lastdb`` binary
+    shipped by bioconda is compiled with AVX2 support and will die with
+    SIGILL (signal 4 – Illegal Instruction) on CPUs that only have AVX/SSE4.
+    This check gives the user an actionable error message before any work is
+    wasted.
+    """
+    if _cpu_has_avx2():
+        return
+    raise RuntimeError(
+        "lamassemble requires AVX2 CPU instructions, but this CPU does not "
+        "support AVX2.\n"
+        "\n"
+        "Background:\n"
+        "  The bioconda 'last' package (which provides lastdb/lastal used "
+        "internally by lamassemble) is compiled with AVX2 optimisations.  "
+        "Running it on a pre-Haswell CPU (one that has AVX/SSE4 but not "
+        "AVX2) causes lastdb to crash with SIGILL (signal 4 – Illegal "
+        "Instruction) as soon as it tries to build an alignment database.\n"
+        "\n"
+        "How to fix:\n"
+        "  1. Re-run on a Haswell or newer compute node (AVX2 support "
+        "required).  On SLURM clusters add --constraint=haswell (or newer) "
+        "to your job submission so the scheduler places the job on a "
+        "compatible node.\n"
+        "  2. Switch to a CPU-agnostic consensus method by passing "
+        "--consensus-method racon (uses minimap2/racon, which does not "
+        "require AVX2).\n"
+        "  3. Rebuild the 'last' package from source on the target node with "
+        "'make CXXFLAGS=\"-O3 -march=native\"' so the binary only uses "
+        "instructions available on that CPU."
+    )
 
 
 # =============================================================================
@@ -57,13 +115,17 @@ def subsample_alignments(
     with pysam.AlignmentFile(input_bamfile, "rb") as infile:
         alignments = list(infile)
 
-        alignments_filtered = [a for a in alignments if a.query_name != a.reference_name]
+        alignments_filtered = [
+            a for a in alignments if a.query_name != a.reference_name
+        ]
         alignments_by_length = sorted(
             alignments_filtered,
             key=lambda a: a.reference_end - a.reference_start,
             reverse=True,
         )
-        alignments_sampled = alignments_by_length[: min(number, len(alignments_by_length))]
+        alignments_sampled = alignments_by_length[
+            : min(number, len(alignments_by_length))
+        ]
 
         if len(alignments_by_length) == 0:
             # No valid alignments, create empty output file
@@ -212,31 +274,69 @@ def get_full_read_sequences_of_alignments(
             ):
                 break
     # check if for each readname in dict_supplementary_positions, there is a SeqRecord in dict_read_sequences
-    for readname in dict_supplementary_positions.keys():
-        if readname not in dict_read_sequences:
-            raise ValueError(
-                f"readname {readname} not found in dict_read_sequences. Make sure that at least one alignment of the read brings the full read sequence with it."
+    if dict_supplementary_positions:
+        total = len(dict_supplementary_positions)
+        missing = [
+            rn for rn in dict_supplementary_positions if rn not in dict_read_sequences
+        ]
+        found = total - len(missing)
+
+        if total <= 3 and found == 0:
+            log.warning(
+                f"No read sequences could be acquired for {total} hard-clipped read(s): "
+                f"{', '.join(missing)}. Terminating assembly for this region."
             )
-    # for all other alignments, just add the sequence and reverse flag
+            return {}
+
+        if found / total < 0.8:
+            raise ValueError(
+                f"Only {found}/{total} ({100 * found / total:.0f}%) read sequences could be acquired from "
+                f"supplementary alignments. Missing reads: {', '.join(missing)}. "
+                f"Make sure that at least one alignment of each read brings the full read sequence with it."
+            )
+
+        if missing:
+            log.warning(
+                f"Not all read sequences could be acquired: {found}/{total} found. "
+                f"Missing read(s): {', '.join(missing)}."
+            )
+    # for all other alignments, just add the sequence and reverse flag.
+    # Only accept alignments whose query_sequence length matches the inferred
+    # read length — otherwise the stored sequence would be a hard-clipped
+    # fragment rather than the full read DNA.
+    expected_readnames: set[str] = {
+        aln.query_name for crID in crIDs for aln in dict_alignments[crID]
+    }
     for crID in crIDs:
         for aln in dict_alignments[crID]:
-            if aln.query_name not in dict_read_sequences:
-                seq = (
-                    Seq(aln.query_sequence).reverse_complement()
-                    if aln.is_reverse
-                    else Seq(aln.query_sequence)
-                )
-                qualities = (
-                    {"phred_quality": aln.query_qualities}
-                    if aln.query_qualities
-                    else None
-                )
-                dict_read_sequences[aln.query_name] = SeqRecord(
-                    seq=seq,
-                    letter_annotations=qualities,
-                    id=aln.query_name,
-                    name=aln.query_name,
-                )
+            if aln.query_name in dict_read_sequences:
+                continue
+            if not aln.query_sequence:
+                continue
+            if aln.infer_read_length() != len(aln.query_sequence):
+                continue
+            seq = (
+                Seq(aln.query_sequence).reverse_complement()
+                if aln.is_reverse
+                else Seq(aln.query_sequence)
+            )
+            qualities = (
+                {"phred_quality": aln.query_qualities} if aln.query_qualities else None
+            )
+            dict_read_sequences[aln.query_name] = SeqRecord(
+                seq=seq,
+                letter_annotations=qualities,
+                id=aln.query_name,
+                name=aln.query_name,
+            )
+
+    unresolved = [rn for rn in expected_readnames if rn not in dict_read_sequences]
+    if unresolved:
+        log.warning(
+            f"Could not acquire full-length read sequence for {len(unresolved)}/"
+            f"{len(expected_readnames)} read(s): {', '.join(unresolved)}. "
+            "These reads will be excluded from the trimmed read set."
+        )
     return dict_read_sequences
 
 
@@ -253,9 +353,7 @@ def get_read_alignments_for_crs(
     """Returns a dict of the form crID:{sampleID:[alignments]}"""
     dict_alignments: dict[int, list[pysam.AlignedSegment]] = {}
     dict_alignments_wt: dict[int, list[pysam.AlignedSegment]] = {}
-    readnames_in_signals: dict[str] = {
-        signal.readname for cr in crs for signal in cr.sv_signals
-    }
+    _readnames_in_signals = {signal.readname for cr in crs for signal in cr.sv_signals}
     # if no read alignments can be found for one sample,
     for cr in crs:
         # check if cr is of type datatypes.CandidateRegion
@@ -267,14 +365,17 @@ def get_read_alignments_for_crs(
             for aln in f.fetch(cr.chr, max(cr.referenceStart, 0), cr.referenceEnd):
                 if aln.is_secondary:
                     continue
-                if aln.query_name in readnames_in_signals:
-                    if cr.crID not in dict_alignments:
-                        dict_alignments[cr.crID] = []
-                    dict_alignments[cr.crID].append(aln)
-                else:  # add reads as wt if they don't appear in the signals
-                    if cr.crID not in dict_alignments_wt:
-                        dict_alignments_wt[cr.crID] = []
-                    dict_alignments_wt[cr.crID].append(aln)
+                if cr.crID not in dict_alignments:
+                    dict_alignments[cr.crID] = []
+                dict_alignments[cr.crID].append(aln)
+                # if aln.query_name in readnames_in_signals:
+                #     if cr.crID not in dict_alignments:
+                #         dict_alignments[cr.crID] = []
+                #     dict_alignments[cr.crID].append(aln)
+                # else:  # add reads as wt if they don't appear in the signals
+                #     if cr.crID not in dict_alignments_wt:
+                #         dict_alignments_wt[cr.crID] = []
+                #     dict_alignments_wt[cr.crID].append(aln)
     return dict_alignments, dict_alignments_wt
 
 
@@ -452,15 +553,11 @@ def trim_reads(
     for crID in dict_alignments.keys():
         for aln in dict_alignments[crID]:
             if aln.query_name in intervals:
-                # fixed this :)
-                # if aln.cigartuples[-1][0] ==5 or aln.cigartuples[-1][0] == 5:
-                #     raise(f"hard clipped read {read_aug_name} found in alignments. The complete DNA sequence of the read cannot be extracted.")
                 if aln.query_name in cut_reads:
                     continue
-                if aln.infer_read_length() != len(read_records[aln.query_name]):
-                    raise ValueError(
-                        f"read length of {aln.query_name} does not match the length of the read record. read length from alignment: {aln.infer_read_length()}, read length from read record: {len(read_records[aln.query_name])}"
-                    )
+                if aln.query_name not in read_records:
+                    # full-length read sequence could not be acquired; skip
+                    continue
                 start, end, ref_start_chr, ref_start, ref_end_chr, ref_end = intervals[
                     aln.query_name
                 ]
@@ -484,192 +581,83 @@ def trim_reads(
 
 
 # =============================================================================
-# READ CLUSTERING AND REPRESENTATIVE SELECTION
-# =============================================================================
-
-
-def reads_that_cover_the_region(
-    readnames_in_cluster: list[str],
-    max_intervals: dict[str, tuple[int, int, int, int]],
-    cr_reference_start: int,
-    cr_reference_end: int,
-    tolerance: int = 30,
-) -> list[str]:
-    """Find reads that cover a specific region within tolerance."""
-    # limit max_intervals to those that are in readnames
-    cr_interval = Interval(cr_reference_start, cr_reference_end)
-    max_intervals_in_cluster = {
-        readname: Interval(min(interval[2], interval[3]), max(interval[2], interval[3]))
-        for readname, interval in max_intervals.items()
-        if readname in readnames_in_cluster
-    }
-    # for each read, check if it covers the region
-    result = [
-        readname
-        for readname, i in max_intervals_in_cluster.items()
-        if i.overlap_size(cr_interval)
-        >= cr_reference_end - cr_reference_start - tolerance
-    ]
-    return result
-
-
-def merge_signals(
-    signals: list[datatypes.ExtendedSVsignal],
-) -> datatypes.ExtendedSVsignal:
-    """Merge multiple SV signals into a single signal."""
-    # change size, start and end of the signal. pick max of strength
-    merged = deepcopy(signals[0])
-    for signal in signals[1:]:
-        merged.size += signal.size if signal.sv_type == 0 else -signal.size
-        merged.start = min(merged.start, signal.start)
-        merged.end = max(merged.end, signal.end)
-        merged.strength = max(merged.strength, signal.strength)
-    return merged
-
-
-def find_representing_read_per_cr(
-    candidate_region: datatypes.CandidateRegion,
-    dict_max_extents: dict[str, tuple[int, int, int, int]],
-    pool: set[str],
-    cr_reference_start: int,
-    cr_reference_end: int,
-    verbose: bool = False,
-) -> tuple[str, float]:
-    """
-    Find the best representative read for a candidate region.
-
-    To make a consensus with racon, a representing read is chosen. This read should
-    stretch the whole candidate region and have similar extents to others.
-
-    Args:
-        dict_max_extents: dictionary of readnames and their max extents (read_start,read_end,ref_start,ref_end)
-        pool: the set of readnames to choose from
-
-    Returns:
-        tuple: (readname of the chosen read, score)
-    """
-    if len(pool) == 0:
-        raise ValueError("pool must contain at least one read")
-    if len(pool) == 1:
-        return (pool.pop(), 0)
-    # check if all readnames of pool are in dict_max_extents
-    sorted_pool = sorted(pool)
-    if not all(readname in dict_max_extents for readname in pool):
-        raise ValueError(
-            f"not all readnames in pool are in dict_max_extents. pool={pool}, dict_max_extents={dict_max_extents}"
-        )
-    # compute a minimizing ranksum matrix for all reads in the pool
-    # A scores matrix has entries:
-    #   1) sum of indel signals of each read in the given candidate region
-    indel_sums = np.zeros(len(sorted_pool))
-    for i, readname in enumerate(sorted_pool):
-        indel_sums[i] = sum(
-            signal.size
-            for signal in candidate_region.sv_signals
-            if signal.readname == readname and signal.sv_type < 3
-        )
-    # calculate the difference to the mean indel sum for each read
-    mean_indel_sum = np.median(indel_sums)
-    indel_differences = np.abs(indel_sums - mean_indel_sum)
-    #   2) difference of the read coverage to the candidate region
-    distances_to_start = np.array([
-        abs(dict_max_extents[readname][2] - cr_reference_start)
-        for readname in sorted_pool
-    ])
-    distances_to_end = np.array([
-        abs(dict_max_extents[readname][3] - cr_reference_end)
-        for readname in sorted_pool
-    ])
-    distances_to_start_end = distances_to_start + distances_to_end
-    # concat the two distance arrays and the read indices
-    # then rank the distances_to_start_end and then the indel_differences
-    # calculate the sum of both ranks
-    # choose the read with the smallest sum of ranks
-    ranks_start_end = np.argsort(np.argsort(distances_to_start_end))
-    ranks_indel = np.argsort(np.argsort(indel_differences))
-    sum_ranks = ranks_start_end + ranks_indel
-    chosen = np.argmin(sum_ranks)
-    if verbose:  # print the read ins rank sum order. for each read the name, then the distance to start+end, then the indel difference, then the sum of ranks
-        log.info(
-            f"rank sum order for candidate region {candidate_region.crID} ({candidate_region.chr}:{candidate_region.referenceStart}-{candidate_region.referenceEnd}):"
-        )
-        log.info("readname\tdistance_to_start_end\tindel_difference\tsum_of_ranks")
-        for i in np.argsort(sum_ranks):
-            log.info(
-                f"{sorted_pool[i]}\t{distances_to_start_end[i]}\t{indel_differences[i]}\t{sum_ranks[i]}"
-            )
-
-    return sorted_pool[int(chosen)], sum_ranks[chosen]
-
-
-def find_representing_read(
-    crs: dict[int, datatypes.CandidateRegion],
-    all_intervals: dict[str, list[tuple[int, int, str, int, int]]],
-    pool: set[str],
-    verbose: bool = False,
-) -> str:
-    """Find the best representative read across multiple candidate regions. Returns the name of the representative read."""
-    # construct dict of intervaltrees for all intervals
-    dict_interval_trees = {cr.chr: IntervalTree() for cr in crs.values()}
-    for readname, intervals in all_intervals.items():
-        for start, end, ref_chr, ref_start, ref_end in intervals:
-            acutal_ref_start = min(ref_start, ref_end)
-            actural_ref_end = max(ref_start, ref_end)
-            actual_read_start = min(start, end)
-            actural_read_end = max(start, end)
-            dict_interval_trees[ref_chr][acutal_ref_start:actural_ref_end] = (
-                readname,
-                actual_read_start,
-                actural_read_end,
-            )
-    # for each candidate region, find the representative read.
-    # if there are more than 1 different representatives, choose the one that minimizes the ranks sum
-    chosen_reads: list[tuple[str, float]] = []
-    for cr in crs.values():
-        dict_max_extents = {}
-        for interval in dict_interval_trees[cr.chr][
-            cr.referenceStart : cr.referenceEnd
-        ]:
-            if interval.data[0] not in pool:
-                continue
-            dict_max_extents[interval.data[0]] = (
-                interval.data[1],
-                interval.data[2],
-                interval.begin,
-                interval.end,
-            )
-        if dict_max_extents == {}:
-            continue
-        chosen_read = find_representing_read_per_cr(
-            candidate_region=cr,
-            dict_max_extents=dict_max_extents,
-            pool=sorted(dict_max_extents.keys()),
-            cr_reference_start=cr.referenceStart,
-            cr_reference_end=cr.referenceEnd,
-            verbose=verbose,
-        )
-        chosen_reads.append(chosen_read)
-    if len(chosen_reads) == 0:
-        raise ValueError("no representative read could be found")
-    # if there are more than 1 different representatives, choose the one that is most often. If two are equally often, choose the one with the smallest ranks sum
-    dict_chosen_reads = {readname: 0 for readname, score in chosen_reads}
-    for readname, _score in chosen_reads:
-        dict_chosen_reads[readname] += 1
-    max_count = max(dict_chosen_reads.values())
-    chosen_read = sorted(
-        [
-            (readname, score)
-            for readname, score in chosen_reads
-            if dict_chosen_reads[readname] == max_count
-        ],
-        key=lambda x: x[1],
-    )[0]
-    return chosen_read[0]
-
-
-# =============================================================================
 # CONSENSUS GENERATION WITH RACON
 # =============================================================================
+
+
+def _rank_reads_by_similarity(
+    similarity_matrix: np.ndarray,
+    sim_read_names: list[str],
+    cluster_read_names: list[str],
+) -> list[str]:
+    """
+    rank all reads of the cluster by similarity to all others. Largest similarity is ranked highest.
+    """
+    if len(cluster_read_names) == 1:
+        return cluster_read_names
+
+    name_to_idx = {name: i for i, name in enumerate(sim_read_names)}
+    cluster_indices = np.array([name_to_idx[r] for r in cluster_read_names])
+
+    # Sub-matrix for the cluster
+    sub_sim = similarity_matrix[np.ix_(cluster_indices, cluster_indices)]
+    # Mean similarity of each read to all other reads in the cluster
+    mean_similarities = sub_sim.mean(axis=1)
+    # sort reads by mean similarity
+    sim_ranks = np.argsort(-mean_similarities)  # negative for descending order
+    # return the readnames sorted by similarity
+    return [cluster_read_names[i] for i in sim_ranks]
+
+
+def _rank_reads_by_alignment_lengths(
+    pairwise_alignment_lengths_matrix: np.ndarray,
+    sim_read_names: list[str],
+    cluster_read_names: list[str],
+) -> list[str]:
+    """
+    rank all reads of the cluster by the sum of their alignment lengths to all other reads in the cluster. Largest sum is ranked highest.
+    """
+    if len(cluster_read_names) == 1:
+        return cluster_read_names
+
+    name_to_idx = {name: i for i, name in enumerate(sim_read_names)}
+    cluster_indices = np.array([name_to_idx[r] for r in cluster_read_names])
+
+    # Sub-matrix for the cluster
+    sub_sim = pairwise_alignment_lengths_matrix[
+        np.ix_(cluster_indices, cluster_indices)
+    ]
+    # sum alignment lengths of each read to all other reads in the cluster
+    for i in range(sub_sim.shape[0]):
+        sub_sim[i, i] = 0
+    sum_alignment_lengths = sub_sim.sum(axis=1)
+    # sort reads by sum of alignment lengths
+    sim_ranks = np.argsort(-sum_alignment_lengths)  # negative for descending order
+    # return the readnames sorted by sum of alignment lengths
+    return [cluster_read_names[i] for i in sim_ranks]
+
+
+def find_representative_read(
+    similarity_matrix: np.ndarray,
+    pairwise_alignment_lengths_matrix: np.ndarray,
+    sim_read_names: list[str],
+    cluster_read_names: list[str],
+) -> str:
+    """Find the representative read of a cluster based on similarity and alignment lengths."""
+    # rank reads by similarity and alignment lengths
+    ranked_by_similarity = _rank_reads_by_similarity(
+        similarity_matrix, sim_read_names, cluster_read_names
+    )
+    ranked_by_alignment_lengths = _rank_reads_by_alignment_lengths(
+        pairwise_alignment_lengths_matrix, sim_read_names, cluster_read_names
+    )
+    ranksums: np.ndarray = np.zeros(len(cluster_read_names))
+    for i, read in enumerate(cluster_read_names):
+        ranksums[i] = ranked_by_similarity.index(
+            read
+        ) + ranked_by_alignment_lengths.index(read)
+    representative_read = cluster_read_names[np.argmin(ranksums)]
+    return representative_read
 
 
 def make_consensus_with_racon_subsampled(
@@ -785,7 +773,11 @@ def make_consensus_with_lamassemble(
     """Assemble reads with lamassemble and return the consensus sequence as a string."""
     # try to run lamassemble. if it fails or the output is empty, return None.
     # lamassemble writes its output to the command line, so the output should be caught from there.
-    cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
+    # cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
+    cmd_lamassemble = f"lamassemble --name {consensus_name} -P {threads} -f fa -s 2 -g 67 {str(lamassemble_mat)} {str(reads_file)}"
+    log.info(
+        f"Running lamassemble with command:\n{cmd_lamassemble}\nwith timeout of {timeout} seconds"
+    )
     result: str = ""
     try:
         with open(output, "w") as f:
@@ -1028,7 +1020,7 @@ def filter_consensus_paths_object_by_readnames(
         sam_alignments = cpo.sam_alignments
         # at first, copy the reads_fasta and sam_alignments to the tmp_dir
         tmp_reads_fasta = tempfile.NamedTemporaryFile(
-            prefix="reads.", suffix=".fastq", dir=tmp_dir, delete=False
+            prefix="reads.", suffix=".fasta", dir=tmp_dir, delete=False
         )
         shutil.copyfile(reads_fasta, tmp_reads_fasta.name)
         tmp_sam_alignments = tempfile.NamedTemporaryFile(
@@ -1078,10 +1070,10 @@ def align_cutreads_to_representative(
     subprocess.check_call(shlex.split(cmd_index))
     # write reads to tmp fasta
     tmp_reads = tempfile.NamedTemporaryFile(
-        prefix="reads.", suffix=".fastq", dir=tmp_dir, delete=False
+        prefix="reads.", suffix=".fasta", dir=tmp_dir, delete=False
     )
     with open(tmp_reads.name, "w") as f:
-        SeqIO.write([cutreads[readname] for readname in readnames], f, "fastq")
+        SeqIO.write([cutreads[readname] for readname in readnames], f, "fasta")
     # align reads to reference
     tmp_alignments_sam = tempfile.NamedTemporaryFile(
         prefix="alignments.", suffix=".sam", dir=tmp_dir, delete=False
@@ -1118,127 +1110,215 @@ def align_cutreads_to_representative(
 def filter_reads_fastq_by_readnames(
     input_fastq: Path, output_fastq: Path, readnames: set[str]
 ) -> None:
-    """Filter a fastq file by read names."""
+    """Filter a fasta file by read names."""
     with open(output_fastq, "w") as out_f:
-        for record in SeqIO.parse(input_fastq, "fastq"):
+        for record in SeqIO.parse(input_fastq, "fasta"):
             if record.id in readnames:
-                SeqIO.write(record, out_f, "fastq")
+                SeqIO.write(record, out_f, "fasta")
 
 
-# This function is run after cut reads of one cluster have been aligned to their representative. This means that there are
-# cut reads of one cluster written to a file (use for lamassemble or racon), and alignments in sam format to be used with
-# racon, and the representative read in fasta format - to be used with racon.
-# at first, lamassemble assembly is tried, then racon assembly if lamassemble fails.
+def prepare_and_run_racon(
+    reads_fasta: Path,
+    consensus_fasta_path: Path,
+    name: str,
+    threads: int,
+    representative_read: str,
+    tmp_dir_path: Path | None = None,
+    verbose: bool = False,
+) -> str | None:
+    """Extract alignments to the representative from the AVA BAM and polish with racon.
+
+    Args:
+        reads_fasta: Path to a FASTQ file containing the cluster reads.
+        consensus_fasta_path: Path where the consensus FASTA will be written.
+        name: Name for the consensus sequence.
+        threads: Number of threads for racon.
+        representative_read: Name of the chosen representative (centroid) read.
+        tmp_dir_path: Optional directory for temporary files (kept on disk if set).
+        verbose: Enable verbose logging.
+
+    Returns:
+        The consensus sequence string, or None on failure.
+    """
+    log.info(f"prepare and run consensus assembly with racon for '{name}'")
+    records = {r.id: r for r in SeqIO.parse(reads_fasta, "fasta")}
+    if len(records) == 0:
+        log.warning(f"No reads in {reads_fasta} for racon consensus '{name}'.")
+        return None
+    if len(records) == 1:
+        rec = next(iter(records.values()))
+        with open(consensus_fasta_path, "w") as f:
+            SeqIO.write(rec, f, "fasta")
+        return str(rec.seq)
+
+    if representative_read not in records:
+        log.warning(
+            f"Representative read '{representative_read}' not found in reads_fasta for '{name}'. Falling back to longest read."
+        )
+        representative_read = max(records, key=lambda r: len(records[r].seq))
+
+    if verbose:
+        log.info(
+            f"racon: using '{representative_read}' "
+            f"(length {len(records[representative_read].seq)}) as reference for '{name}'"
+        )
+
+    with tempfile.TemporaryDirectory(
+        dir=tmp_dir_path, delete=False if tmp_dir_path else True
+    ) as tmp_dir:
+        # 1. Write the representative read to a temporary FASTA file.
+        tmp_ref = tempfile.NamedTemporaryFile(
+            prefix="racon_ref.",
+            suffix=".fasta",
+            dir=tmp_dir,
+            delete=False if tmp_dir_path else True,
+        )
+        with open(tmp_ref.name, "w") as f:
+            SeqIO.write(records[representative_read], f, "fasta")
+
+        tmp_sam = tempfile.NamedTemporaryFile(
+            prefix="racon_aln.",
+            suffix=".sam",
+            dir=tmp_dir,
+            delete=False if tmp_dir_path else True,
+        )
+        # align the reads of this cluster the the representative
+        align_reads_to_record(
+            reference=tmp_ref.name,
+            reads=reads_fasta,
+            path_alignments=tmp_sam.name,
+            threads=threads,
+        )
+
+        # 3. Polish with racon (reads_fasta is already FASTA — no quality strings).
+        consensus_sequence = make_consensus_with_racon(
+            reference_fasta=Path(tmp_ref.name),
+            sam_alignments=Path(tmp_sam.name),
+            reads_fasta=reads_fasta,
+            name=name,
+            threads=threads,
+            consensus_fasta_path=consensus_fasta_path,
+        )
+    return consensus_sequence
+
+
+# This function is run after cut reads of one cluster have been aligned to
+# their representative read (for racon/lamassemble).
 def assemble_consensus(
-    lamassemble_mat: Path,
+    lamassemble_mat: Path | None | str,
     name: str,
     reads_fasta: Path,
     consensus_fasta_path: Path,
     threads: int,
     timeout: int,
+    method: str,
+    representative_read: str | None = None,
+    tmp_dir_path: Path | None = None,
     verbose: bool = False,
 ) -> str | None:
-    # create a temporary fasta file with the read sequences filtered by chosen reads. only the chosen reads can be kept.
-    with tempfile.TemporaryDirectory():
-        # ====== try lamassemble first ====== #
-        consensus_sequence: str | None = make_consensus_with_lamassemble(
-            lamassemble_mat=lamassemble_mat,
-            reads_file=reads_fasta,
-            output=consensus_fasta_path,
-            consensus_name=name,
-            timeout=timeout,
-            threads=threads,
-            verbose=verbose,
+    if method not in ("lamassemble", "racon"):
+        raise ValueError(
+            f"Unknown consensus method '{method}'. Choose 'lamassemble' or 'racon'."
         )
-        if consensus_sequence is not None:
-            return consensus_sequence
+
+    with tempfile.TemporaryDirectory():
+        if method == "racon":
+            consensus_sequence: str | None = prepare_and_run_racon(
+                reads_fasta=reads_fasta,
+                consensus_fasta_path=consensus_fasta_path,
+                name=name,
+                threads=threads,
+                representative_read=representative_read,
+                tmp_dir_path=tmp_dir_path,
+                verbose=verbose,
+            )
+            if consensus_sequence is not None:
+                return consensus_sequence
+        else:
+            consensus_sequence = make_consensus_with_lamassemble(
+                lamassemble_mat=lamassemble_mat,
+                reads_file=reads_fasta,
+                output=consensus_fasta_path,
+                consensus_name=name,
+                timeout=timeout,
+                threads=threads,
+                verbose=verbose,
+            )
+            if consensus_sequence is not None:
+                return consensus_sequence
     return None
 
 
 def partition_reads_spectral(
-    penalty_matrix: dict[tuple[str, str], float], all_reads: list[str], n_clusters: int
+    similarity_matrix: np.ndarray, read_names: list[str], n_clusters: int
 ) -> dict[str, int]:
+    """Cluster reads via spectral clustering on a precomputed similarity matrix.
+
+    Args:
+        similarity_matrix: Symmetric (n, n) similarity matrix with values in [0, 1].
+        read_names: Ordered list of read names corresponding to matrix rows/columns.
+        n_clusters: Number of clusters to produce.
+
+    Returns:
+        Dict mapping each read name to its cluster label (0-indexed).
     """
-    Use spectral clustering for graph partitioning.
-    Works well for finding balanced clusters with minimum cut.
-    """
-    # Create adjacency matrix (convert penalties to similarities)
-    max_penalty = max(penalty_matrix.values()) if penalty_matrix else 1.0
-
-    # Build sparse similarity matrix
-    n_reads = len(all_reads)
-    read_to_idx = {read: i for i, read in enumerate(all_reads)}
-
-    # Convert penalties to similarities: similarity = max_penalty - penalty
-    similarities = []
-    row_indices = []
-    col_indices = []
-
-    for (read1, read2), penalty in penalty_matrix.items():
-        if read1 in read_to_idx and read2 in read_to_idx:
-            similarity = max_penalty - penalty
-            i, j = read_to_idx[read1], read_to_idx[read2]
-
-            similarities.extend([similarity, similarity])  # symmetric
-            row_indices.extend([i, j])
-            col_indices.extend([j, i])
-
-    # Create sparse matrix
-    similarity_matrix = csr_matrix(
-        (similarities, (row_indices, col_indices)), shape=(n_reads, n_reads)
-    )
-
-    # Apply spectral clustering
     clustering = SpectralClustering(
         n_clusters=n_clusters,
         affinity="precomputed",
-        assign_labels="kmeans",  # or 'discretize'
+        assign_labels="kmeans",
         random_state=42,
     )
 
     labels = clustering.fit_predict(similarity_matrix)
-    return {read: int(label) for read, label in zip(all_reads, labels, strict=True)}
+    return {read: int(label) for read, label in zip(read_names, labels, strict=True)}
 
 
-def handle_isolated_reads(
-    penalty_matrix: dict[tuple[str, str], float],
-    all_reads: list[str],
-    connectivity_threshold: float = 0.1,
-) -> tuple[list[str], list[str]]:
+def pairwise_alignment_lengths(
+    ava_alignments: list[pysam.AlignedSegment], read_names: list[str]
+) -> np.ndarray:
+    """Calculate pairwise alignment lengths from all-vs-all alignments.
+
+    Args:
+        ava_alignments: List of all-vs-all alignments as pysam AlignedSegment objects.
+        read_names: Ordered list of read names corresponding to the alignments.
+
+    Returns:
+        A symmetric (n, n) matrix where entry (i, j) is the length of the alignment
+        between read i and read j, or 0 if no alignment exists.
     """
-    Separate well-connected reads from isolated ones.
-    """
-    # Count connections per read
-    read_connections = dict.fromkeys(all_reads, 0)
+    name_to_idx = {name: i for i, name in enumerate(read_names)}
+    n = len(read_names)
+    alignment_lengths = np.zeros((n, n), dtype=int)
 
-    for (read1, read2), penalty in penalty_matrix.items():
-        # Consider connected if penalty is below threshold
-        if penalty < connectivity_threshold:
-            read_connections[read1] += 1
-            read_connections[read2] += 1
+    for aln in ava_alignments:
+        if aln.is_unmapped or aln.query_name is None or aln.reference_name is None:
+            continue
+        query = aln.query_name
+        ref = aln.reference_name
+        if query not in name_to_idx or ref not in name_to_idx:
+            continue
+        i, j = name_to_idx[query], name_to_idx[ref]
+        length = aln.query_alignment_length or 0
+        alignment_lengths[i, j] = length
+        alignment_lengths[j, i] = length  # Symmetric
 
-    # Separate based on connectivity
-    min_connections = 1  # Adjust based on your needs
-    well_connected = [
-        read for read, count in read_connections.items() if count >= min_connections
-    ]
-    isolated = [
-        read for read, count in read_connections.items() if count < min_connections
-    ]
-
-    return well_connected, isolated
+    return alignment_lengths
 
 
 def consensus_while_clustering(
     samplename: str,
-    lamassemble_mat: Path | str,
+    lamassemble_mat: Path | str | None,
     pool: dict[str, SeqRecord],
     candidate_regions: dict[int, datatypes.CandidateRegion],
     partitions: int,
     timeout: int,
+    consensus_method: str,
     threads: int = 1,
     tmp_dir_path: Path | None = None,
+    figures_dir: Path | None = None,
     verbose: bool = False,
+    densities_weight: float = 1.0,
+    max_intra_distance: float = -1.0,
 ) -> dict[str, consensus_class.Consensus] | None:
     # all-vs-all alignments with minimap2
     # calculate penalties (called score_ras_from_alignments, but its really not a score, but a penalty)
@@ -1246,140 +1326,228 @@ def consensus_while_clustering(
     # find a partition of the graph given N clusters that minimizes the sum of edge weights between clusters and contains all reads (min coverage set)
     crIDs = [cr.crID for cr in candidate_regions.values()]
     result: dict[str, consensus_class.Consensus] | None = None
+    max_ava_attempts = 4
+    ava_pool = dict(pool)  # mutable copy for subsampling
+    excluded_reads: list[str] = []  # reads dropped by subsampling
     try:
         with tempfile.TemporaryDirectory(
             dir=tmp_dir_path, delete=False if tmp_dir_path else True
         ) as tmp_dir:
-            # 1) write all read sequences to a temporary fasta file
-            tmp_all_reads = tempfile.NamedTemporaryFile(
-                dir=tmp_dir,
-                prefix="all_reads.",
-                suffix=".fasta",
-                delete=False if tmp_dir_path else True,
-            )
-            with open(tmp_all_reads.name, "w") as f:
-                SeqIO.write(pool.values(), f, "fasta")
-            # 2) align all reads to each other with minimap2
-            tmp_all_vs_all_sam = tempfile.NamedTemporaryFile(
-                dir=tmp_dir,
-                prefix="all_vs_all.",
-                suffix=".sam",
-                delete=False if tmp_dir_path else True,
-            )
-            try:
-                util.align_reads_with_minimap(
-                    timeout=timeout,
-                    bamout=tmp_all_vs_all_sam.name,
-                    reads=tmp_all_reads.name,
-                    reference=tmp_all_reads.name,
-                    aln_args=" --sam-hit-only --secondary=yes -U 25,75 -H",
-                    tech="ava-ont",
-                    threads=threads,
+            # Retry all-vs-all alignment with subsampling on failure
+            ava_succeeded = False
+            for ava_attempt in range(max_ava_attempts):
+                if len(ava_pool) < 2:
+                    log.warning(
+                        f"Only {len(ava_pool)} read(s) remaining after subsampling. "
+                        "Cannot perform all-vs-all alignment."
+                    )
+                    break
+
+                if ava_attempt > 0:
+                    # Subsample 50% of the current pool
+                    read_names_list = sorted(ava_pool.keys())
+                    n_keep = max(2, len(read_names_list) // 2)
+                    rng = random.Random(42 + ava_attempt)
+                    kept = rng.sample(read_names_list, n_keep)
+                    dropped = [r for r in read_names_list if r not in set(kept)]
+                    excluded_reads.extend(dropped)
+                    ava_pool = {r: ava_pool[r] for r in kept}
+                    log.info(
+                        f"AVA attempt {ava_attempt + 1}/{max_ava_attempts}: "
+                        f"subsampled to {len(ava_pool)} reads "
+                        f"({len(excluded_reads)} reads excluded so far)."
+                    )
+
+                # 1) write all read sequences to a temporary fasta file
+                tmp_all_reads = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix="all_reads.",
+                    suffix=".fasta",
+                    delete=False if tmp_dir_path else True,
                 )
-            except (TimeoutError, subprocess.TimeoutExpired):
-                log.error(f"Alignment with minimap2 timed out after {timeout} seconds.")
+                with open(tmp_all_reads.name, "w") as f:
+                    SeqIO.write(ava_pool.values(), f, "fasta")
+                # 2) align all reads to each other with minimap2
+                tmp_all_vs_all_sam = tempfile.NamedTemporaryFile(
+                    dir=tmp_dir,
+                    prefix="all_vs_all.",
+                    suffix=".bam",
+                    delete=False if tmp_dir_path else True,
+                )
+                try:
+                    util.align_reads_with_minimap(
+                        timeout=timeout,
+                        bamout=tmp_all_vs_all_sam.name,
+                        reads=tmp_all_reads.name,
+                        reference=tmp_all_reads.name,
+                        aln_args=" --sam-hit-only --secondary=yes -U 25,35 -H",
+                        tech="ava-ont",
+                        threads=threads,
+                    )
+                except (
+                    TimeoutError,
+                    subprocess.TimeoutExpired,
+                    subprocess.CalledProcessError,
+                ) as e:
+                    log.warning(
+                        f"AVA alignment failed on attempt {ava_attempt + 1}/{max_ava_attempts} "
+                        f"with {len(ava_pool)} reads: {e}"
+                    )
+                    continue
+
+                # 3) parse alignments using context manager
+                with pysam.AlignmentFile(tmp_all_vs_all_sam.name, mode="r") as aln_file:
+                    all_vs_all_alignments = list(aln_file)
+                if len(all_vs_all_alignments) == 0:
+                    log.warning(
+                        f"No alignments found in AVA on attempt {ava_attempt + 1}/{max_ava_attempts}. "
+                        "Retrying with fewer reads."
+                    )
+                    continue
+
+                ava_succeeded = True
+                break
+
+            if not ava_succeeded:
+                log.error(
+                    f"All {max_ava_attempts} AVA alignment attempts failed. Returning None."
+                )
                 return None
 
-            # 3) parse alignments using context manager
-            with pysam.AlignmentFile(tmp_all_vs_all_sam.name, mode="r") as aln_file:
-                all_vs_all_alignments = list(aln_file)
-            if len(all_vs_all_alignments) == 0:
-                log.warning(
-                    "no alignments found in all-vs-all alignment of reads. Returning None."
+            if len(excluded_reads) > 0:
+                log.info(
+                    f"AVA alignment succeeded with {len(ava_pool)} of {len(pool)} reads. "
+                    f"{len(excluded_reads)} excluded reads will be added to unused reads."
                 )
-                return None
-            # 4) score alignments
-            penalty_matrix: dict[tuple[str, str], float] = {}
-            #  - find all reference names in the alignments
-            #  - for each reference name in the alignments, do scoring
-            all_raf_scores: dict[str, dict[str, float]] = {}
-            for reference_name in {
-                aln.reference_name
-                for aln in all_vs_all_alignments
-                if not aln.is_unmapped
-            }:
-                raf_alignments = [
-                    aln
-                    for aln in all_vs_all_alignments
-                    if aln.reference_name == reference_name and not aln.is_unmapped
-                ]
-                raf_scores = score_ras_from_alignments(
-                    samplename=samplename,
-                    alignments=raf_alignments,
-                    read_sequences=pool,
-                    reference_sequence=(
-                        str(pool[reference_name].seq) if reference_name in pool else ""
-                    ),
-                    min_signal_size=12,
-                    min_bnd_size=100,
-                    reflen=len(pool[reference_name].seq),
-                    verbose=False,
-                )
-                all_raf_scores[reference_name] = raf_scores
 
-            percentile_values = [
-                float(np.percentile(list(raf_scores.values()), 100 / partitions))
-                for raf_scores in all_raf_scores.values()
-                if len(raf_scores) > 0
-            ]
-            dynamic_cutoff = float(np.median(percentile_values))
-            dynamic_cutoff = max(dynamic_cutoff, 3.0)  # at least 3.0
+            # 4) Build similarity matrix via consensus_lib pipeline
+            ava_path = Path(tmp_all_vs_all_sam.name)
+            all_reads = list(ava_pool.keys())
+            read_lengths = {name: len(rec.seq) for name, rec in ava_pool.items()}
             if verbose:
-                print(
-                    f"    DYNAMIC CUTOFF across all reference reads: {dynamic_cutoff:.2f}"
+                # print all read lengths
+                for name, length in read_lengths.items():
+                    log.info(f"Read {name} has length {length}")
+
+            if figures_dir is not None:
+                figures_dir.mkdir(parents=True, exist_ok=True)
+                consensus_lib.visualize_ava_alignments(
+                    ava_path, figures_dir / "ava_alignment_lengths.png"
+                )
+                consensus_lib.visualize_alignment_presence(
+                    ava_path, figures_dir / "alignment_presence.png"
                 )
 
-            for reference_name, raf_scores in all_raf_scores.items():
-                if verbose:
-                    print(f"+++ {reference_name} +++")
-                    for read, value in raf_scores.items():
-                        print(read, value, sep="\t")
-                penalty_matrix.update({
-                    (reference_name, read): score
-                    for read, score in raf_scores.items()
-                    if score <= dynamic_cutoff
-                })
+            ava_signals = consensus_lib.parse_sv_signals_from_ava_alignments(
+                ava_alignments=ava_path,
+                min_signal_size=12,
+                min_bnd_size=100,
+            )
+            size_densities = consensus_lib.sv_size_densities_from_ava_signals(
+                ava_signals, figures_dir=figures_dir
+            )
+            densities = consensus_lib.importance_densities_from_ava_signals(
+                ava_signals=ava_signals,
+                size_densities=size_densities,
+            )
+            directed_signals = consensus_lib.parse_directed_signals_from_ava(
+                ava_alignments=ava_path,
+                min_signal_size=12,
+                min_bnd_size=100,
+            )
 
-            if verbose:
-                # print penalty matrix as a matrix with rows and columns sorted by read names
-                sorted_reads = sorted(pool.keys())
-                log.info("Penalty matrix:")
-                log.info("\t" + "\t".join(sorted_reads))
-                for read1 in sorted_reads:
-                    row = [
-                        (
-                            f"{penalty_matrix.get((read1, read2), float('inf')):.2f}"
-                            if (read1, read2) in penalty_matrix
-                            else "inf"
-                        )
-                        for read2 in sorted_reads
-                    ]
-                    log.info(f"{read1}\t" + "\t".join(row))
+            similarity_matrix, sim_read_names = (
+                consensus_lib.pairwise_similarity_matrix(
+                    directed_signals=directed_signals,
+                    densities=densities,
+                    read_lengths=read_lengths,
+                    all_read_names=all_reads,
+                    densities_weight=densities_weight,
+                )
+            )
 
-            all_reads = list(pool.keys())
+            if figures_dir is not None:
+                consensus_lib.visualize_importance_densities(
+                    densities=densities,
+                    output=figures_dir / "importance_densities.png",
+                )
+                consensus_lib.visualize_size_similarity(
+                    read_lengths=read_lengths,
+                    output=figures_dir / "size_similarity.png",
+                )
+                consensus_lib.visualize_raw_signal_matrix(
+                    directed_signals=directed_signals,
+                    all_read_names=sim_read_names,
+                    output=figures_dir / "raw_signal_matrix.png",
+                )
+                consensus_lib.visualize_normalized_similarity_matrix(
+                    similarity_matrix=similarity_matrix,
+                    read_names=sim_read_names,
+                    output=figures_dir / "normalized_similarity_matrix.png",
+                )
 
-            # 1. Handle isolated reads first - they will end up in the unused reads
-            well_connected, isolated = handle_isolated_reads(penalty_matrix, all_reads)
+            # Detect outlier reads
+            outliers = consensus_lib.detect_outlier_reads(
+                similarity=similarity_matrix,
+                read_names=sim_read_names,
+                read_lengths=read_lengths,
+                n_clusters=partitions,
+            )
+            isolated = list(outliers)
+            # Add reads that were excluded during AVA subsampling
+            isolated.extend(excluded_reads)
+            outlier_set = set(outliers)
+            well_connected = [r for r in sim_read_names if r not in outlier_set]
             log.debug(
-                f"Well-connected reads: {len(well_connected)}, Isolated reads: {len(isolated)}"
+                f"Well-connected reads: {len(well_connected)}, Outlier reads: {len(isolated)}"
             )
 
             if len(well_connected) < partitions:
-                # Not enough well-connected reads for desired partitions
-                # Fall back to simple clustering or adjust partition count
                 effective_partitions = max(1, len(well_connected))
             else:
                 effective_partitions = partitions
+            log.debug(
+                f"Effective number of clusters for spectral clustering: {effective_partitions}. Original requested partitions: {partitions}"
+            )
 
-            # 2. Cluster well-connected reads
+            # Cluster well-connected reads using their sub-matrix
             if len(well_connected) > 1:
+                wc_indices = [
+                    i
+                    for i, name in enumerate(sim_read_names)
+                    if name not in outlier_set
+                ]
+                wc_similarity = similarity_matrix[np.ix_(wc_indices, wc_indices)]
                 clustering_result = partition_reads_spectral(
-                    penalty_matrix=penalty_matrix,
-                    all_reads=well_connected,
+                    similarity_matrix=wc_similarity,
+                    read_names=well_connected,
                     n_clusters=effective_partitions,
                 )
             else:
                 clustering_result = {well_connected[0]: 0} if well_connected else {}
+
+            if figures_dir is not None:
+                _cluster_palette = [
+                    "#e41a1c",
+                    "#377eb8",
+                    "#4daf4a",
+                    "#984ea3",
+                    "#ff7f00",
+                    "#a65628",
+                    "#f781bf",
+                ]
+                node_colors: dict[str, str] = {
+                    name: _cluster_palette[cid % len(_cluster_palette)]
+                    for name, cid in clustering_result.items()
+                }
+                for name in isolated:
+                    node_colors[name] = "#aaaaaa"
+                consensus_lib.visualize_similarity_graph(
+                    similarity_matrix=similarity_matrix,
+                    read_names=sim_read_names,
+                    output=figures_dir / "similarity_graph.png",
+                    node_colors=node_colors,
+                )
 
             # 3. Proceed with consensus generation for each cluster
             for cluster_id in set(clustering_result.values()):
@@ -1395,14 +1563,30 @@ def consensus_while_clustering(
                 reads_fasta = tempfile.NamedTemporaryFile(
                     dir=tmp_dir,
                     prefix="reads.",
-                    suffix=".fastq",
+                    suffix=".fasta",
                     delete=False if tmp_dir else True,
                 )
                 with open(reads_fasta.name, "w") as f:
                     SeqIO.write(
-                        [pool[readname] for readname in chosen_reads], f, "fastq"
+                        [pool[readname] for readname in chosen_reads], f, "fasta"
                     )
                 consensus_name = f"{min(crIDs)}.{cluster_id}"
+
+                # Find centroid read for racon
+                _pairwise_aln_lengths = pairwise_alignment_lengths(
+                    ava_alignments=all_vs_all_alignments, read_names=sim_read_names
+                )
+
+                _representative = (
+                    find_representative_read(
+                        similarity_matrix=similarity_matrix,
+                        pairwise_alignment_lengths_matrix=_pairwise_aln_lengths,
+                        sim_read_names=sim_read_names,
+                        cluster_read_names=chosen_reads,
+                    )
+                    if consensus_method == "racon"
+                    else None
+                )
 
                 consensus_sequence: str | None = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
@@ -1411,6 +1595,9 @@ def consensus_while_clustering(
                     consensus_fasta_path=Path(consensus_fasta.name),
                     threads=threads,
                     timeout=timeout,
+                    method=consensus_method,
+                    representative_read=_representative,
+                    tmp_dir_path=tmp_dir_path,
                     verbose=verbose,
                 )
 
@@ -1466,16 +1653,32 @@ def consensus_while_clustering(
                 reads_fasta = tempfile.NamedTemporaryFile(
                     dir=tmp_dir,
                     prefix="reads.isolated.",
-                    suffix=".fastq",
+                    suffix=".fasta",
                     delete=False if tmp_dir else True,
                 )
                 with open(reads_fasta.name, "w") as f:
                     SeqIO.write(
                         [pool[readname] for readname in isolated if readname in pool],
                         f,
-                        "fastq",
+                        "fasta",
                     )
                 consensus_name = f"{min(crIDs)}.isolated"
+
+                # Find centroid read for racon (isolated reads)
+                _isolated_in_pool = [r for r in isolated if r in pool]
+                _representative = (
+                    find_representative_read(
+                        similarity_matrix=similarity_matrix,
+                        sim_read_names=sim_read_names,
+                        cluster_read_names=_isolated_in_pool,
+                        pairwise_alignment_lengths_matrix=pairwise_alignment_lengths(
+                            ava_alignments=all_vs_all_alignments,
+                            read_names=sim_read_names,
+                        ),
+                    )
+                    if consensus_method == "racon" and len(_isolated_in_pool) > 0
+                    else None
+                )
 
                 consensus_sequence: str | None = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
@@ -1484,6 +1687,9 @@ def consensus_while_clustering(
                     consensus_fasta_path=Path(consensus_fasta.name),
                     threads=threads,
                     timeout=timeout,
+                    method=consensus_method,
+                    representative_read=_representative,
+                    tmp_dir_path=tmp_dir_path,
                     verbose=verbose,
                 )
 
@@ -1528,12 +1734,13 @@ def consensus_while_clustering(
 def consensus_while_clustering_with_kmeans(
     samplename: str,
     dict_summed_indels: dict[str, list[int]],
-    lamassemble_mat: Path | str,
+    lamassemble_mat: Path | str | None,
     pool: dict[str, SeqRecord],
     candidate_regions: dict[int, datatypes.CandidateRegion],
     max_k: int,
     variance_threshold: float,
     distance_threshold: float,
+    consensus_method: str,
     threads: int = 1,
     tmp_dir_path: Path | None = None,
     timeout: int = 120,
@@ -1558,8 +1765,43 @@ def consensus_while_clustering_with_kmeans(
         log.debug("Not enough reads for KMeans clustering. Returning None.")
         return None
 
+    # Filter out reads whose sequence length is an outlier.
+    # Uses the same gap-based approach as consensus_lib._outlier_reads_by_length:
+    # reads are sorted by length, gaps exceeding `length_factor` start a new
+    # cluster, and clusters smaller than a threshold are flagged as outliers.
+    read_lengths = {rn: len(pool[rn].seq) for rn in dict_summed_indels if rn in pool}
+    size_outliers: set[str] = set()
+    if len(read_lengths) >= 3:
+        length_factor = 1.2
+        sorted_by_len = sorted(read_lengths, key=lambda r: read_lengths[r])
+        clusters: list[list[str]] = [[sorted_by_len[0]]]
+        for i in range(1, len(sorted_by_len)):
+            prev_len = read_lengths[sorted_by_len[i - 1]]
+            curr_len = read_lengths[sorted_by_len[i]]
+            if prev_len > 0 and curr_len / prev_len > length_factor:
+                clusters.append([])
+            clusters[-1].append(sorted_by_len[i])
+        min_cluster_size = max(2, int(np.sqrt(len(read_lengths) / max(max_k, 1))))
+        for cluster in clusters:
+            if len(cluster) < min_cluster_size:
+                size_outliers.update(cluster)
+        if size_outliers:
+            log.info(
+                f"KMeans: filtered {len(size_outliers)} size-outlier read(s): "
+                f"{sorted(size_outliers)}"
+            )
+
     # Build the feature matrix: each read has [sum_insertions, sum_deletions]
-    readnames = sorted(dict_summed_indels.keys())
+    readnames = sorted(
+        rn for rn in dict_summed_indels.keys() if rn not in size_outliers
+    )
+
+    if len(readnames) < 2:
+        log.debug(
+            "Not enough reads after size-outlier filtering for KMeans clustering. Returning None."
+        )
+        return None
+
     X = np.array([dict_summed_indels[rn] for rn in readnames], dtype=np.float64)
 
     # 1) Try KMeans clustering with k = 1 .. max_k
@@ -1639,7 +1881,7 @@ def consensus_while_clustering_with_kmeans(
 
     # 2) Assemble consensus for each cluster
     result: dict[str, consensus_class.Consensus] | None = None
-    failed_reads: list[str] = []
+    failed_reads: list[str] = []  # list(size_outliers)
 
     try:
         with tempfile.TemporaryDirectory(
@@ -1668,12 +1910,12 @@ def consensus_while_clustering_with_kmeans(
                 reads_fasta = tempfile.NamedTemporaryFile(
                     dir=tmp_dir,
                     prefix=f"reads.kmeans.{cluster_id}.",
-                    suffix=".fastq",
+                    suffix=".fasta",
                     delete=False if tmp_dir_path else True,
                 )
                 with open(reads_fasta.name, "w") as f:
                     SeqIO.write(
-                        [pool[readname] for readname in chosen_reads], f, "fastq"
+                        [pool[readname] for readname in chosen_reads], f, "fasta"
                     )
                 consensus_name = f"{min(crIDs)}.{cluster_id}"
 
@@ -1684,6 +1926,8 @@ def consensus_while_clustering_with_kmeans(
                     consensus_fasta_path=Path(consensus_fasta.name),
                     threads=threads,
                     timeout=timeout,
+                    method=consensus_method,
+                    representative_read=None,
                     verbose=verbose,
                 )
 
@@ -1739,13 +1983,13 @@ def consensus_while_clustering_with_kmeans(
                 reads_fasta = tempfile.NamedTemporaryFile(
                     dir=tmp_dir,
                     prefix="reads.kmeans.rescue.",
-                    suffix=".fastq",
+                    suffix=".fasta",
                     delete=False if tmp_dir_path else True,
                 )
                 rescue_reads = [rn for rn in failed_reads if rn in pool]
                 with open(reads_fasta.name, "w") as f:
                     SeqIO.write(
-                        [pool[readname] for readname in rescue_reads], f, "fastq"
+                        [pool[readname] for readname in rescue_reads], f, "fasta"
                     )
                 consensus_name = f"{min(crIDs)}.rescue"
 
@@ -1756,6 +2000,8 @@ def consensus_while_clustering_with_kmeans(
                     consensus_fasta_path=Path(consensus_fasta.name),
                     threads=threads,
                     timeout=timeout,
+                    method=consensus_method,
+                    representative_read=None,
                     verbose=verbose,
                 )
 
@@ -2335,6 +2581,7 @@ def create_padding_for_consensus(
     consensus_object: consensus_class.Consensus,
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
+    max_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
 
@@ -2360,6 +2607,7 @@ def create_padding_for_consensus(
         padding_reads=padding_reads,
         padding_intervals=padding_intervals,
         read_records=read_records,
+        max_padding_size=max_padding_size,
     )
     return padding
 
@@ -2459,8 +2707,11 @@ def _create_padding_object(
     padding_reads: tuple[str, str],
     padding_intervals: tuple[tuple[int, int], tuple[int, int]],
     read_records: dict[str, SeqRecord],
+    max_padding_size: int,
 ) -> consensus_class.ConsensusPadding:
     """Creates a new ConsensusPadding object with the padding sequence and the read names."""
+
+    used_padding_size: int = max(len(cons.consensus_sequence) * 2, max_padding_size)
 
     left_padding: Seq = read_records[padding_reads[0]].seq[
         padding_intervals[0][0] : padding_intervals[0][1]
@@ -2468,6 +2719,8 @@ def _create_padding_object(
     # needs to be reverse complimented if the cutread alignment is reverse
     if not read_paddings_for_consensus[padding_reads[0]][4]:
         left_padding = left_padding.reverse_complement()
+    # cap padding length; keep the portion adjacent to the consensus
+    left_padding = left_padding[-used_padding_size:]
 
     right_padding: Seq = read_records[padding_reads[1]].seq[
         padding_intervals[1][0] : padding_intervals[1][1]
@@ -2475,6 +2728,8 @@ def _create_padding_object(
     # needs to be reverse complimented if the cutread alignment is reverse
     if not read_paddings_for_consensus[padding_reads[1]][4]:
         right_padding = right_padding.reverse_complement()
+    # cap padding length; keep the portion adjacent to the consensus
+    right_padding = right_padding[:used_padding_size]
     # add padding to the consensus sequence
     padded_consensus_sequence = Seq(
         left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
@@ -2569,6 +2824,7 @@ def summed_indel_distribution(
                     filter_density_min_bp=30,
                 )
             )
+
     # create a dict of the form read:sum_signals ({str,int})
     read_sum_signals: dict[str, int] = {
         aln.query_name: [0, 0]
@@ -2607,56 +2863,24 @@ def print_indel_distribution(read_sum_signals: dict[str, list[int]]) -> None:
         print(f"{readname}: {sum_inss} insertions, {sum_dels} deletions")
 
 
-def can_stop_meta_iteration(
-    consensus_objects: dict[str, consensus_class.Consensus] | None,
-    expected_clusters: int,
-    initial_pool_readnames: set[str],
-) -> bool:
-    if consensus_objects is None:
-        return False
-    n_results = (
-        0
-        if (consensus_objects is None or len(consensus_objects.keys()) == 0)
-        else len(consensus_objects)
-    )
-    if n_results < expected_clusters:
-        return True
-    # if many reads are unused, then a re-run is necessary
-    used_reads: set[str] = set()
-    for co in consensus_objects.values():
-        used_reads.update(co.get_used_readnames())
-    if len(used_reads) < 0.9 * len(initial_pool_readnames):
-        return False
-    # the number of resulting objects can also be higher, but the surplus objects should
-    # be outliers that have just very few reads
-    # to check this, fill a list with the maximum coverage of each consenus
-    # and sort it
-    # count the number of consensus objects that have less than 25% of the expected reads per haplotype
-    # those are outliers. There should only be as many outliers as the number of expected clusters
-    outlier_count = sum(
-        1
-        for co in consensus_objects.values()
-        if co.get_max_cutread_coverage() < 0.15 * len(used_reads)
-    )
-    real_count = len(consensus_objects) - outlier_count
-    if real_count > expected_clusters:
-        return False
-    if outlier_count > expected_clusters * int(round(0.51)):
-        return False
-    return True
-
-
 def process_consensus_container(
     samplename: str,
     crs_dict: dict[int, datatypes.CandidateRegion],
-    path_alignments: Path,
+    read_cache: "read_cache_mod.ReadSequenceCache",
     copy_number_tracks: Path,
-    lamassemble_mat: Path | str,
+    lamassemble_mat: Path | str | None,
     timeout: int,
+    buffer_clipped_length: int,
+    consensus_method: str,
+    max_padding_size: int,
     threads: int = 1,
-    buffer_clipped_length: int = 10000,
-    tmp_dir_path: Path | None = None,
+    tmp_dir_path: Path | str | None = None,
+    figures_dir: Path | None = None,
     verbose: bool = False,
+    densities_weight: float = 1.0,
+    max_intra_distance: float = -1.0,
+    cn_override: int | None = None,
+    max_copy_number_threshold: int = 4,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -2668,53 +2892,51 @@ def process_consensus_container(
     if verbose:
         for cr in crs_dict.values():
             print(f"CR region on ref: {cr.chr}:{cr.referenceStart}-{cr.referenceEnd}")
-    max_copy_number = copynumber_tracks.query_copynumber_from_regions(
-        bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
-    )
-    log.info(f"Maximum copy number for this container: {max_copy_number}")
-    if max_copy_number > 4:
+    if cn_override is not None:
+        max_copy_number = cn_override
+        log.info(f"Using overridden copy number: {max_copy_number}")
+    else:
+        max_copy_number = max(
+            2,
+            copynumber_tracks.query_copynumber_from_regions(
+                bgzip_bed=copy_number_tracks, regions=regions_for_cn_query
+            ),
+        )  # 2 minimum clusters - maybe this is really bad, idk.
+        log.info(f"Maximum copy number for this container: {max_copy_number}")
+    if max_copy_number > max_copy_number_threshold:
         # don't process this container. Too complex.
         log.warning(
-            f"Maximum copy number {max_copy_number} exceeds threshold of 4. Skipping consensus building for this container."
+            f"Maximum copy number {max_copy_number} exceeds threshold of {max_copy_number_threshold}. Skipping consensus building for this container."
         )
-        # parse unused reads to datatypes.SequenceObject
-        dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: {signal.readname for signal in cr.sv_signals}
-            for cr in crs_dict.values()
-        }
-        dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
-            crID: [] for crID in dict_unused_read_names
-        }
-        for crID, readnames in dict_unused_read_names.items():
-            for readname in readnames:
-                # get the read sequence from the alignment file
-                with pysam.AlignmentFile(str(path_alignments), "rb") as samfile:
-                    read_seqRecord = samfile.fetch(contig=readname)
-                    for read in read_seqRecord:
-                        read_sequence_object = datatypes.SequenceObject(
-                            id=read.query_name,
-                            name=read.query_name,
-                            sequence=read.query_sequence,
-                            description=read.query_name,
-                            qualities=(
-                                read.query_qualities
-                                if read.query_qualities is not None
-                                else None
-                            ),
-                        )
-                        dict_unused_reads[crID].append(read_sequence_object)
-        return {}, dict_unused_reads
+        # Unused-reads aggregation is currently disabled downstream
+        # (`crs_containers_to_consensus` does not propagate them), so we
+        # return empty dicts and avoid the previously broken per-readname
+        # BAM fetch that triggered for these high-CN regions.
+        return {}, {}
 
-    alns, _alns_wt = get_read_alignments_for_crs(
-        crs=list(crs_dict.values()), alignments=path_alignments
-    )
+    # Fetch alignments and full read sequences for every CR via the
+    # shared sliding cache. The cache deduplicates across CRs in the
+    # same batch and avoids reopening the BAM file.
+    alns: dict[int, list[pysam.AlignedSegment]] = {}
+    read_records: dict[str, SeqRecord] = {}
+    for cr in crs_dict.values():
+        cr_alns, cr_seqs = read_cache.fetch_for_cr(cr)
+        alns[cr.crID] = cr_alns
+        read_records.update(cr_seqs)
     if verbose:
         # print the qname and reference intervals of the alignments in alns for each alignment
         for crID, alnlist in alns.items():
             print(f"CR {crID} has {len(alnlist)} alignments:")
             for aln in alnlist:
+                # either left or right break end
+                clipped_left = (
+                    aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0
+                )
+                clipped_right = (
+                    aln.cigartuples[-1][1] if aln.cigartuples[-1][0] == 4 else 0
+                )
                 print(
-                    f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: {aln.cigartuples[0][1] if aln.cigartuples[0][0] == 4 else 0}"
+                    f"\t{aln.query_name}: {aln.reference_name}:{aln.reference_start}-{aln.reference_end}, clipped: left={clipped_left}, right={clipped_right}"
                 )
     dict_all_intervals = get_read_alignment_intervals_in_cr(
         crs=list(crs_dict.values()),
@@ -2723,22 +2945,20 @@ def process_consensus_container(
     )
     if verbose:
         print(f"dict_all_intervals: {dict_all_intervals}")
-    # TODO: continue!
+
     max_intervals = get_max_extents_of_read_alignments_on_cr(
         dict_all_intervals=dict_all_intervals
     )
     if verbose:
         print(f"max_intervals: {max_intervals}")
-    read_records: dict[str, SeqRecord] = get_full_read_sequences_of_alignments(
-        dict_alignments=alns, path_alignments=path_alignments
-    )
     log.info("cutting reads from alignments")
     cutreads: dict[str, SeqRecord] = trim_reads(
         dict_alignments=alns, intervals=max_intervals, read_records=read_records
     )
-    # if there is only one cutread, return an empty consensus dict and add it to the dict_unused_reads
-    # print the distribution of ins-dels of all alignments
-    # parse all alignments to sv signals
+    log.info(f"number of reads: {len(cutreads)}")
+    log.info(
+        f"summed trimmed reads bp: {sum(len(read.seq) for read in cutreads.values())}"
+    )
 
     dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
         alns=alns, crs=crs_dict
@@ -2750,6 +2970,7 @@ def process_consensus_container(
 
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
+
     res = consensus_while_clustering_with_kmeans(
         samplename=samplename,
         dict_summed_indels=dict_summed_indels,
@@ -2763,6 +2984,7 @@ def process_consensus_container(
         tmp_dir_path=tmp_dir_path,
         timeout=timeout,
         verbose=verbose,
+        consensus_method=consensus_method,
     )
     if not res:
         res = consensus_while_clustering(
@@ -2774,7 +2996,11 @@ def process_consensus_container(
             timeout=timeout,
             threads=threads,
             tmp_dir_path=tmp_dir_path,
+            figures_dir=figures_dir,
             verbose=verbose,
+            densities_weight=densities_weight,
+            max_intra_distance=max_intra_distance,
+            consensus_method=consensus_method,
         )
     if res is not None:
         consensus_objects.update(res)
@@ -2885,7 +3111,10 @@ def process_consensus_container(
     # add padding to the consensus objects
     for consensus in consensus_objects.values():
         consensus.consensus_padding = create_padding_for_consensus(
-            consensus_object=consensus, cutreads=cutreads, read_records=read_records
+            consensus_object=consensus,
+            cutreads=cutreads,
+            read_records=read_records,
+            max_padding_size=max_padding_size,
         )
 
     # for each consensus, create a dict
@@ -2902,21 +3131,69 @@ def load_crIDs_from_containers_db(path_db: Path) -> list[int]:
     return crIDs
 
 
+def _load_crIDs_from_batch_tsv(batch_tsv: Path, batch_id: int) -> list[int]:
+    """Return the comma-separated crID list of the requested batch row.
+
+    The TSV is written by :mod:`svirlpool.candidateregions.crs_to_batches`
+    with columns ``batch_id\tchr\tstart\tend\tcrIDs`` (header row).
+    """
+    if not batch_tsv.exists():
+        raise FileNotFoundError(f"Batch TSV {batch_tsv} does not exist.")
+    with open(batch_tsv) as f:
+        header = f.readline().rstrip("\n").split("\t")
+        try:
+            batch_id_col = header.index("batch_id")
+            crIDs_col = header.index("crIDs")
+        except ValueError as e:
+            raise ValueError(
+                f"Batch TSV {batch_tsv} is missing expected columns 'batch_id' / 'crIDs'."
+            ) from e
+        for line in f:
+            fields = line.rstrip("\n").split("\t")
+            if not fields or not fields[0]:
+                continue
+            if int(fields[batch_id_col]) == batch_id:
+                csv = fields[crIDs_col].strip()
+                if not csv:
+                    return []
+                return [int(x) for x in csv.split(",")]
+    raise ValueError(f"Batch id {batch_id} not found in {batch_tsv}.")
+
+
 def crs_containers_to_consensus(
     samplename: str,
     input: Path,
     copy_number_tracks: Path,
     output: Path,
-    lamassemble_mat: Path | str,
+    lamassemble_mat: Path | str | None,
     path_alignments: Path,
     threads: int,
     buffer_clipped_sequence: int,
     timeout: int,
+    consensus_method: str,
+    reference: Path,
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
+    figures_dir: Path | None = None,
     verbose: bool = False,
+    densities_weight: float = 1.0,
+    max_intra_distance: float = -1.0,
+    fasta_debug_path: Path | None = None,
+    cn_override: int | None = None,
+    max_padding_size: int = 30000,
+    max_copy_number_threshold: int = 4,
 ) -> None:
-    if not Path(lamassemble_mat).exists():
+    """Batch driver: process a list of containers and stream JSONL results.
+
+    Containers are sorted by genomic coordinate within their chromosome
+    and processed in order so that a single
+    :class:`read_cache_mod.ReadSequenceCache` (one open BAM handle) can
+    be shared across the whole batch. Each container produces one line
+    of JSON (a serialised :class:`consensus_class.CrsContainerResult`)
+    that is written incrementally to ``output``; nothing accumulates in
+    memory.
+    """
+    if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
             f"lamassemble matrix file {lamassemble_mat} does not exist."
         )
@@ -2950,74 +3227,154 @@ def crs_containers_to_consensus(
         # if no real crIDs are left, return with warning
         if not any(crID in existing_crIDs for crID in crIDs):
             log.error("No crIDs to process. Exiting.")
+            # still create an empty output file so snakemake sees the target
+            with open(output, "w"):
+                pass
             return
     log.info(f"Loading crs containers from database at {input}.")
     containers = load_crs_containers_from_db(path_db=input, crIDs=crIDs)
     log.info("loaded data")
-    all_consensuses: dict[str, consensus_class.Consensus] = {}
-    all_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
-    for crID, container in containers.items():
-        log.info(f"Processing crID {crID}.")
-        crs_dict = {cr.crID: cr for cr in container["crs"]}
-        # connecting_reads = container['connecting_reads']
-        consensuses, unused_reads = process_consensus_container(
-            samplename=samplename,
-            crs_dict=crs_dict,
-            tmp_dir_path=tmp_dir_path,
-            path_alignments=path_alignments,
-            copy_number_tracks=copy_number_tracks,
-            threads=1,
-            buffer_clipped_length=buffer_clipped_sequence,
-            lamassemble_mat=lamassemble_mat,
-            timeout=timeout,
-            verbose=verbose,
-        )
-        all_unused_reads.update(unused_reads)
-        if not consensuses:
-            continue
-        all_consensuses.update(consensuses)
-    # do nothing and log a warning if no consensuses were generated
-    result = consensus_class.CrsContainerResult(
-        consensus_dicts=all_consensuses, unused_reads=all_unused_reads
+
+    # Sort containers by genomic coordinate so the sliding cache stays
+    # efficient. Key by (chromosome, leftmost CR start, representative
+    # crID) for deterministic order.
+    def _container_sort_key(item):
+        rep_crID, container = item
+        crs = container["crs"]
+        chrs = [cr.chr for cr in crs]
+        min_start = min(cr.referenceStart for cr in crs)
+        primary_chr = min(chrs)
+        return (primary_chr, min_start, rep_crID)
+
+    sorted_containers = sorted(containers.items(), key=_container_sort_key)
+    n_containers = len(sorted_containers)
+
+    _ref_fasta: pysam.FastaFile | None = (
+        pysam.FastaFile(str(reference)) if reference is not None else None
     )
+    cache = read_cache_mod.ReadSequenceCache(path_alignments=path_alignments)
+    n_written = 0
+    try:
+        with open(output, "w") as out_f:
+            for idx, (rep_crID, container) in enumerate(sorted_containers):
+                log.info(
+                    f"PROGRESS [{idx + 1}/{n_containers}] Processing container (representative crID {rep_crID})."
+                )
+                crs_dict = {cr.crID: cr for cr in container["crs"]}
+                consensuses, _unused = process_consensus_container(
+                    samplename=samplename,
+                    crs_dict=crs_dict,
+                    read_cache=cache,
+                    tmp_dir_path=tmp_dir_path,
+                    copy_number_tracks=copy_number_tracks,
+                    threads=1,
+                    buffer_clipped_length=buffer_clipped_sequence,
+                    lamassemble_mat=lamassemble_mat,
+                    timeout=timeout,
+                    figures_dir=figures_dir,
+                    verbose=verbose,
+                    densities_weight=densities_weight,
+                    max_intra_distance=max_intra_distance,
+                    cn_override=cn_override,
+                    consensus_method=consensus_method,
+                    max_padding_size=max_padding_size,
+                    max_copy_number_threshold=max_copy_number_threshold,
+                )
 
-    # for debugging, check if all consensus objects in result.consensus_dicts have non empty original_regions
-    for consensusID, consensus in result.consensus_dicts.items():
-        if len(consensus.original_regions) == 0:
-            raise ValueError(f"Consensus {consensusID} has no original regions.")
+                # Validate consensuses immediately so the offending container
+                # is identified in the log if validation fails.
+                for consensusID, consensus in consensuses.items():
+                    if len(consensus.original_regions) == 0:
+                        raise ValueError(
+                            f"Consensus {consensusID} has no original regions."
+                        )
 
-    if verbose:
-        # list each consensus by name and the number of reads that were used to generate it
-        log.info(
-            f"A total of {len(result.consensus_dicts)} consensuses were generated."
-        )
-        for consensusID, consensus in result.consensus_dicts.items():
-            log.info(
-                f"Consensus {consensusID} was generated with {len(set(consensus.get_used_readnames()))} reads and max depth {consensus.get_max_cutread_coverage()}."
-            )
-        for crID, unused_reads in result.unused_reads.items():
-            log.info(
-                f"crID {crID} has {len(unused_reads)} unused reads: {[seqobj.id for seqobj in unused_reads]}"
-            )
+                # Stream this container's result as one JSONL record. Even
+                # when no consensus could be built we emit an empty result
+                # so the line count matches the container count.
+                container_result = consensus_class.CrsContainerResult(
+                    consensus_dicts=consensuses,
+                    unused_reads={},
+                )
+                out_f.write(json.dumps(container_result.unstructure()) + "\n")
+                out_f.flush()
+                n_written += 1
 
-    if verbose and tmp_dir_path is not None:
-        # write all consensus padded sequences to a fasta file in the tmp dir
-        fasta_path = (
-            Path(tmp_dir_path) / f"{samplename}_consensus_padded_sequences.fasta"
-        )
-        log.info(f"Writing padded consensus sequences to {fasta_path}.")
-        with open(fasta_path, "w") as f:
-            for consensusID, consensus in result.consensus_dicts.items():
-                if consensus.consensus_padding is not None:
-                    f.write(f">{consensusID}\n{consensus.consensus_padding.sequence}\n")
+                if verbose and consensuses:
+                    log.info(
+                        f"Container {rep_crID}: {len(consensuses)} consensuses; cache holds {cache.current_size_reads()} reads ({cache.current_size_bp()} bp)."
+                    )
 
-    log.info(f"Writing result to {output}.")
-    with open(output, "w") as f:
-        print(json.dumps(result.unstructure()), file=f)
+                if fasta_debug_path is not None:
+                    _mode = "w" if idx == 0 else "a"
+                    with open(fasta_debug_path, _mode) as f_debug:
+                        for consensusID, consensus in consensuses.items():
+                            if consensus.consensus_padding is not None:
+                                f_debug.write(
+                                    f">{consensusID}\n{consensus.consensus_padding.sequence}\n"
+                                )
+                if verbose and tmp_dir_path is not None:
+                    fasta_path = (
+                        Path(tmp_dir_path)
+                        / f"{samplename}_consensus_padded_sequences.fasta"
+                    )
+                    _mode = "w" if idx == 0 else "a"
+                    with open(fasta_path, _mode) as f_tmp:
+                        for consensusID, consensus in consensuses.items():
+                            if consensus.consensus_padding is not None:
+                                f_tmp.write(
+                                    f">{consensusID}\n{consensus.consensus_padding.sequence}\n"
+                                )
+
+                # Advance the sliding window so the cache can evict any
+                # read whose alignment ends before the next container
+                # starts on the same chromosome.
+                next_window_start: int | float
+                if idx + 1 < n_containers:
+                    next_rep, next_container = sorted_containers[idx + 1]
+                    next_chrs = {cr.chr for cr in next_container["crs"]}
+                    cur_chrs = {cr.chr for cr in container["crs"]}
+                    if next_chrs == cur_chrs and len(cur_chrs) == 1:
+                        next_window_start = min(
+                            cr.referenceStart for cr in next_container["crs"]
+                        )
+                    else:
+                        # chromosome change is handled by the cache itself
+                        # on the next fetch_for_cr call; evict everything
+                        # now to bound memory.
+                        next_window_start = float("inf")
+                else:
+                    next_window_start = float("inf")
+                cache.advance(window_start=next_window_start)
+    finally:
+        if _ref_fasta is not None:
+            _ref_fasta.close()
+        cache.close()
+
+    log.info(
+        f"Wrote {n_written} container results to {output}; "
+        f"cache stats: {cache.fetch_calls} fetch calls, "
+        f"{cache.cache_misses_reads} new reads loaded, "
+        f"{cache.cache_hits_reads} reused from cache."
+    )
     log.info("done")
 
 
 def run_consensus_script(args, **kwargs):
+    if args.consensus_method == "lamassemble" and args.lamassemble_mat is None:
+        raise ValueError(
+            "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+        )
+    if args.consensus_method == "lamassemble":
+        require_avx2_for_lamassemble()
+    crIDs = args.crIDs
+    if getattr(args, "batch_tsv", None) is not None:
+        if getattr(args, "batch_id", None) is None:
+            raise ValueError("--batch-id is required when --batch-tsv is given.")
+        crIDs = _load_crIDs_from_batch_tsv(Path(args.batch_tsv), int(args.batch_id))
+        log.info(
+            f"Loaded {len(crIDs)} container crIDs for batch {args.batch_id} from {args.batch_tsv}."
+        )
     crs_containers_to_consensus(
         samplename=args.samplename,
         input=args.input,
@@ -3025,12 +3382,21 @@ def run_consensus_script(args, **kwargs):
         copy_number_tracks=args.copy_number_tracks,
         output=args.output,
         lamassemble_mat=args.lamassemble_mat,
+        reference=args.reference,
         threads=args.threads,
-        crIDs=args.crIDs,
+        crIDs=crIDs,
         buffer_clipped_sequence=args.buffer_clipped_sequence,
         timeout=args.timeout,
         tmp_dir_path=args.tmp_dir_path,
+        figures_dir=Path(args.figures_dir) if args.figures_dir else None,
         verbose=args.verbose,
+        densities_weight=args.densities_weight,
+        max_intra_distance=args.max_intra_distance,
+        fasta_debug_path=args.fasta_debug_path,
+        cn_override=args.cn_override,
+        consensus_method=args.consensus_method,
+        max_padding_size=args.max_padding_size,
+        max_copy_number_threshold=args.max_copy_number,
     )
 
 
@@ -3078,10 +3444,25 @@ def get_consensus_parser(
         help="Path to the output file that is an unstructured CrsContainerResult object.",
     )
     parser.add_argument(
-        "--lamassemble-mat",
+        "-r",
+        "--reference",
         type=Path,
         required=True,
-        help="Path to the lamassemble mat file.",
+        help="Path to the reference genome in FASTA(.gz) format.",
+    )
+    parser.add_argument(
+        "--lamassemble-mat",
+        type=Path,
+        required=False,
+        default=None,
+        help="Path to the lamassemble mat file. Required when --consensus-method is 'lamassemble'.",
+    )
+    parser.add_argument(
+        "--consensus-method",
+        type=str,
+        choices=["lamassemble", "racon"],
+        default="lamassemble",
+        help="Method used for consensus assembly: 'lamassemble' (default) or 'racon'.",
     )
     parser.add_argument(
         "-t", "--threads", type=int, default=1, help="Number of threads to use."
@@ -3093,7 +3474,40 @@ def get_consensus_parser(
         required=False,
         default=None,
         nargs="+",
-        help="List of crIDs to process. If not given, all crIDs are processed.",
+        help="List of crIDs to process. If not given, all crIDs are processed. Ignored when --batch-tsv is set.",
+    )
+    parser.add_argument(
+        "--batch-tsv",
+        type=Path,
+        required=False,
+        default=None,
+        help="Path to a batches TSV produced by svirlpool.candidateregions.crs_to_batches. "
+        "When given together with --batch-id, the crIDs to process are loaded from the matching row.",
+    )
+    parser.add_argument(
+        "--batch-id",
+        type=int,
+        required=False,
+        default=None,
+        help="Integer id of the batch in --batch-tsv to process.",
+    )
+    parser.add_argument(
+        "--cn-override",
+        type=int,
+        required=False,
+        default=None,
+        help="Instead of using the copy number from the estimation track, this fixed value is used.",
+    )
+    parser.add_argument(
+        "--max-copy-number",
+        type=int,
+        required=False,
+        default=4,
+        help="Maximum estimated copy number of a candidate-region container for which a "
+        "consensus is still attempted (default: 4). Containers exceeding this are skipped as "
+        "too complex, producing no consensus (and therefore no SV calls) for that region. "
+        "Raise (e.g. 6-8) to recover SVs in higher-copy/complex tandem-repeat regions at the "
+        "cost of runtime and potential noise.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",
@@ -3105,8 +3519,8 @@ def get_consensus_parser(
     parser.add_argument(
         "--timeout",
         type=int,
-        default=480,
-        help="Timeout for consensus generation. Default is 480 (seconds)",
+        default=240,
+        help="Timeout for all vs all alignment and consensus generation. Default is 240 (seconds)",
     )
     parser.add_argument(
         "--tmp-dir-path",
@@ -3118,6 +3532,17 @@ def get_consensus_parser(
         "--logfile", default=None, required=False, help="Path to the logfile."
     )
     parser.add_argument(
+        "--diag-logfile",
+        default=None,
+        required=False,
+        help="Path to a separate diagnostic/technical logfile. Captures runtime "
+        "environment (host, SLURM vars, cgroup memory limit), periodic RSS "
+        "samples, received signals (SIGTERM/SIGUSR1/SIGXCPU/...), uncaught "
+        "exceptions and peak memory at exit. Intended for diagnosing OOM "
+        "kills, time-limit terminations and similar HPC-side failures "
+        "without polluting --logfile.",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -3125,12 +3550,257 @@ def get_consensus_parser(
         help="Set the logging level (default: INFO).",
     )
     parser.add_argument(
+        "--figures-dir",
+        type=Path,
+        required=False,
+        default=None,
+        help="Directory to write diagnostic figures (AVA alignments, importance densities, size similarity, etc.) per candidate-region cluster. Created if it does not exist.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
         help="prints the alignments in each clustering iteration to the terminal.",
     )
+    parser.add_argument(
+        "--densities-weight",
+        type=float,
+        default=0.0,
+        help="Scaling factor for importance density weights in the pairwise similarity matrix. "
+        "0.0: densities have no effect (plain signal counts); "
+        ">0.0: density influence amplified. Default is 0.0.",
+    )
+    parser.add_argument(
+        "--max-intra-distance",
+        type=float,
+        default=-1.0,
+        help="Hard upper bound on how much intra-cluster distance is tolerated. "
+        "When set to a value > 0, any pair of reads whose signal-only distance exceeds "
+        "this threshold will not be in the same cluster. "
+        "-1.0 disables the threshold. Default is -1.0.",
+    )
+    parser.add_argument(
+        "--fasta-debug-path",
+        type=Path,
+        required=False,
+        default=None,
+        help="If provided, write the final padded consensus sequences to a FASTA file at this path.",
+    )
+    parser.add_argument(
+        "--max-padding-size",
+        type=int,
+        required=False,
+        default=100000,
+        help="Minimum number of bases to use for padding flanks (default: 10000).",
+    )
     return parser
+
+
+# =============================================================================
+# DIAGNOSTIC LOGGING HELPERS
+# =============================================================================
+#
+# Two log streams are maintained:
+#   * ``log`` (this module's standard logger, propagating to root) — the
+#     algorithm-oriented log that goes to --logfile.
+#   * ``diag_log`` (dedicated, non-propagating) — a technical/diagnostic log
+#     for environment info, signal receipt, periodic RSS samples and uncaught
+#     exceptions. It writes to --diag-logfile (when given) and to stderr.
+#
+# Two streams keep the algorithm log readable while still preserving the
+# information needed to identify OOM kills, time-limit terminations,
+# illegal-instruction crashes, etc. on HPC nodes. SIGKILL leaves no Python
+# traceback, so the diagnostic handlers flush after every record.
+
+
+diag_log = logging.getLogger("svirlpool.consensus.diagnostics")
+diag_log.propagate = False
+
+
+def _read_cgroup_mem_limit_bytes():
+    for path in (
+        "/sys/fs/cgroup/memory.max",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+    ):
+        try:
+            with open(path) as fh:
+                value = fh.read().strip()
+            if value in ("", "max"):
+                return None
+            return int(value)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _current_rss_bytes():
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
+class _FlushingFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        try:
+            self.flush()
+        except Exception:
+            pass
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        try:
+            self.flush()
+        except Exception:
+            pass
+
+
+def _flush_all_log_handlers():
+    for lg in (logging.getLogger(), diag_log):
+        for h in lg.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+
+def _log_environment_diagnostics():
+    import socket
+
+    diag_log.info("host=%s pid=%d", socket.gethostname(), os.getpid())
+    slurm_keys = (
+        "SLURM_JOB_ID",
+        "SLURM_RESTART_COUNT",
+        "SLURM_NODELIST",
+        "SLURM_MEM_PER_NODE",
+        "SLURM_MEM_PER_CPU",
+        "SLURM_CPUS_PER_TASK",
+        "SLURM_NTASKS",
+        "SLURM_JOB_NAME",
+    )
+    for k in slurm_keys:
+        if k in os.environ:
+            diag_log.info("%s=%s", k, os.environ[k])
+    cg = _read_cgroup_mem_limit_bytes()
+    if cg is not None:
+        diag_log.info(
+            "cgroup memory limit: %d bytes (%.1f MiB)", cg, cg / (1024 * 1024)
+        )
+    else:
+        diag_log.info("cgroup memory limit: unavailable")
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key.strip() in ("MemTotal", "MemAvailable"):
+                    diag_log.info("/proc/meminfo %s: %s", key.strip(), rest.strip())
+    except OSError:
+        pass
+
+
+def _install_excepthook():
+    def _hook(exc_type, exc_value, exc_tb):
+        diag_log.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+        _flush_all_log_handlers()
+
+    sys.excepthook = _hook
+
+
+def _install_signal_handlers():
+    import signal
+
+    # SLURM sends SIGUSR1 (when --signal=USR1@... is configured) before a job
+    # is killed for time-limit; SIGTERM precedes the SIGKILL on cancellation;
+    # SIGXCPU is raised when CPU time soft-limit is exceeded.
+    signals = [signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGXCPU]
+    for name in ("SIGUSR1", "SIGUSR2"):
+        if hasattr(signal, name):
+            signals.append(getattr(signal, name))
+
+    def _handler(signum, frame):
+        try:
+            sig_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            sig_name = str(signum)
+        rss = _current_rss_bytes()
+        rss_str = f"{rss / (1024 * 1024):.1f} MiB" if rss else "unknown"
+        diag_log.critical(
+            "Received signal %s (%d). Current RSS: %s", sig_name, signum, rss_str
+        )
+        _flush_all_log_handlers()
+        # Restore default disposition and re-raise so the exit status reflects
+        # the signal (Snakemake/SLURM accounting then shows the real cause).
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in signals:
+        try:
+            signal.signal(sig, _handler)
+        except (OSError, ValueError):
+            pass
+
+
+def _start_memory_monitor(interval_s: float = 10.0):
+    """Periodically log RSS so we can correlate the last log line with a sudden
+    SIGKILL (the OOM killer does not give the process a chance to log)."""
+    import threading
+
+    stop_event = threading.Event()
+
+    def _run():
+        while not stop_event.wait(interval_s):
+            rss = _current_rss_bytes()
+            if rss is not None:
+                diag_log.info("memory-monitor RSS=%.1f MiB", rss / (1024 * 1024))
+                _flush_all_log_handlers()
+
+    threading.Thread(target=_run, name="memory-monitor", daemon=True).start()
+    return stop_event
+
+
+def _register_peak_memory_atexit():
+    import atexit
+    import resource as _resource
+
+    def _log_peak():
+        try:
+            ru = _resource.getrusage(_resource.RUSAGE_SELF)
+            # ru_maxrss is in KiB on Linux
+            diag_log.info(
+                "exit: peak_rss=%.1f MiB user_cpu=%.1fs sys_cpu=%.1fs",
+                ru.ru_maxrss / 1024.0,
+                ru.ru_utime,
+                ru.ru_stime,
+            )
+        except Exception:
+            pass
+        _flush_all_log_handlers()
+
+    atexit.register(_log_peak)
+
+
+def _configure_diagnostic_logger(log_level: int, diag_logfile: str | None) -> None:
+    formatter = logging.Formatter("%(asctime)s - DIAG - %(levelname)s - %(message)s")
+    diag_log.setLevel(log_level)
+    diag_log.handlers.clear()
+
+    stderr_handler = _FlushingStreamHandler()
+    stderr_handler.setLevel(log_level)
+    stderr_handler.setFormatter(formatter)
+    diag_log.addHandler(stderr_handler)
+
+    if diag_logfile:
+        diag_file_handler = _FlushingFileHandler(diag_logfile, mode="w")
+        diag_file_handler.setLevel(log_level)
+        diag_file_handler.setFormatter(formatter)
+        diag_log.addHandler(diag_file_handler)
 
 
 # =============================================================================
@@ -3143,37 +3813,45 @@ def main():
     parser = get_consensus_parser()
     args = parser.parse_args()
 
-    # Convert string log level to logging constant
     log_level = getattr(logging, args.log_level.upper())
-
-    # Configure logging formatter
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
-    # Get the root logger to ensure all loggers in the hierarchy are configured
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-
-    # Remove any existing handlers to avoid duplicates
     root_logger.handlers.clear()
 
-    # Add console handler
-    console_handler = logging.StreamHandler()
+    console_handler = _FlushingStreamHandler()
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # Add file handler if logfile is specified
     if args.logfile:
-        file_handler = logging.FileHandler(str(args.logfile), mode="w")
+        file_handler = _FlushingFileHandler(str(args.logfile), mode="w")
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
-    log.info(f"Starting consensus generation with log level {args.log_level}")
-    run_consensus_script(args)
+    _configure_diagnostic_logger(
+        log_level=log_level,
+        diag_logfile=str(args.diag_logfile) if args.diag_logfile else None,
+    )
+
+    _install_excepthook()
+    _install_signal_handlers()
+    _register_peak_memory_atexit()
+    _log_environment_diagnostics()
+    mem_monitor_stop = _start_memory_monitor(interval_s=10.0)
+
+    log.info("Starting consensus generation with log level %s", args.log_level)
+    diag_log.info("Starting consensus generation with log level %s", args.log_level)
+    try:
+        run_consensus_script(args)
+    finally:
+        mem_monitor_stop.set()
     log.info("Consensus generation completed")
+    diag_log.info("Consensus generation completed")
     return
 
 

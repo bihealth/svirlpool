@@ -73,6 +73,13 @@ def validate_input(args) -> None:
     check_annotations_file(
         input=Path(args.mononucleotides), reference_fai=reference_fai
     )
+    if (
+        getattr(args, "consensus_method", "lamassemble") == "lamassemble"
+        and args.lamassemble_mat is None
+    ):
+        raise ValueError(
+            "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+        )
 
 
 def config_create_json(config: dict, path_json: Path):
@@ -85,17 +92,20 @@ def run_wf(args):
     if not Path(args.workdir).exists():
         Path(args.workdir).mkdir(parents=True)
     dict_args = vars(args)
-    # remove 'fast'and 'func' keys from dict_args
+    # remove 'fast', 'func', and snakemake-level flags from the workflow config
     dict_args.pop("func")
     dict_args.pop("fast")
+    rerun_triggers = dict_args.pop("rerun_triggers", None)
     config_create_json(config=dict_args, path_json=Path(args.workdir) / "config.json")
     path_base_wf = Path(__file__).parent.parent / "workflows/main.smk"
+    rerun_triggers_arg = f"--rerun-triggers {rerun_triggers}" if rerun_triggers else ""
     cmd_wf = split(
         f"snakemake \
         --directory {str(args.workdir)} \
         {'--unlock' if args.snakemake_unlock else ''} \
         {'--executor slurm --jobs ' + str(args.executor_slurm_jobs) if args.executor_slurm_jobs > 0 else ''} \
         --rerun-incomplete \
+        {rerun_triggers_arg} \
         --snakefile={str(path_base_wf)} \
         --configfile={Path(args.workdir) / 'config.json'} \
         --max-jobs-per-second=5 \

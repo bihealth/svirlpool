@@ -20,12 +20,33 @@ import numpy.typing as npt
 import psutil
 from tqdm import tqdm
 
-from ..svcalling.multisample_sv_calling import cohens_d
-
-# %%
+from ..svcalling.svcomposite_utils import cohens_d
 from ..util import datatypes, util
 
-# %%
+# Worker processes (mp.Pool) may not inherit the parent's csv field limit
+# depending on the start method, so raise it at import time.
+csv.field_size_limit(sys.maxsize)
+
+
+class _LineTracker:
+    """Wraps a text file iterator so the last line fed to csv.reader is accessible.
+
+    When csv.reader raises csv.Error (e.g. 'field larger than field limit'),
+    `last_line` holds the raw line that triggered the error.
+    """
+
+    def __init__(self, f):
+        self._f = f
+        self.last_line: str = ""
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = next(self._f)
+        self.last_line = line
+        return line
+
 
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
@@ -395,14 +416,19 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
     """Worker function to process one chromosome and create proto-CRs.
 
     Args:
-        args_tuple: (chr_name, chr_signals_file, chr_repeats_file, tmp_dir, buffer_region_radius)
+        args_tuple: (chr_name, chr_signals_file, chr_repeats_file, tmp_dir, buffer_region_radius, bnd_region_radius)
 
     Returns:
         (chr_name, proto_crs_file, statistics_dict)
     """
-    chr_name, chr_signals_file, chr_repeats_file, tmp_dir, buffer_region_radius = (
-        args_tuple
-    )
+    (
+        chr_name,
+        chr_signals_file,
+        chr_repeats_file,
+        tmp_dir,
+        buffer_region_radius,
+        bnd_region_radius,
+    ) = args_tuple
 
     logger.info(f"Processing chromosome {chr_name}...")
 
@@ -430,8 +456,17 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
     tmp_signals_bed = tmp_dir / f"{chr_name}_signals.bed"
     with open(tmp_signals_bed, "w") as f:
         for s in signals:
-            start = max(0, s[1] - 50)
-            end = s[2] + 50
+            sv_type = s[4].sv_type
+            if sv_type in (3, 4):
+                margin = bnd_region_radius
+            elif sv_type in (1, 2):
+                margin = max(
+                    50, int(abs(s[4].size) * 0.1)
+                )  # 10% deletion size per seed
+            else:
+                margin = 50
+            start = max(0, s[1] - margin)
+            end = s[2] + margin
             index = s[3]
             print(s[0], start, end, index, sep="\t", file=f)
 
@@ -492,13 +527,25 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
                 crID=0,  # Will be reassigned later
             )
 
-            read_counts.append(len(cr.get_read_names()))
-            writer.writerow([
-                cr.chr,
-                cr.referenceStart,
-                cr.referenceEnd,
-                json.dumps(cr.unstructure()),
-            ])
+            try:
+                json_str = json.dumps(cr.unstructure())
+                if len(json_str) > csv.field_size_limit():
+                    raise OverflowError(
+                        f"serialized size {len(json_str)} chars exceeds CSV field size limit "
+                        f"{csv.field_size_limit()}"
+                    )
+                read_counts.append(len(cr.get_read_names()))
+                writer.writerow([
+                    cr.chr,
+                    cr.referenceStart,
+                    cr.referenceEnd,
+                    json_str,
+                ])
+            except Exception as e:
+                logger.warning(
+                    f"Skipping proto-CR at {cr.chr}:{cr.referenceStart}-"
+                    f"{cr.referenceEnd} with {len(cr.get_read_names())} reads: {e}"
+                )
 
     # Compute statistics
     stats = {
@@ -595,13 +642,27 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
         open(final_crs_file, "w") as fcf,
         open(dropped_crs_file, "w") as dcf,
     ):
-        reader = csv.reader(pcf, delimiter="\t", quotechar='"')
+        line_tracker = _LineTracker(pcf)
+        reader = csv.reader(line_tracker, delimiter="\t", quotechar='"')
         writer_final = csv.writer(fcf, delimiter="\t", quotechar='"')
         writer_dropped = csv.writer(dcf, delimiter="\t", quotechar='"')
 
         previous_cr: datatypes.CandidateRegion | None = None
 
-        for row in reader:
+        row_iter = iter(reader)
+        while True:
+            try:
+                row = next(row_iter)
+            except StopIteration:
+                break
+            except csv.Error as e:
+                raw = line_tracker.last_line
+                logger.warning(
+                    f"Chromosome {chr_name}: skipping unreadable row in "
+                    f"{proto_crs_file}: {e}. "
+                    f"Raw line ({len(raw)} chars): {raw!r}"
+                )
+                continue
             cr_dict = json.loads(row[3])
             cr = cattrs.structure(cr_dict, datatypes.CandidateRegion)
 
@@ -615,9 +676,16 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
             # Try to merge with previous CR
             if previous_cr is not None:
                 # Check if should merge (same chromosome, close proximity, similar signals)
+                # the distance scales with the sv size to allow larger SVs to be merged over larger distances
+                long_distance_merge_tolerance = (
+                    min(previous_cr.median_indel_size(), cr.median_indel_size()) * 2
+                )
+                # override for testing purposes
+                long_distance_merge_tolerance = min(long_distance_merge_tolerance, 300)
                 if (
                     previous_cr.chr == cr.chr
-                    and cr.referenceStart <= previous_cr.referenceEnd + 100_000
+                    and cr.referenceStart
+                    <= previous_cr.referenceEnd + long_distance_merge_tolerance
                     and has_similar_sv_signals(previous_cr, cr)
                 ):
                     # Merge
@@ -766,6 +834,7 @@ def create_candidate_regions(
     dropped: Path | None = None,
     bedgraph: Path | None = None,
     tmp_dir_path: Path | None = None,
+    bnd_region_radius: int = 300,
 ) -> None:
     csv.field_size_limit(sys.maxsize)
 
@@ -863,6 +932,7 @@ def create_candidate_regions(
                 chr_repeat_files.get(chr_name, tmp_dir / f"{chr_name}_repeats.bed"),
                 tmp_dir,
                 buffer_region_radius,
+                bnd_region_radius,
             ))
 
         chr_results = []
@@ -963,6 +1033,7 @@ def run(args, **kwargs):
         min_cr_size=args.min_cr_size,
         dropped=args.dropped,
         tmp_dir_path=getattr(args, "tmp_dir", None),
+        bnd_region_radius=args.bnd_region_radius,
     )
 
 
@@ -1020,6 +1091,13 @@ def get_parser():
         required=False,
         default=300,
         help="Radius of the initial seeds' sizes around signal that can constitute a candidate region seed.",
+    )
+    parser.add_argument(
+        "--bnd-region-radius",
+        type=int,
+        required=False,
+        default=300,
+        help="Margin (bp) added around BND signals when seeding candidate regions. Independent of --buffer-region-radius.",
     )
     parser.add_argument(
         "--cutoff-median-readcount-per-region",

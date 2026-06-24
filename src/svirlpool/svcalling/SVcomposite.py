@@ -4,6 +4,7 @@ import json
 
 import attrs  # type: ignore
 import numpy as np  # type: ignore
+from Bio.Seq import Seq  # type: ignore
 from intervaltree import IntervalTree  # type: ignore
 from xxhash import xxh64
 
@@ -284,6 +285,15 @@ class SVcomposite:
                 concatenated_sequence += seq
             # Add other pattern types as needed
         size = self.get_size()
+
+        # For inversions, the stored sequence is the consensus slice in
+        # reference-forward orientation (the inverted segment was rev-comp'd by
+        # the aligner when emitting the alignment, so the slice matches the
+        # reference at the locus).  The biological alt allele is the reverse
+        # complement of that — that is what should be reported in VCF.
+        if issubclass(self.sv_type, SVpatterns.SVpatternInversion):
+            concatenated_sequence = str(Seq(concatenated_sequence).reverse_complement())
+
         return concatenated_sequence[:size] if size > 0 else ""
 
     def get_ref_sequence(self) -> str | None:

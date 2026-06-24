@@ -67,7 +67,11 @@ def genomic_distance_score(d: int, flatness: float = 15.0) -> float:
 
 
 def delta(
-    subj: npt.NDArray[np.int32], obj: npt.NDArray[np.int32], flatness: float
+    subj: npt.NDArray[np.int32],
+    obj: npt.NDArray[np.int32],
+    flatness: float,
+    bnd_proximity: int = 100,
+    bnd_repeat_proximity: int = 500,
 ) -> float:
     """returns 1 if no distance between two loci, else x >= 0"""
     distance = np.uint32(2**31 - 1)
@@ -85,9 +89,9 @@ def delta(
         case (0, 2):  # INS vs DELR
             pass
         case (0, 3):  # INS vs BNDL
-            distance = distance_collapsed_sv_signals(subj, obj)
+            pass
         case (0, 4):  # INS vs BNDR
-            distance = distance_collapsed_sv_signals(subj, obj)
+            pass
         case (1, 0):  # DELL vs INS
             pass
         case (1, 1):  # DELL vs DELL
@@ -98,7 +102,7 @@ def delta(
         case (1, 3):  # DELL vs BNDL
             pass
         case (1, 4):  # DELL vs BNDR
-            distance = distance_collapsed_sv_signals(subj, obj)
+            pass
         case (2, 0):  # DELR vs INS
             pass
         case (2, 1):  # DELR vs DELL
@@ -107,7 +111,7 @@ def delta(
             distance = distance_collapsed_sv_signals(subj, obj)
             size_score = size_similarity_score(subj, obj)
         case (2, 3):  # DELR vs BNDL
-            distance = distance_collapsed_sv_signals(subj, obj)
+            pass
         case (2, 4):  # DELR vs BNDR
             pass
         case (3, 0):  # BNDL vs INS
@@ -118,6 +122,9 @@ def delta(
             pass
         case (3, 3):  # BNDL vs BNDL
             distance = distance_collapsed_sv_signals(subj, obj)
+            _in_same_repeat = subj[-2] == obj[-2] and int(subj[-2]) >= 0
+            if distance > (bnd_repeat_proximity if _in_same_repeat else bnd_proximity):
+                return 0.0
         case (3, 4):  # BNDL vs BNDR
             pass
         case (4, 0):  # BNDR vs INS
@@ -130,12 +137,15 @@ def delta(
             pass
         case (4, 4):  # BNDR vs BNDR
             distance = distance_collapsed_sv_signals(subj, obj)
+            _in_same_repeat = subj[-2] == obj[-2] and int(subj[-2]) >= 0
+            if distance > (bnd_repeat_proximity if _in_same_repeat else bnd_proximity):
+                return 0.0
     if distance < 0:
         return 1.0
     elif distance == 0:
         return 1.0
     else:
-        distance_score = genomic_distance_score(distance, flatness)
+        distance_score = genomic_distance_score(int(distance), flatness)
         return max(distance_score, size_score)
 
 
@@ -146,6 +156,8 @@ def pseudo_convolve(
     warning_collapsed_region_size: int = 2_000,
     high_density_threshold: int = 200,
     high_density_score: float = 10.0,
+    bnd_proximity: int = 100,
+    bnd_repeat_proximity: int = 500,
 ) -> np.ndarray:
     """convolves over a numpy array of signals and returns the sum of weighted distances
     by a kernel function (radius) which is dynamically expanded if it overlaps any repeats.
@@ -207,7 +219,13 @@ def pseudo_convolve(
         for l in range(j, k):  # noqa: E741
             if l == i:
                 continue
-            next_val = delta(subj=np_signals[i], obj=np_signals[l], flatness=flatness)
+            next_val = delta(
+                subj=np_signals[i],
+                obj=np_signals[l],
+                flatness=flatness,
+                bnd_proximity=bnd_proximity,
+                bnd_repeat_proximity=bnd_repeat_proximity,
+            )
             values[i] += next_val
 
         i += 1
@@ -413,6 +431,8 @@ def signaldepths_to_signalstrength(
     kernel_signal_radius: int,
     slop_repeats_radius: int,
     tmp_dir_path: Path | None = None,
+    bnd_proximity: int = 100,
+    bnd_repeat_proximity: int = 500,
 ) -> None:
     csv.field_size_limit(sys.maxsize)
     # --- load and prepare data --- #
@@ -520,6 +540,8 @@ def signaldepths_to_signalstrength(
                 np_signals=np_signals_chr,
                 kernelsize=kernel_signal_radius,
                 flatness=flatness_distance,
+                bnd_proximity=bnd_proximity,
+                bnd_repeat_proximity=bnd_repeat_proximity,
             )
 
             # Write results immediately
@@ -573,6 +595,8 @@ def run(args, **kwargs):
         kernel_signal_radius=args.kernel_signal_radius,
         threads=args.threads,
         slop_repeats_radius=args.slop_repeats_radius,
+        bnd_proximity=args.bnd_proximity,
+        bnd_repeat_proximity=args.bnd_repeat_proximity,
     )
 
 
@@ -634,6 +658,20 @@ def get_parser():
         required=False,
         default=50,
         help="Radius of slop for repeats.",
+    )
+    parser.add_argument(
+        "--bnd-proximity",
+        type=int,
+        required=False,
+        default=100,
+        help="Maximum distance (bp) between two BND signals for them to score against each other.",
+    )
+    parser.add_argument(
+        "--bnd-repeat-proximity",
+        type=int,
+        required=False,
+        default=500,
+        help="Maximum distance (bp) between two BND signals within the same tandem repeat for them to score against each other.",
     )
     return parser
 

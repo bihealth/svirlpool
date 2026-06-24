@@ -686,6 +686,12 @@ def write_partitioned_alignments(
     # Parse BAM file and write alignments to partitioned files
     with AlignmentFile(str(input_bam), "rb") as bam_in:
         for pysam_aln in bam_in:
+            # unaligned reads are skipped
+            if pysam_aln.is_unmapped:
+                log.debug(
+                    f"Skipping unmapped consensus sequence {pysam_aln.query_name} in BAM file."
+                )
+                continue
             consensusID = pysam_aln.query_name
 
             if consensusID not in consensusID_to_index:
@@ -1110,7 +1116,7 @@ def generate_core_intervals_on_reference(
                     core_read_end,
                 ) in intervals:
                     log.debug(
-                        f"TRANSFORMED::generate_core_intervals_on_reference: Partition {partition_idx}, consensusID {consensusID}, crID={consensusID.split('.')[0]}, alignment_idx {aln_idx}: core interval on reference/ region={ref_name}:{core_start_on_ref}-{core_end_on_ref}, core interval on read={core_read_start}-{core_read_end}"
+                        f"TRANSFORMED::generate_core_intervals_on_reference: Partition {partition_idx}, consensusID={consensusID}, crID={consensusID.split('.')[0]}, alignment_idx={aln_idx}: core interval on reference/ region={ref_name}:{core_start_on_ref}-{core_end_on_ref}, core interval on read={core_read_start}-{core_read_end}"
                     )
 
     # to log every case of data loss, we can compare the consensusIDs for which we generated core intervals with the consensusIDs in the consensus_json_index_partitioned
@@ -1129,7 +1135,7 @@ def generate_core_intervals_on_reference(
     if missing_consensusIDs:
         for consensusID in missing_consensusIDs:
             log.debug(
-                f"DROPPED::generate_core_intervals_on_reference:(couldn't find intervals), consensusID {consensusID}."
+                f"DROPPED::generate_core_intervals_on_reference:(couldn't find intervals), consensusID={consensusID}, crID={consensusID.split('.')[0]}."
             )
 
     return partitioned_core_intervals
@@ -1769,7 +1775,7 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
 
                     if alignment_idx not in core_interval_by_idx:
                         log.debug(
-                            f"DROPPED::_process_consensus_objects_to_svPatterns:(no core interval for alignment), consensusID {consensusID}, alignment_idx {alignment_idx}; alignment_region={alignment.reference_name}:{alignment.reference_start}-{alignment.reference_end}."
+                            f"DROPPED::_process_consensus_objects_to_svPatterns:(no core interval for alignment), consensusID={consensusID}, crID={consensusID.split('.')[0]}, alignment_idx={alignment_idx}; alignment_region={alignment.reference_name}:{alignment.reference_start}-{alignment.reference_end}."
                             f"\ncore intervals on reference: {' '.join([f'region={ci[1]}:{ci[2]}-{ci[3]} (core interval={ci[4]}-{ci[5]})' for ci in core_intervals_with_idx])}"
                         )
                         continue
@@ -1900,7 +1906,6 @@ def svPatterns_from_consensus_sequences(
     falloff: float,
     max_fourrelations_gap_size: int = 500_000,
     tmp_dir_path: Path | str | None = None,
-    dont_merge_horizontally: bool = False,
     batchsize: int = 100,
     signal_loss_log: Path | str | None = None,
     logfile: Path | str | None = None,
@@ -1908,10 +1913,6 @@ def svPatterns_from_consensus_sequences(
 ) -> None:
     # write all consensus sequences to a fasta file and align to the target reference
     # write all alignments to a file
-    if dont_merge_horizontally:
-        log.warning(
-            "dont_merge_horizontally is set to True. This will not merge SVs within the same consensus alignment. This is not recommended for general use cases."
-        )
 
     # Initialise the signal loss logger for the main process
     _signal_loss_log_dir: Path | None = None
@@ -2244,12 +2245,6 @@ def get_parser():
         help="Path to temporary directory for intermediate files.",
     )
     parser.add_argument(
-        "--dont-merge-horizontally",
-        action="store_true",
-        default=False,
-        help="Don't merge SV signals horizontally.",
-    )
-    parser.add_argument(
         "--enable-profiling",
         action="store_true",
         default=False,
@@ -2333,7 +2328,6 @@ def main():
         falloff=args.falloff,
         max_fourrelations_gap_size=args.max_fourrelations_gap_size,
         tmp_dir_path=args.tmp_dir_path,
-        dont_merge_horizontally=args.dont_merge_horizontally,
         signal_loss_log=args.signal_loss_log,
         logfile=args.logfile,
         log_level=args.log_level,

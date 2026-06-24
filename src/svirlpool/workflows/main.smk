@@ -76,7 +76,10 @@ min_cr_size=config["min_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
 
 # consensus
-lamassemble_mat = config["lamassemble_mat"]
+lamassemble_mat = config.get("lamassemble_mat", None)
+consensus_method = config.get("consensus_method", "lamassemble")
+max_padding_size = config.get("max_padding_size", 100000)
+max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -95,6 +98,7 @@ merge_horizontally = config["cores_per_consensus"]
 # svs to vcf parameters
 min_alt_reads   = config["min_alt_reads"]
 #min_alt_fraction= config["min_alt_fraction"]
+single_evidence_gt = config.get("single_evidence_gt", False)
 
 # vcf to bed parameters
 min_sv_size     = config["min_sv_size"]
@@ -117,7 +121,9 @@ cores = workflow.cores #config["cores"]
 
 
 wildcard_constraints:
-    sampleID = r'\d+'
+    sampleID = r'\d+',
+    batch_id = r'\d+',
+    batchdir = r'\d+',
 
 
 ref_name = Path(reference).stem
@@ -128,6 +134,25 @@ def get_crIDs(wildcards):
     path_crIDs = 'crIDs.txt'
     crIDs = [int(line.strip()) for line in open(path_crIDs)]
     return [f"consensus/{str(int(crID / N_files_per_dir))}/consensus.{crID}.txt" for crID in crIDs]
+
+_CONSENSUS_THREADS  = [1, 2, 4, 12]
+_CONSENSUS_MEM_MB   = [512, 1024, 2048, 4096]
+_CONSENSUS_RUNTIME  = ["20s", "1m", "3m", "10m"]
+_CONSENSUS_TIMEOUTS = [20, 60, 60, 120]  # in seconds
+
+def get_consensus_threads(wildcards, attempt):
+    return _CONSENSUS_THREADS[min(attempt - 1, len(_CONSENSUS_THREADS) - 1)]
+
+def get_consensus_mem_mb(wildcards, attempt):
+    return _CONSENSUS_MEM_MB[min(attempt - 1, len(_CONSENSUS_MEM_MB) - 1)]
+
+def get_consensus_runtime(wildcards, attempt):
+    return _CONSENSUS_RUNTIME[min(attempt - 1, len(_CONSENSUS_RUNTIME) - 1)]
+
+def get_consensus_timeout(wildcards, attempt):
+    if attempt > len(_CONSENSUS_THREADS):
+        return 1
+    return _CONSENSUS_TIMEOUTS[min(attempt - 1, len(_CONSENSUS_TIMEOUTS) - 1)]
 
 # def get_coverage(wildcards):
 #     with open("coverage.txt", "r") as f:
@@ -175,8 +200,8 @@ rule signalprocessing_alignments_to_rafs:
     conda:
         "envs/svirlpool.yml"
     shell:
-        """set x
-        python3 -m svirlpool.signalprocessing.alignments_to_rafs \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.alignments_to_rafs \
         -a {input.alignments} \
         -s {params.samplename} \
         -r {input.regions} \
@@ -186,7 +211,7 @@ rule signalprocessing_alignments_to_rafs:
         --min-bnd-size {params.min_bnd_size} \
         --min-segment-size {params.min_segment_size} \
         --min-mapq {params.min_mapq} \
-        -t {threads}"""
+        -t {threads} 2>&1 | tee -a {log}"""
 
 
 rule QC_rafs_indel_sizes:
@@ -199,10 +224,13 @@ rule QC_rafs_indel_sizes:
     resources:
         mem_mb=8*1024,
         runtime=10
+    log:
+        "logs/QC_rafs_indel_sizes.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.rafs_indel_histograms \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.rafs_indel_histograms \
         -i {input} \
-        -f {output}"""
+        -f {output} 2>&1 | tee -a {log}"""
 
 rule signalprocessing_filter_rafs_sv_signals:
     input:
@@ -219,13 +247,16 @@ rule signalprocessing_filter_rafs_sv_signals:
     resources:
         mem_mb=8*1024,
         runtime=15
+    log:
+        "logs/signalprocessing_filter_rafs_sv_signals.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.filter_rafs_sv_signals \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.filter_rafs_sv_signals \
         -i {input.file} \
         -r {params.reference} \
         -o {output.file} \
         -t {threads} \
-        --threshold {params.threshold}"""
+        --threshold {params.threshold} 2>&1 | tee -a {log}"""
 
 
 # rule signalprocessing_adjust_effective_intervals:
@@ -280,13 +311,14 @@ rule signalprocessing_filter_rafs_indels:
     log:
         "logs/signalprocessing_filter_rafs_indels.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.filter_rafs_indels \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.filter_rafs_indels \
         -i {input.file} \
         -o {output.file} \
         -r {params.reference} \
         -t {threads} \
         --multiplier {params.multiplier} \
-        --dropped {output.dropped}"""
+        --dropped {output.dropped} 2>&1 | tee -a {log}"""
 
 
 rule signalprocessing_rafs_to_coverage:
@@ -304,9 +336,10 @@ rule signalprocessing_rafs_to_coverage:
     log:
         "logs/signalprocessing_rafs_to_coverage.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.rafs_to_coverage \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.rafs_to_coverage \
         -i {input.file} \
-        -o {output.file}"""
+        -o {output.file} 2>&1 | tee -a {log}"""
 
 
 rule signalprocessing_generate_copynumber_tracks:
@@ -336,9 +369,8 @@ rule signalprocessing_generate_copynumber_tracks:
     conda:
         "envs/svirlpool.yml"
     shell:
-        """
-        set -x
-        python3 -m svirlpool.signalprocessing.copynumber_tracks \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.copynumber_tracks \
         --coverage-db {input.coverage_db} \
         --output-bed {params.bed_uncompressed} \
         --output-db {output.db} \
@@ -347,7 +379,7 @@ rule signalprocessing_generate_copynumber_tracks:
         --reference-fai {params.reference_fai} \
         --regions {params.regions} \
         --dispersion {params.dispersion} \
-        --log-level {params.log_level} 2>&1 | tee {log}"""
+        --log-level {params.log_level} 2>&1 | tee -a {log}"""
 
 
 # rule compute_coverage:
@@ -393,11 +425,12 @@ rule signalprocessing_rafs_to_signaldepths:
     log:
         "logs/signalprocessing_rafs_to_signaldepths.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.rafs_to_signaldepths \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.rafs_to_signaldepths \
         -i {input.file} \
         -o {output.file} \
         -t {threads} \
-        --log-file {log}"""
+        --log-file {log} 2>&1 | tee -a {log}"""
 
 
 rule signalprocessing_filter_mononucleotides:
@@ -416,14 +449,17 @@ rule signalprocessing_filter_mononucleotides:
         "benchmarks/signalprocessing_filter_mononucleotides.txt"
     threads:
         cores
+    log:
+        "logs/signalprocessing_filter_mononucleotides.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.filter_signaldepths_mononucleotides \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.filter_signaldepths_mononucleotides \
         -m {params.mononucleotides} \
         -s {input.signaldepths} \
         -r {params.reference} \
         -o {output.outf} \
         -g {params.margin} \
-        -t {threads}"""
+        -t {threads} 2>&1 | tee -a {log}"""
 
 
 rule signalprocessing_depth_of_coverage_to_signalstrength:
@@ -445,15 +481,18 @@ rule signalprocessing_depth_of_coverage_to_signalstrength:
         cores
     conda:
         "envs/svirlpool.yml"
+    log:
+        "logs/signalprocessing_depth_of_coverage_to_signalstrength.log"
     shell:
-        """python3 -m svirlpool.signalprocessing.signaldepths_to_signalstrength \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.signaldepths_to_signalstrength \
         -i {input.signaldepths} \
         -r {params.ref} \
         -o {output.out} \
         -R {params.rep} \
         -t {threads} \
         -s {params.flatness} \
-        -k {params.radius}"""
+        -k {params.radius} 2>&1 | tee -a {log}"""
 
 # -----------------------------------------------------------------------------
 # CANDIDATE REGIONS
@@ -485,9 +524,11 @@ rule candidate_regions_signalstrength_to_crs:
         cores
     conda:
         "envs/svirlpool.yml"
+    log:
+        "logs/candidate_regions_signalstrength_to_crs.log"
     shell:
-        """set -x
-        python3 -m svirlpool.candidateregions.signalstrength_to_crs \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.candidateregions.signalstrength_to_crs \
         -i {input.signalstrength} \
         -r {params.ref} \
         -o {output.out} \
@@ -499,7 +540,7 @@ rule candidate_regions_signalstrength_to_crs:
         --filter-absolute {params.filter_absolute} \
         --filter-normalized {params.filter_normalized} \
         --min-cr-size {params.min_cr_size} \
-        --log-level {params.log_level}"""
+        --log-level {params.log_level} 2>&1 | tee -a {log}"""
 
 rule candidate_regions_QC_crs_to_bed:
     input:
@@ -515,10 +556,13 @@ rule candidate_regions_QC_crs_to_bed:
         1
     conda:
         "envs/svirlpool.yml"
+    log:
+        "logs/candidate_regions_QC_crs_to_bed.log"
     shell:
-        """python3 -m svirlpool.candidateregions.crs_to_bed \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.candidateregions.crs_to_bed \
         -i {input} \
-        -o {output}"""
+        -o {output} 2>&1 | tee -a {log}"""
 
 
 checkpoint candidate_regions_crs_to_containers:
@@ -539,58 +583,134 @@ checkpoint candidate_regions_crs_to_containers:
         1
     conda:
         "envs/svirlpool.yml"
+    log:
+        "logs/candidate_regions_crs_to_containers.log"
     shell:
-        """python3 -m svirlpool.candidateregions.crs_to_containers_db \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.candidateregions.crs_to_containers_db \
         -i {input.crs} \
         -o {output.containers} \
         --crIDs {output.crIDs_file} \
-        --log-level {params.log_level}"""
+        --log-level {params.log_level} 2>&1 | tee -a {log}"""
+
+
+# Batching configuration for the consensus stage.
+consensus_batch_size = config.get("consensus_batch_size", 100)
+consensus_max_batch_span = config.get("consensus_max_batch_span", 20_000_000)
+
+
+checkpoint consensus_make_batches:
+    input:
+        containers='crs_containers.db'
+    output:
+        tsv='consensus_batches.tsv',
+        ids='consensus_batch_ids.txt'
+    params:
+        log_level=log_level,
+        batch_size=consensus_batch_size,
+        max_batch_span=consensus_max_batch_span,
+    resources:
+        mem_mb=4*1024,
+        runtime=20
+    benchmark:
+        "benchmarks/consensus_make_batches.txt"
+    threads:
+        1
+    conda:
+        "envs/svirlpool.yml"
+    log:
+        "logs/consensus_make_batches.log"
+    shell:
+        """set -xeo pipefail
+        python3 -u -m svirlpool.candidateregions.crs_to_batches \
+        -i {input.containers} \
+        -t {output.tsv} \
+        --ids {output.ids} \
+        --batch-size {params.batch_size} \
+        --max-batch-span {params.max_batch_span} \
+        --log-level {params.log_level} 2>&1 | tee -a {log}"""
+
+
+def get_batch_outputs(wildcards):
+    checkpoints.consensus_make_batches.get(**wildcards)
+    with open('consensus_batch_ids.txt') as f:
+        batch_ids = [int(line.strip()) for line in f if line.strip()]
+    return [
+        f"consensus/{str(int(bid / N_files_per_dir))}/consensus.batch_{bid}.jsonl"
+        for bid in batch_ids
+    ]
+
 
 # # -----------------------------------------------------------------------------
 # # CONSENSUS
 # # -----------------------------------------------------------------------------
 
-# # assemble the cut reads
+# # assemble the cut reads (one job per batch of adjacent containers)
 rule consensus_consensus:
     input:
         containers='crs_containers.db',
+        batches='consensus_batches.tsv',
         copynumbertracks='copy_number_tracks.bed.gz',
     output:
-        container="consensus/{crIDdir}/consensus.{crID}.txt",
-        log="consensus/{crIDdir}/consensus.{crID}.log",
+        container="consensus/{batchdir}/consensus.batch_{batch_id}.jsonl",
+    log:
+        algorithm="consensus/{batchdir}/consensus.batch_{batch_id}.log",
+        diag="consensus/{batchdir}/consensus.batch_{batch_id}.diag.log",
     params:
         alignments=alignments,
         samplename=samplename,
-        lamassemble_mat=lamassemble_mat,
+        reference=reference,
+        lamassemble_mat_arg="--lamassemble-mat " + str(lamassemble_mat) if lamassemble_mat else "",
         log_level=log_level,
+        consensus_method=consensus_method,
+        max_padding_size=max_padding_size,
+        max_consensus_copy_number=max_consensus_copy_number,
     threads:
-        cores_per_consensus
+        get_consensus_threads
     conda:
         "envs/svirlpool.yml"
     resources:
-        mem_mb=2*1024,
-        runtime=15
+        mem_mb=get_consensus_mem_mb,
+        runtime=get_consensus_runtime,
+        _attempt=lambda wildcards, attempt: attempt,
+        timeout=get_consensus_timeout
     benchmark:
-        "benchmarks/consensus/consensus.{crID}.{crIDdir}.txt"
+        "benchmarks/consensus/consensus.batch_{batch_id}.{batchdir}.txt"
     shell:
-        """set -x
-        python3 -m svirlpool.localassembly.consensus \
+        # Two log files are produced (declared via Snakemake's `log:` so they
+        # are retained on failure):
+        #   * {log.algorithm}: algorithm-oriented log (--logfile)
+        #   * {log.diag}: technical/diagnostic log (--diag-logfile) +
+        #     stdout/stderr piped through tee, so shell-level death messages
+        #     ("Killed", SIGSEGV, illegal-instruction reports) caused by
+        #     SLURM OOM kills or signals also land here.
+        # `python3 -u` keeps stderr unbuffered, `pipefail` ensures the shell
+        # exit status reflects the Python process and not `tee`.
+        """set -xeo pipefail
+        python3 -u -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
         -cn {input.copynumbertracks} \
-        --lamassemble-mat {params.lamassemble_mat} \
+        {params.lamassemble_mat_arg} \
+        --consensus-method {params.consensus_method} \
+        --reference {params.reference} \
         -i {input.containers} \
+        --batch-tsv {input.batches} \
+        --batch-id {wildcards.batch_id} \
         -a {params.alignments} \
+        --max-padding-size {params.max_padding_size} \
+        --max-copy-number {params.max_consensus_copy_number} \
         -o {output.container} \
         -t {threads} \
-        -c {wildcards.crID} \
-        --logfile {output.log} \
-        --log-level {params.log_level}"""
+        --logfile {log.algorithm} \
+        --diag-logfile {log.diag} \
+        --log-level {params.log_level} \
+        --timeout {resources.timeout} 2>&1 | tee -a {log.diag}"""
         # --verbose"""
 
 
 rule consensus_aggregate_consensuses:
     input:
-        consensus_paths=get_crIDs,
+        consensus_paths=get_batch_outputs,
     output:
         "consensus_containers.txt",
     threads:
@@ -600,8 +720,11 @@ rule consensus_aggregate_consensuses:
         runtime=5
     benchmark:
         "benchmarks/consensus/consensus_aggregate.txt"
+    log:
+        "logs/consensus_aggregate_consensuses.log"
     shell:
-        """for file in {input.consensus_paths}; do cat $file >> {output}; done"""
+        """set -xeo pipefail
+        (for file in {input.consensus_paths}; do cat $file >> {output}; done) 2>&1 | tee -a {log}"""
 
 
 
@@ -622,16 +745,15 @@ rule consensus_align:
     threads:
         cores
     resources:
-        mem_mb=16*1024,
+        mem_mb=max(cores * 1024, 16*1024),
         runtime=60
     benchmark:
         "benchmarks/consensus/consensus_align_to_initial_reference.txt"
     log:
         "logs/consensus_align_to_initial_reference.log"
     shell:
-        """
-        set -x
-        python -m svirlpool.localassembly.consensus_align \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.localassembly.consensus_align \
             --samplename {params.samplename} \
             --consensus {input.consensus} \
             --reference {params.ref} \
@@ -642,7 +764,7 @@ rule consensus_align:
             --signal-loss-log {params.data_loss_log} \
             --logfile {log} \
             --log-level {params.log_level} \
-            --threads {threads}"""
+            --threads {threads} 2>&1 | tee -a {log}"""
 
 
 rule to_svirltile:
@@ -666,9 +788,8 @@ rule to_svirltile:
     log:
         "logs/consensus/to_svirltile.log"
     shell:
-        """
-        set -x
-        python -m svirlpool.localassembly.svirltile \
+        """set -xeo pipefail
+        python3 -u -m svirlpool.localassembly.svirltile \
         --samplename {params.samplename} \
         --consensus {input.consensus} \
         --svpatterns-db {input.svpatterns} \
@@ -676,4 +797,4 @@ rule to_svirltile:
         --copynumber-db {input.copynumber} \
         --output-db {output.svirltile_db} \
         --log-file {log} \
-        --log-level {params.log_level} """
+        --log-level {params.log_level} 2>&1 | tee -a {log}"""

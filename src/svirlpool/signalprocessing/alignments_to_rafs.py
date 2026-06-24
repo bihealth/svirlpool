@@ -7,7 +7,7 @@ import logging
 import multiprocessing as mp
 import subprocess
 import tempfile
-from math import floor
+from math import floor, log2
 from pathlib import Path
 from shlex import split
 
@@ -639,7 +639,7 @@ def display_ascii_alignments(
                         start = scale_coords(
                             [sv.ref_start], max_ref_len, terminal_width
                         )[0]
-                        line[start] = "V"
+                        line[start] = str(min(9, round(log2(sv.size))))
                     if sv.sv_type == 4:  # BNDR
                         start = scale_coords(
                             [sv.ref_start], max_ref_len, terminal_width
