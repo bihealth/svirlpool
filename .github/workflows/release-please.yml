@@ -41,10 +41,15 @@ jobs:
           pixi-version: latest
           run-install: false
       
-      - name: Update lockfile
+      - name: Update lockfile and commit
         if: ${{ steps.release.outputs.pr }}
         run: |
-          pixi update --no-install
+          # pixi install resolves dependencies and updates pixi.lock.
+          # We need the full install (not --no-install) because our project
+          # uses an editable PyPI dependency ({ path = ".", editable = true })
+          # which requires a build dispatch to resolve, and build dispatch
+          # requires an installed conda environment.
+          pixi install
           if git diff --quiet pixi.lock 2>/dev/null; then
             echo "No lockfile changes needed"
           else
