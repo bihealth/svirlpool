@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/bihealth/svirlpool/compare/v0.1.2...v0.2.0) (2026-06-29)
+
+
+### Features
+
+* precision improvements ([#62](https://github.com/bihealth/svirlpool/issues/62)) ([f21f136](https://github.com/bihealth/svirlpool/commit/f21f13647f41ca3773b33508ac170ea96c86d668))
+
+
+### Bug Fixes
+
+* release blocked by imspossible pixi lock update ([#65](https://github.com/bihealth/svirlpool/issues/65)) ([9026c20](https://github.com/bihealth/svirlpool/commit/9026c2067ced152520a4efc7b9bbdde9e4e429a8))
+
 ## [0.1.2](https://github.com/bihealth/svirlpool/compare/v0.1.1...v0.1.2) (2026-02-25)
 
 
