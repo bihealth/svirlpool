@@ -115,7 +115,17 @@ class SVcomposite:
         return int(round(weighted_mean_size))
 
     def get_size_populations(self) -> list[int]:
-        """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins."""
+        """Returns the per-read size-distortion magnitudes of every SVpattern in
+        this composite, flattened into a single list of ints.
+
+        Each SVpattern's size_distortions dict (built by
+        SVpatterns.distortions_by_svPattern) maps a supporting read name to the
+        distance-weighted mean size of nearby indel signals on that read's
+        alignment. These values are unsigned: they are always >= 0 regardless of
+        whether the underlying signals were insertions or deletions, since
+        insertion/deletion sign information is not carried through this
+        aggregation. SVpatterns whose size_distortions is None contribute no
+        values at all (they are skipped, not treated as zero)."""
         return [
             int(size)
             for svp in self.svPatterns
