@@ -23,6 +23,7 @@ from pandas import read_csv
 from scipy.stats import binom
 from tqdm import tqdm
 
+from .. import __version__
 from ..localassembly import SVpatterns, svirltile
 from ..util.covtree import covtree
 from ..util.datastructures import UnionFind
@@ -1240,12 +1241,42 @@ def get_svComposite_interval_on_reference(
 # %% VCF file stuff
 
 
+def _svirlpool_source_string() -> str:
+    """Build the value for the VCF ##source= header line.
+
+    Always includes svirlpool's package version (svirlpool.__version__). When
+    running from a git checkout with the git executable available, also
+    appends the short commit hash, e.g. "svirlpool 0.2.0 (abc1234)". This is
+    best-effort: if git is not installed, the code is not inside a git
+    checkout (e.g. installed from a wheel/sdist), or anything else about the
+    lookup fails, we silently fall back to just the version so this never
+    breaks header generation.
+    """
+    source = f"svirlpool {__version__}"
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            short_sha = result.stdout.strip()
+            if short_sha:
+                source += f" ({short_sha})"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return source
+
+
 def generate_header(
     reference: Path, samplenames: list[str], fasta_path: Path | None = None
 ) -> list[str]:
     reference = Path(reference)
     header = [
         "##fileformat=VCFv4.2",
+        f"##source={_svirlpool_source_string()}",
         f"##fileDate={datetime.now().strftime('%Y%m%d')}",
         f"##reference=file://{str(reference.absolute())}",
     ]
