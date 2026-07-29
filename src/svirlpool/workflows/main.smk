@@ -95,17 +95,14 @@ log_level       = config.get("log_level", "INFO")
 # consensus alignments to proto svs parameters
 merge_horizontally = config["cores_per_consensus"]
 
-# svs to vcf parameters
-min_alt_reads   = config["min_alt_reads"]
-#min_alt_fraction= config["min_alt_fraction"]
-apriori_size_difference_fraction_tolerance = config["apriori_size_difference_fraction_tolerance"]
-single_evidence_gt = config.get("single_evidence_gt", False)
-
-# vcf to bed parameters
-min_sv_size     = config["min_sv_size"]
-cores_per_consensus = config["cores_per_consensus"]
-#avg_doc = config["coverage"]
-#doc_per_haplotype = avg_doc / 2.0
+# Note: sv-calling / vcf / vcf-to-bed parameters (min_alt_reads,
+# apriori_size_difference_fraction_tolerance, single_evidence_gt, min_sv_size,
+# etc.) are intentionally not read here. Variant calling is a standalone
+# `svirlpool sv-calling` subcommand, not part of this Snakemake workflow, so
+# no rule consumes them; the corresponding --... flags on parser_run_wf in
+# __main__.py still populate config.json for future use. Reading them here
+# via bare config[...] would also crash on any pre-existing config.json that
+# predates one of these keys.
 
 # output database - handle both absolute and relative paths
 # If absolute path is provided, use it as-is
