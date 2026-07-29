@@ -133,10 +133,14 @@ def can_merge_svComposites_insertions(
     # Test 1: Simple fractional size difference check
     max_size = max(size_a_adjusted, size_b_adjusted)
     log_size = np.log2(abs(size_a - size_b) + 1)
+    # apriori_size_difference_fraction_tolerance is the fraction of the larger
+    # (complexity-adjusted) size that the two sizes may differ by and still be
+    # considered similar: 0.0 means no tolerance (sizes must be identical), 1.0
+    # means maximum tolerance (any pair of non-negative sizes passes).
     fraction_similar = (
         max_size > 0
         and abs(size_a_adjusted - size_b_adjusted)
-        <= (1.0 + apriori_size_difference_fraction_tolerance) * max_size
+        <= apriori_size_difference_fraction_tolerance * max_size
     ) or abs(size_a - size_b) < log_size
 
     # Test 2: Population-driven Cohen's D on background noise signals
@@ -264,10 +268,14 @@ def can_merge_svComposites_deletions(
     # Test 1: Simple fractional size difference check
     max_size = max(size_a_adjusted, size_b_adjusted)
     log_size = np.log2(abs(size_a - size_b) + 1)
+    # apriori_size_difference_fraction_tolerance is the fraction of the larger
+    # (complexity-adjusted) size that the two sizes may differ by and still be
+    # considered similar: 0.0 means no tolerance (sizes must be identical), 1.0
+    # means maximum tolerance (any pair of non-negative sizes passes).
     fraction_similar = (
         max_size > 0
         and abs(size_a_adjusted - size_b_adjusted)
-        <= (1.0 + apriori_size_difference_fraction_tolerance) * max_size
+        <= apriori_size_difference_fraction_tolerance * max_size
     ) or abs(size_a - size_b) < log_size
 
     # Test 2: Population-driven Cohen's D on background noise signals
@@ -695,10 +703,14 @@ def can_merge_svComposites_inversions(
     # Test 1: Simple fractional size difference check
     max_size = max(size_a_adjusted, size_b_adjusted)
     log_size = np.log2(abs(size_a - size_b) + 1)
+    # apriori_size_difference_fraction_tolerance is the fraction of the larger
+    # (complexity-adjusted) size that the two sizes may differ by and still be
+    # considered similar: 0.0 means no tolerance (sizes must be identical), 1.0
+    # means maximum tolerance (any pair of non-negative sizes passes).
     fraction_similar = (
         max_size > 0
         and abs(size_a_adjusted - size_b_adjusted)
-        <= (1.0 + apriori_size_difference_fraction_tolerance) * max_size
+        <= apriori_size_difference_fraction_tolerance * max_size
     ) or abs(size_a - size_b) < log_size
 
     # Test 2: Population-driven Cohen's D on background noise signals
