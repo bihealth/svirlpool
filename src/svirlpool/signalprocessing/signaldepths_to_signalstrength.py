@@ -123,7 +123,18 @@ def delta(
         case (3, 3):  # BNDL vs BNDL
             distance = distance_collapsed_sv_signals(subj, obj)
             _in_same_repeat = subj[-2] == obj[-2] and int(subj[-2]) >= 0
-            if distance > (bnd_repeat_proximity if _in_same_repeat else bnd_proximity):
+            # The repeat allowance must be applied exactly once, not twice: `distance`
+            # above is already discounted by repeat_factor (divided by 10) when the
+            # two signals share a repeat, so comparing it against bnd_repeat_proximity
+            # (500) would relax the threshold a second time on top of that discount --
+            # an effective ~50x allowance (500 * 10) instead of the intended 5x
+            # (bnd_repeat_proximity / bnd_proximity). Gate on a separate, undiscounted
+            # (repeat_factor=1.0) raw distance instead, so the threshold comparison
+            # means exactly what bnd_proximity/bnd_repeat_proximity say. The
+            # repeat-discounted `distance` computed above is left untouched for the
+            # genomic_distance_score call below.
+            raw_distance = distance_collapsed_sv_signals(subj, obj, repeat_factor=1.0)
+            if raw_distance > (bnd_repeat_proximity if _in_same_repeat else bnd_proximity):
                 return 0.0
         case (3, 4):  # BNDL vs BNDR
             pass
@@ -138,7 +149,13 @@ def delta(
         case (4, 4):  # BNDR vs BNDR
             distance = distance_collapsed_sv_signals(subj, obj)
             _in_same_repeat = subj[-2] == obj[-2] and int(subj[-2]) >= 0
-            if distance > (bnd_repeat_proximity if _in_same_repeat else bnd_proximity):
+            # See the BNDL-vs-BNDL case above: the repeat allowance must be applied
+            # exactly once, so gate on a separate undiscounted (repeat_factor=1.0)
+            # raw distance rather than reusing the already repeat-discounted
+            # `distance`, which is kept as-is for the genomic_distance_score call
+            # below.
+            raw_distance = distance_collapsed_sv_signals(subj, obj, repeat_factor=1.0)
+            if raw_distance > (bnd_repeat_proximity if _in_same_repeat else bnd_proximity):
                 return 0.0
     if distance < 0:
         return 1.0

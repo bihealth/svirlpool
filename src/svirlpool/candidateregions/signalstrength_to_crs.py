@@ -680,8 +680,6 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
                 long_distance_merge_tolerance = (
                     min(previous_cr.median_indel_size(), cr.median_indel_size()) * 2
                 )
-                # override for testing purposes
-                long_distance_merge_tolerance = min(long_distance_merge_tolerance, 300)
                 if (
                     previous_cr.chr == cr.chr
                     and cr.referenceStart
