@@ -179,6 +179,16 @@ def get_parser():
         default=3,
     )
     parser_run_wf.add_argument(
+        "--apriori-size-difference-fraction-tolerance",
+        help="Fraction of the larger complexity-adjusted size that two SVs may differ "
+        "by and still be merged (default: 0.67). 0.0 = no tolerance (sizes must be "
+        "identical); 1.0 = maximum tolerance (all size pairs merge). Decrease for "
+        "stronger separation of haplotypes.",
+        required=False,
+        type=float,
+        default=0.67,
+    )
+    parser_run_wf.add_argument(
         "--min-sv-size",
         help="minimum structural variant size",
         required=False,

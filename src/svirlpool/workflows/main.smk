@@ -98,6 +98,7 @@ merge_horizontally = config["cores_per_consensus"]
 # svs to vcf parameters
 min_alt_reads   = config["min_alt_reads"]
 #min_alt_fraction= config["min_alt_fraction"]
+apriori_size_difference_fraction_tolerance = config["apriori_size_difference_fraction_tolerance"]
 single_evidence_gt = config.get("single_evidence_gt", False)
 
 # vcf to bed parameters
