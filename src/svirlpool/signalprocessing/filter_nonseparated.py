@@ -1,3 +1,17 @@
+"""Standalone/debug CLI for filtering non-separated (chimeric split-read) alignments.
+
+find_candidates() and filter_reads() below are imported directly by
+alignments_to_rafs.process_region() and run there as part of the production
+Snakemake workflow (rule signalprocessing_alignments_to_rafs). The
+argparse-based CLI at the bottom of this module (get_parser()/main()) is a
+separate, standalone/debug entry point for exercising the filter directly
+against a BAM file -- no Snakemake rule invokes this module's CLI. Its
+defaults are kept aligned with alignments_to_rafs's
+--filter-nonseparated__* production defaults (min_overlap=0.3,
+min_fragment_size=500, max_inversion_coverage=0.15, cache_size=1000) so the
+two entry points cannot silently disagree.
+"""
+
 # filter non-separated reads
 # N number of maximum aligned segments in cache
 # P path to bam
@@ -292,29 +306,37 @@ def get_parser():
         "-c",
         "--cache-size",
         type=int,
-        default=300,
-        help="cache size. Shoul dbe around 10 times the depth of coverage.",
+        default=1000,
+        help="cache size. Shoul dbe around 10 times the depth of coverage. "
+        "(default: 1000, matching alignments_to_rafs's "
+        "--filter-nonseparated__cache-size-alignments-filtering)",
     )
     parser.add_argument(
         "-m",
         "--min-overlap",
         type=float,
-        default=0.5,
-        help="minimum overlap between two alignments to be considered as candidates.",
+        default=0.3,
+        help="minimum overlap between two alignments to be considered as candidates. "
+        "(default: 0.3, matching alignments_to_rafs's "
+        "--filter-nonseparated__min-overlap)",
     )
     parser.add_argument(
         "-s",
         "--min-fragment-size",
         type=int,
         default=500,
-        help="minimum size of fragment to be considered as candidate.",
+        help="minimum size of fragment to be considered as candidate. "
+        "(default: 500, matching alignments_to_rafs's "
+        "--filter-nonseparated__min-fragment-size)",
     )
     parser.add_argument(
         "-v",
         "--max-inversion-coverage",
         type=float,
-        default=0.1,
-        help="maximum coverage by candidates to be considered as candidate. Increase if a greater proportion of the depth of coverage is attributed to candidates.",
+        default=0.15,
+        help="maximum coverage by candidates to be considered as candidate. Increase if a greater proportion of the depth of coverage is attributed to candidates. "
+        "(default: 0.15, matching alignments_to_rafs's "
+        "--filter-nonseparated__max-inversion-coverage)",
     )
     return parser
 
