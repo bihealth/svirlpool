@@ -2157,11 +2157,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
         help="Fraction of the larger complexity-adjusted size that two SVs may differ "
-        "by and still be merged (default: 0.67). 0.0 = no tolerance (sizes must be "
+        "by and still be merged (default: 0.06). 0.0 = no tolerance (sizes must be "
         "identical); 1.0 = maximum tolerance (all size pairs merge). Decrease for "
         "stronger separation of haplotypes.",
         type=float,
-        default=0.67,
+        default=0.06,
     )
     parser.add_argument(
         "--symbolic-threshold",
