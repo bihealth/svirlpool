@@ -397,7 +397,6 @@ class SVcall:
     svtype: str  # e.g. "INS", "DEL", "BND", "INV", "DUP"
     svlen: int  # length of the SV, e.g. for INS it is the length of the inserted sequence, for DEL it is the length of the deleted sequence
     pass_altreads: int
-    pass_gq: int
     precise: bool
     mateid: str  # list of mate breakends' IDs
     consensusIDs: list[
@@ -424,7 +423,6 @@ class SVcall:
     ) -> str | None:
         info_fields: dict = {
             "PASS_ALTREADS": self.pass_altreads,
-            "pass_GQ": self.pass_gq,
             "SVTYPE": self.svtype,
             "END": str(
                 self.end + ONE_BASED
@@ -850,8 +848,7 @@ def svcall_object_from_svcomposite(
         max(genotypes.items(), key=lambda x: x[1].var_reads)[1].var_reads
         >= min_alt_reads
     )
-    pass_gq = True
-    passing: bool = pass_altreads and pass_gq
+    passing: bool = pass_altreads
 
     # call is not precise if it is in a repeat. Check for repeatIDs
     precise: bool = not bool(
@@ -876,7 +873,6 @@ def svcall_object_from_svcomposite(
         svtype=svComposite.sv_type.get_sv_type(),
         svlen=svlen,
         pass_altreads=pass_altreads,
-        pass_gq=pass_gq,
         precise=precise,
         mateid="",
         consensusIDs=consensusIDs,
@@ -1120,8 +1116,7 @@ def svcall_objects_from_Adjacencies(
     ].var_reads
     pass_altreads: bool = max(max_var_reads_0, max_var_reads_1) >= min_alt_reads
 
-    pass_gq = True
-    passing: bool = pass_altreads and pass_gq
+    passing: bool = pass_altreads
 
     # Check if call is precise (not in a repeat)
     precise: bool = not bool(
@@ -1150,7 +1145,6 @@ def svcall_objects_from_Adjacencies(
         svtype="BND",
         svlen=svlen,
         pass_altreads=pass_altreads,
-        pass_gq=pass_gq,
         precise=precise,
         mateid=mateid_1,  # Points to the mate (break end 1)
         consensusIDs=consensusIDs,
@@ -1169,7 +1163,6 @@ def svcall_objects_from_Adjacencies(
         svtype="BND",
         svlen=svlen,
         pass_altreads=pass_altreads,
-        pass_gq=pass_gq,
         precise=precise,
         mateid=mateid_0,  # Points to the mate (break end 0)
         consensusIDs=consensusIDs,
@@ -1313,9 +1306,6 @@ def generate_header(
     )
     header.append(
         '##INFO=<ID=PASS_ALTREADS,Number=1,Type=String,Description="Passed alt reads threshold">'
-    )
-    header.append(
-        '##INFO=<ID=pass_GQ,Number=1,Type=String,Description="Passed Genotype precision threshold">'
     )
     header.append(
         '##INFO=<ID=PRECISE,Number=0,Type=Flag,Description="Precise structural variant">'
