@@ -46,23 +46,28 @@ def alt_sequence_for_MergedSVSignal(
     seq = ""
     readstart = merged_signal.read_start - interval_core[0]
     readend = merged_signal.read_end - interval_core[0]
+    # Breakends are anchored on a single base. A breakend may sit exactly on the
+    # border of the core interval - a right breakend from a soft clip has
+    # read_start == read_end == interval_core[1] - which puts readstart one past
+    # the last base of the core sequence. Anchor those on the last base instead.
+    bnd_anchor = min(readstart, len(consensus_sequence) - 1)
     if merged_signal.sv_type == 0:
         alt_seq = Seq(consensus_sequence[readstart:readend])
         seq = str(alt_seq.reverse_complement()) if reverse else str(alt_seq)
     elif merged_signal.sv_type == 3:  # BND
         if reverse:
-            seq = str(Seq(consensus_sequence[readstart]).reverse_complement())
+            seq = str(Seq(consensus_sequence[bnd_anchor]).reverse_complement())
         else:
-            seq = str(consensus_sequence[readstart])
+            seq = str(consensus_sequence[bnd_anchor])
         # if reverse:
         #     seq = str(Seq(consensus_sequence[readstart:]).reverse_complement())
         # else:
         #     seq = str(consensus_sequence[:readstart])
     elif merged_signal.sv_type == 4:  # BND
         if reverse:
-            seq = str(Seq(consensus_sequence[readstart]).reverse_complement())
+            seq = str(Seq(consensus_sequence[bnd_anchor]).reverse_complement())
         else:
-            seq = str(consensus_sequence[readstart])
+            seq = str(consensus_sequence[bnd_anchor])
         # if reverse:
         #     seq = str(Seq(consensus_sequence[:readstart]).reverse_complement())
         # else:
