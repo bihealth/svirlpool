@@ -3797,7 +3797,11 @@ def _configure_diagnostic_logger(log_level: int, diag_logfile: str | None) -> No
     diag_log.addHandler(stderr_handler)
 
     if diag_logfile:
-        diag_file_handler = _FlushingFileHandler(diag_logfile, mode="w")
+        # Append, never truncate: the workflow also pipes stdout/stderr through
+        # `tee -a` into this same file so that shell-level death messages land
+        # here. A truncating handler would write from offset 0 and overwrite
+        # what tee appended, destroying exactly the evidence we want.
+        diag_file_handler = _FlushingFileHandler(diag_logfile, mode="a")
         diag_file_handler.setLevel(log_level)
         diag_file_handler.setFormatter(formatter)
         diag_log.addHandler(diag_file_handler)
