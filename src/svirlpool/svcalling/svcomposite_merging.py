@@ -36,7 +36,11 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
         a.sv_type, SVpatterns.SVpatternInversion
     ):
         complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
-        tracks = [c for c in (complexities or []) if len(c) > 0]
+        # get_sequence_complexity() returns None whenever the track was never
+        # computed — set_sequence only computes it for sequences up to
+        # sequence_complexity_max_length (300 bp) — and the getter appends that
+        # None unfiltered. Guard for it, or every event above 300 bp raises here.
+        tracks = [c for c in (complexities or []) if c is not None and len(c) > 0]
         if not tracks:
             # No complexity evidence at all. Fail CLOSED: grant no extra
             # tolerance, matching the initialisation above, which already uses
@@ -60,7 +64,11 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
             )
     elif issubclass(a.sv_type, SVpatterns.SVpatternDeletion):
         complexities: list[np.ndarray] = a.get_reference_complexity_tracks()
-        tracks = [c for c in (complexities or []) if len(c) > 0]
+        # get_sequence_complexity() returns None whenever the track was never
+        # computed — set_sequence only computes it for sequences up to
+        # sequence_complexity_max_length (300 bp) — and the getter appends that
+        # None unfiltered. Guard for it, or every event above 300 bp raises here.
+        tracks = [c for c in (complexities or []) if c is not None and len(c) > 0]
         if not tracks:
             # No complexity evidence at all. Fail CLOSED: grant no extra
             # tolerance, matching the initialisation above, which already uses

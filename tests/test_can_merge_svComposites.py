@@ -6,17 +6,38 @@ Tests the two-test size comparison logic:
 If either test passes, the variants are considered similar in size.
 """
 
+import random
+
 from svirlpool.localassembly import SVpatterns, SVprimitives
 from svirlpool.svcalling import genotyping
 from svirlpool.svcalling.SVcomposite import SVcomposite
 from svirlpool.svcalling.svcomposite_merging import (
     can_merge_svComposites_deletions,
     can_merge_svComposites_insertions,
+    sizetolerance_from_SVcomposite,
 )
 
 # ---------------------------------------------------------------------------
 # Helper factories
 # ---------------------------------------------------------------------------
+
+
+def _random_dna(length: int, seed: int) -> str:
+    """A high-complexity DNA string, reproducible from `seed`.
+
+    The merge criterion is parameterised by sequence complexity, so a test that
+    leaves the sequence at the default homopolymer is not testing the threshold
+    it names — it is testing the maximum complexity allowance. Use this wherever
+    the intent is "well-resolved sequence"; use an explicit "A" * n wherever the
+    intent is a repeat.
+
+    Note complexity is only computed for sequences up to
+    `sequence_complexity_max_length` (300 bp, SVpatterns.set_sequence). Above
+    that no track exists and the complexity allowance is zero regardless of
+    sequence, so keep sizes at or below 300 in tests that exercise complexity.
+    """
+    rng = random.Random(seed)
+    return "".join(rng.choice("ACGT") for _ in range(length))
 
 
 def _make_genotype(reads: list[str] | None = None) -> genotyping.GenotypeMeasurement:
@@ -161,6 +182,50 @@ def _make_deletion_composite(
 # ===========================================================================
 
 
+class TestComplexityTolerance:
+    """The complexity -> tolerance relation the size gate is built on.
+
+    Kept separate and first, so that if `complexity_local_track` ever changes
+    scale or normalisation the failure lands here rather than surfacing as an
+    inexplicable merge/reject flip in the tests below.
+    """
+
+    def test_low_complexity_grants_more_tolerance_than_high(self):
+        """Lower complexity must grant a larger size tolerance. Monotone, in bp.
+
+        High complexity means well-resolved sequence: the aligner has little
+        freedom in where it places an indel or how large it calls it, so two
+        sizes should have to agree closely. Low complexity means the opposite.
+        """
+        homopolymer = _make_insertion_composite(size=200, sequence="A" * 200)
+        random_dna = _make_insertion_composite(
+            size=200, sequence=_random_dna(200, seed=42)
+        )
+
+        tol_low = sizetolerance_from_SVcomposite(homopolymer)
+        tol_high = sizetolerance_from_SVcomposite(random_dna)
+
+        assert tol_low > tol_high, (
+            f"homopolymer tolerance {tol_low:.1f} bp should exceed "
+            f"random-sequence tolerance {tol_high:.1f} bp"
+        )
+        # Bounded by the event's own size, and non-negative.
+        assert 0.0 <= tol_high <= 200.0
+        assert 0.0 <= tol_low <= 200.0
+
+    def test_absent_complexity_track_grants_no_tolerance(self):
+        """No complexity evidence must fail CLOSED, not open.
+
+        `set_sequence` only computes a complexity track up to
+        `sequence_complexity_max_length` (300 bp), so a larger insertion has no
+        track at all. That is missing data, and it must grant no allowance — as
+        opposed to a track that is present and all zeros, which is genuine
+        minimum complexity and does grant the maximum (covered above).
+        """
+        no_track = _make_insertion_composite(size=1000, sequence="A" * 1000)
+        assert sizetolerance_from_SVcomposite(no_track) == 0.0
+
+
 class TestCanMergeInsertions:
     """Tests for can_merge_svComposites_insertions."""
 
@@ -244,27 +309,113 @@ class TestCanMergeInsertions:
         )
 
     def test_very_different_sizes_reject(self):
-        """With the corrected fraction formula, very different sizes are rejected.
+        """Very different sizes are rejected when the sequence is well resolved.
 
-        Sizes 100 vs 200 (100% difference) fail the fraction test: the corrected
-        check |a_adj - b_adj| <= tol * max(a_adj, b_adj) requires the relative
-        size difference to be within `tol` (here 10%), and a 2x size difference
-        is not. The population (Cohen's D) test also fails here, so the merge
-        is correctly rejected.
+        Sizes 100 vs 200 (a 2x difference) fail the fraction test, which requires
+        the relative size difference to be within `tol` (here 10%). With a
+        high-complexity sequence the complexity allowance is close to zero, so the
+        shifted Cohen's D test fails as well and the merge is correctly rejected.
+
+        The sequence matters: complexity is what decides how much size disagreement
+        is tolerated (see test_very_different_sizes_merge_in_low_complexity for the
+        same sizes in a homopolymer).
         """
         a = _make_insertion_composite(
             size=100,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
+            sequence=_random_dna(100, seed=1),
         )
         b = _make_insertion_composite(
             size=200,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
+            sequence=_random_dna(200, seed=2),
         )
         assert not can_merge_svComposites_insertions(
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=300,
+            min_kmer_overlap=0.0,
+            scale_by_complexity_factor=1.0,
+        )
+
+    def test_very_different_sizes_merge_in_low_complexity(self):
+        """The same sizes DO merge inside a homopolymer, and that is intended.
+
+        Complexity is a proxy for how much placement and size ambiguity the aligner
+        introduces at a locus. In a poly-A run it has near-total freedom in both,
+        so `sizetolerance_from_SVcomposite` grants a tolerance approaching the full
+        event size and a 100 bp and a 200 bp insertion at the same position are
+        treated as one VNTR allele family.
+
+        This is the mirror image of test_very_different_sizes_reject: identical
+        sizes, identical thresholds, opposite outcome, decided only by sequence
+        complexity. Setting `scale_by_complexity_factor=0.0` withdraws the
+        allowance and restores rejection.
+        """
+        a = _make_insertion_composite(
+            size=100,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence="A" * 100,
+        )
+        b = _make_insertion_composite(
+            size=200,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence="A" * 200,
+        )
+        kwargs = dict(
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=300,
+            min_kmer_overlap=0.0,
+        )
+        assert can_merge_svComposites_insertions(
+            **kwargs, scale_by_complexity_factor=1.0
+        )
+        assert not can_merge_svComposites_insertions(
+            **kwargs, scale_by_complexity_factor=0.0
+        )
+
+    def test_identical_sizes_merge_regardless_of_complexity(self):
+        """Regression guard: a complexity difference is not a size difference.
+
+        Until this was fixed the gate compared complexity-ADJUSTED sizes,
+        `lerp(size, size * complexity, scale)`. Because the two composites'
+        complexity tracks are estimated from different consensus sequences in
+        different samples, that turned a complexity difference into a size
+        difference out of nothing: two events of IDENTICAL size were rejected once
+        their complexity estimates differed by more than about 0.090 — scale
+        invariantly, and hardest inside the repeats where the estimates diverge
+        most, which is precisely where merging matters.
+
+        Same size, maximally different sequence complexity, must merge.
+        """
+        a = _make_insertion_composite(
+            size=200,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence=_random_dna(200, seed=3),
+        )
+        b = _make_insertion_composite(
+            size=200,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence="A" * 200,
+        )
+        assert can_merge_svComposites_insertions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
