@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from ..localassembly import SVpatterns
 from ..util.datastructures import UnionFind
-from ..util.util import kmer_similarity_of_groups, lerp
+from ..util.util import kmer_similarity_of_groups
 from .SVcomposite import SVcomposite
 from .svcomposite_utils import (
     _crIDs_from_svcomposite,
@@ -36,35 +36,140 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
         a.sv_type, SVpatterns.SVpatternInversion
     ):
         complexities: list[np.ndarray] = a.get_inserted_complexity_tracks()
-        if (
-            complexities is None
-            or len(complexities) == 0
-            or sum((np.sum(s) for s in complexities)) == 0
-        ):
-            mean_complexity = 0.0
+        tracks = [c for c in (complexities or []) if len(c) > 0]
+        if not tracks:
+            # No complexity evidence at all. Fail CLOSED: grant no extra
+            # tolerance, matching the initialisation above, which already uses
+            # 1.0 for SV types this function does not handle. Absence of evidence
+            # for aligner ambiguity is not evidence of ambiguity.
+            #
+            # Note this is deliberately NOT the same as a track that is present
+            # and all zeros. That is not missing data, it is *minimum* complexity
+            # — a homopolymer or a perfect repeat — and it must fall through to
+            # mean_complexity = 0.0 below, which grants the maximum tolerance.
+            # Those are the loci where aligner placement is most arbitrary and
+            # where tolerance matters most; collapsing the two cases inverts the
+            # criterion exactly where it is load-bearing.
+            mean_complexity = 1.0
         else:
             mean_complexity = float(
                 np.average(
-                    [np.mean(c) for c in complexities],
-                    weights=[len(c) for c in complexities],
+                    [np.mean(c) for c in tracks],
+                    weights=[len(c) for c in tracks],
                 )
             )
     elif issubclass(a.sv_type, SVpatterns.SVpatternDeletion):
         complexities: list[np.ndarray] = a.get_reference_complexity_tracks()
-        if (
-            complexities is None
-            or len(complexities) == 0
-            or np.sum([np.sum(s) for s in complexities]) == 0
-        ):  # try np.sum(np.fromiter(generator))
-            mean_complexity = 0.0
+        tracks = [c for c in (complexities or []) if len(c) > 0]
+        if not tracks:
+            # No complexity evidence at all. Fail CLOSED: grant no extra
+            # tolerance, matching the initialisation above, which already uses
+            # 1.0 for SV types this function does not handle. Absence of evidence
+            # for aligner ambiguity is not evidence of ambiguity.
+            #
+            # Note this is deliberately NOT the same as a track that is present
+            # and all zeros. That is not missing data, it is *minimum* complexity
+            # — a homopolymer or a perfect repeat — and it must fall through to
+            # mean_complexity = 0.0 below, which grants the maximum tolerance.
+            # Those are the loci where aligner placement is most arbitrary and
+            # where tolerance matters most; collapsing the two cases inverts the
+            # criterion exactly where it is load-bearing.
+            mean_complexity = 1.0
         else:
             mean_complexity = float(
                 np.average(
-                    [np.mean(c) for c in complexities],
-                    weights=[len(c) for c in complexities],
+                    [np.mean(c) for c in tracks],
+                    weights=[len(c) for c in tracks],
                 )
             )
-    return mean_complexity
+    # Sequence complexity is a proxy for how much placement and size ambiguity the
+    # aligner introduces at this locus: the lower the complexity, the more freedom
+    # it has in where it puts an indel and how large it calls it. Complexity must
+    # therefore GRANT tolerance, in bp and on the event's own scale.
+    #
+    # It must never be used to rescale the sizes being compared. The two
+    # composites' complexity tracks are estimated from different consensus
+    # sequences in different samples, so a difference between them is
+    # indistinguishable from a difference in size — which inverts the intent and
+    # can only ever suppress merges, hardest inside the VNTRs where the estimates
+    # diverge most. Returning a bare fraction here, and multiplying the sizes by
+    # it, was exactly that inversion. This is the v0.1.2 form.
+    return (1.0 - mean_complexity) * float(abs(a.get_size()))
+
+
+def _similar_size(
+    a: SVcomposite,
+    b: SVcomposite,
+    apriori_size_difference_fraction_tolerance: float,
+    scale_by_complexity_factor: float,
+    d: float,
+) -> tuple[bool, bool, bool, float]:
+    """Two-armed size-similarity test, shared by insertions, deletions and inversions.
+
+    Arm 1 — a fractional bound on the **raw** sizes:
+        |size_a - size_b| <= tol * max(size_a, size_b)
+    Strict for tol < 1.0, and vacuous at tol = 1.0, since |x - y| <= max(x, y)
+    holds for every non-negative x, y.
+
+    Arm 2 — Cohen's *d* on the two size populations, after shifting their means
+    toward each other by the complexity-derived tolerance, so that the effect size
+    is measured *after* granting that tolerance rather than before.
+
+    The arms are OR-ed, so this is the union of two acceptance regions and the
+    weaker arm dominates. That is intended, but it is also why a vacuous arm 1
+    silences arm 2 completely.
+
+    Returns (similar_size, fraction_similar, population_similar, cohensD); cohensD
+    is nan when it was not computed.
+    """
+    size_a = a.get_size()
+    size_b = b.get_size()
+
+    # --- Arm 1: fractional bound on raw sizes --------------------------------
+    max_size = max(abs(size_a), abs(size_b))
+    log_size = np.log2(abs(size_a - size_b) + 1)
+    # apriori_size_difference_fraction_tolerance is the fraction of the larger of
+    # the two sizes that they may differ by and still count as similar: 0.0 means
+    # the sizes must be identical, 1.0 means any pair of non-negative sizes passes.
+    fraction_similar = (
+        max_size > 0
+        and abs(size_a - size_b)
+        <= apriori_size_difference_fraction_tolerance * max_size
+    ) or abs(size_a - size_b) < log_size
+
+    # --- Arm 2: Cohen's d on tolerance-shifted populations -------------------
+    size_tolerance_a = scale_by_complexity_factor * sizetolerance_from_SVcomposite(a)
+    size_tolerance_b = scale_by_complexity_factor * sizetolerance_from_SVcomposite(b)
+
+    population_a = np.array(a.get_size_populations(), dtype=np.int32) + size_a
+    population_b = np.array(b.get_size_populations(), dtype=np.int32) + size_b
+
+    cohensD = float("nan")
+    if len(population_a) > 0 and len(population_b) > 0:
+        mean_a = float(np.mean(population_a))
+        mean_b = float(np.mean(population_b))
+        if abs(mean_a - mean_b) <= (size_tolerance_a + size_tolerance_b):
+            # The granted tolerances already close the gap between the two
+            # populations; no effect size below that separation is meaningful.
+            population_similar = True
+        else:
+            if mean_a > mean_b:
+                shifted_a = population_a - size_tolerance_a
+                shifted_b = population_b + size_tolerance_b
+            else:
+                shifted_a = population_a + size_tolerance_a
+                shifted_b = population_b - size_tolerance_b
+            cohensD = cohens_d(shifted_a, shifted_b)
+            population_similar = abs(cohensD) <= abs(d)
+    else:
+        population_similar = False
+
+    return (
+        fraction_similar or population_similar,
+        fraction_similar,
+        population_similar,
+        cohensD,
+    )
 
 
 def can_merge_svComposites_insertions(
@@ -125,34 +230,14 @@ def can_merge_svComposites_insertions(
 
     size_a = a.get_size()
     size_b = b.get_size()
-    scale_factor_a = sizetolerance_from_SVcomposite(a)
-    scale_factor_b = sizetolerance_from_SVcomposite(b)
-    size_a_adjusted = lerp(size_a, size_a * scale_factor_a, scale_by_complexity_factor)
-    size_b_adjusted = lerp(size_b, size_b * scale_factor_b, scale_by_complexity_factor)
 
-    # Test 1: Simple fractional size difference check
-    max_size = max(size_a_adjusted, size_b_adjusted)
-    log_size = np.log2(abs(size_a - size_b) + 1)
-    # apriori_size_difference_fraction_tolerance is the fraction of the larger
-    # (complexity-adjusted) size that the two sizes may differ by and still be
-    # considered similar: 0.0 means no tolerance (sizes must be identical), 1.0
-    # means maximum tolerance (any pair of non-negative sizes passes).
-    fraction_similar = (
-        max_size > 0
-        and abs(size_a_adjusted - size_b_adjusted)
-        <= apriori_size_difference_fraction_tolerance * max_size
-    ) or abs(size_a - size_b) < log_size
-
-    # Test 2: Population-driven Cohen's D on background noise signals
-    population_a = np.array(a.get_size_populations(), dtype=np.int32) + size_a
-    population_b = np.array(b.get_size_populations(), dtype=np.int32) + size_b
-    if len(population_a) > 0 and len(population_b) > 0:
-        cohensD = cohens_d(population_a, population_b)
-        population_similar = abs(cohensD) <= abs(d)
-    else:
-        population_similar = False
-
-    similar_size = fraction_similar or population_similar
+    similar_size, fraction_similar, population_similar, cohensD = _similar_size(
+        a,
+        b,
+        apriori_size_difference_fraction_tolerance,
+        scale_by_complexity_factor,
+        d,
+    )
 
     if verbose:
         print(
@@ -160,10 +245,10 @@ def can_merge_svComposites_insertions(
             f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
             f"similar_size={similar_size}"
         )
-        if len(population_a) > 0 and len(population_b) > 0:
+        if not np.isnan(cohensD):
             print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
-        print(f"  Population A sizes: {population_a.tolist()}")
-        print(f"  Population B sizes: {population_b.tolist()}")
+        print(f"  Population A sizes: {list(a.get_size_populations())}")
+        print(f"  Population B sizes: {list(b.get_size_populations())}")
 
     # if the inserton is between two break points, then it is necessary to take the sequence from inserted_sequence
     if size_a < 100 and size_b < 100:
@@ -260,34 +345,14 @@ def can_merge_svComposites_deletions(
 
     size_a = a.get_size()
     size_b = b.get_size()
-    scale_factor_a = sizetolerance_from_SVcomposite(a)
-    scale_factor_b = sizetolerance_from_SVcomposite(b)
-    size_a_adjusted = lerp(size_a, size_a * scale_factor_a, scale_by_complexity_factor)
-    size_b_adjusted = lerp(size_b, size_b * scale_factor_b, scale_by_complexity_factor)
 
-    # Test 1: Simple fractional size difference check
-    max_size = max(size_a_adjusted, size_b_adjusted)
-    log_size = np.log2(abs(size_a - size_b) + 1)
-    # apriori_size_difference_fraction_tolerance is the fraction of the larger
-    # (complexity-adjusted) size that the two sizes may differ by and still be
-    # considered similar: 0.0 means no tolerance (sizes must be identical), 1.0
-    # means maximum tolerance (any pair of non-negative sizes passes).
-    fraction_similar = (
-        max_size > 0
-        and abs(size_a_adjusted - size_b_adjusted)
-        <= apriori_size_difference_fraction_tolerance * max_size
-    ) or abs(size_a - size_b) < log_size
-
-    # Test 2: Population-driven Cohen's D on background noise signals
-    population_a = np.array(a.get_size_populations(), dtype=np.int32) + size_a
-    population_b = np.array(b.get_size_populations(), dtype=np.int32) + size_b
-    if len(population_a) > 0 and len(population_b) > 0:
-        cohensD = cohens_d(population_a, population_b)
-        population_similar = abs(cohensD) <= abs(d)
-    else:
-        population_similar = False
-
-    similar_size = population_similar or fraction_similar
+    similar_size, fraction_similar, population_similar, cohensD = _similar_size(
+        a,
+        b,
+        apriori_size_difference_fraction_tolerance,
+        scale_by_complexity_factor,
+        d,
+    )
 
     if verbose:
         print(
@@ -295,10 +360,10 @@ def can_merge_svComposites_deletions(
             f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
             f"similar_size={similar_size}"
         )
-        if len(population_a) > 0 and len(population_b) > 0:
+        if not np.isnan(cohensD):
             print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
-        print(f"  Population A sizes: {population_a.tolist()}")
-        print(f"  Population B sizes: {population_b.tolist()}")
+        print(f"  Population A sizes: {list(a.get_size_populations())}")
+        print(f"  Population B sizes: {list(b.get_size_populations())}")
 
     if size_a < 100 and size_b < 100:
         similarity = 1.0  # don't compare k-mers for small deletions, they are too short to be meaningful
@@ -695,34 +760,14 @@ def can_merge_svComposites_inversions(
     # this allows to merge e.g. inverted dels with inverted dups given a stronger local noise.
     size_a = a.get_size()
     size_b = b.get_size()
-    scale_factor_a = sizetolerance_from_SVcomposite(a)
-    scale_factor_b = sizetolerance_from_SVcomposite(b)
-    size_a_adjusted = lerp(size_a, size_a * scale_factor_a, scale_by_complexity_factor)
-    size_b_adjusted = lerp(size_b, size_b * scale_factor_b, scale_by_complexity_factor)
 
-    # Test 1: Simple fractional size difference check
-    max_size = max(size_a_adjusted, size_b_adjusted)
-    log_size = np.log2(abs(size_a - size_b) + 1)
-    # apriori_size_difference_fraction_tolerance is the fraction of the larger
-    # (complexity-adjusted) size that the two sizes may differ by and still be
-    # considered similar: 0.0 means no tolerance (sizes must be identical), 1.0
-    # means maximum tolerance (any pair of non-negative sizes passes).
-    fraction_similar = (
-        max_size > 0
-        and abs(size_a_adjusted - size_b_adjusted)
-        <= apriori_size_difference_fraction_tolerance * max_size
-    ) or abs(size_a - size_b) < log_size
-
-    # Test 2: Population-driven Cohen's D on background noise signals
-    population_a = np.array(a.get_size_populations(), dtype=np.int32) + size_a
-    population_b = np.array(b.get_size_populations(), dtype=np.int32) + size_b
-    if len(population_a) > 0 and len(population_b) > 0:
-        cohensD = cohens_d(population_a, population_b)
-        population_similar = abs(cohensD) <= abs(d)
-    else:
-        population_similar = False
-
-    similar_size = fraction_similar or population_similar
+    similar_size, fraction_similar, population_similar, cohensD = _similar_size(
+        a,
+        b,
+        apriori_size_difference_fraction_tolerance,
+        scale_by_complexity_factor,
+        d,
+    )
 
     if verbose:
         print(
@@ -730,10 +775,10 @@ def can_merge_svComposites_inversions(
             f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
             f"similar_size={similar_size}"
         )
-        if len(population_a) > 0 and len(population_b) > 0:
+        if not np.isnan(cohensD):
             print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
-        print(f"  Population A sizes: {population_a.tolist()}")
-        print(f"  Population B sizes: {population_b.tolist()}")
+        print(f"  Population A sizes: {list(a.get_size_populations())}")
+        print(f"  Population B sizes: {list(b.get_size_populations())}")
 
     # Use inserted sequences from inversions for k-mer similarity comparison
     # For inversions, we need to get the inverted sequences (inserted_sequence from SVpatternInversion)
