@@ -655,23 +655,30 @@ class TestCanMergeDeletions:
         )
 
     def test_very_different_sizes_reject(self):
-        """With the corrected fraction formula, a 150% size difference is rejected.
+        """A 150% size difference is rejected when the reference is well resolved.
 
-        Sizes 100 vs 250 fail the corrected fraction test (the relative size
-        difference far exceeds the 10% tolerance). The population check also
-        fails (high Cohen's D), so the merge is correctly rejected.
+        Sizes 100 vs 250 fail the fraction test (the relative size difference far
+        exceeds the 10% tolerance). With a high-complexity reference span the
+        complexity allowance is small, so the shifted Cohen's D test fails too and
+        the merge is correctly rejected.
+
+        Deletions take their complexity from the REFERENCE span rather than an
+        assembled sequence (`get_reference_complexity_tracks`), which is the right
+        substrate: it is the reference the aligner is placing the event against.
         """
         a = _make_deletion_composite(
             size=100,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
+            sequence=_random_dna(100, seed=11),
         )
         b = _make_deletion_composite(
             size=250,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
+            sequence=_random_dna(250, seed=12),
         )
         assert not can_merge_svComposites_deletions(
             a=a,
@@ -680,6 +687,49 @@ class TestCanMergeDeletions:
             d=2.0,
             near=350,
             min_kmer_overlap=0.0,
+        )
+
+    def test_very_different_sizes_merge_in_low_complexity(self):
+        """The same sizes merge inside a low-complexity reference span.
+
+        The mirror of the test above, and the deletion counterpart of
+        TestCanMergeInsertions.test_very_different_sizes_merge_in_low_complexity.
+        In a homopolymer the aligner's choice of deletion boundaries — and
+        therefore of size — is close to arbitrary, so a 100 bp and a 250 bp
+        deletion at the same position are treated as one allele family.
+
+        This is also the regime where the k-mer test cannot help: a smaller
+        deletion nested in a larger one at the same locus is k-mer identical by
+        construction, so size is the only criterion left, and it is the one that
+        complexity relaxes here.
+        """
+        a = _make_deletion_composite(
+            size=100,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence="A" * 100,
+        )
+        b = _make_deletion_composite(
+            size=250,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence="A" * 250,
+        )
+        kwargs = dict(
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=350,
+            min_kmer_overlap=0.0,
+        )
+        assert can_merge_svComposites_deletions(
+            **kwargs, scale_by_complexity_factor=1.0
+        )
+        assert not can_merge_svComposites_deletions(
+            **kwargs, scale_by_complexity_factor=0.0
         )
 
     def test_empty_populations_fraction_pass(self):
