@@ -1394,6 +1394,32 @@ class TestCohensDIsNotEstimableOnDegenerateInput:
         assert cohens_d([500], [600]) is None
         assert cohens_d([500], [500]) is None
 
+    def test_a_constant_pair_is_detected_when_the_pooled_std_is_not_exactly_zero(
+        self,
+    ):
+        """The degeneracy test cannot be `pooled_std == 0`, and this is why.
+
+        `np.mean` of an array of *identical* elements is not exactly that
+        element: numpy sums pairwise, and the value need not be representable.
+        19 copies of 6164.5678 have a range of exactly 0 but a sample standard
+        deviation of 9.3e-13, so the old guard did not fire and the quotient
+        came back around 1e16 -- finite, and indistinguishable in a log from a
+        real effect size.
+
+        This is not a contrived array. It is what arm 2 hands to `cohens_d` at
+        every locus where the distortion estimates are all 0.0: a constant
+        population, shifted by a fractional complexity tolerance. On the real
+        chr6 VNTR pair (4,930 bp vs 18,028 bp) the value observed was
+        -2.07e16, never `inf`.
+        """
+        x = np.full(19, 4930.0) + 1234.5678
+        y = np.full(19, 18028.0) - 1234.5678
+        assert np.ptp(x) == 0.0 and np.ptp(y) == 0.0, "both samples are constant"
+        assert np.std(x, ddof=1) != 0.0, (
+            "the premise of this test: the computed spread is not exactly zero"
+        )
+        assert cohens_d(x, y) is None
+
     def test_a_constant_group_against_a_spread_group_is_estimable(self):
         """Degeneracy is a property of the *pair*, not of one group.
 
@@ -1540,6 +1566,38 @@ class TestDegeneratePopulationsDoNotDecideMerges:
         assert not [
             r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
         ]
+
+    def test_a_constant_population_of_real_distortions_is_still_degenerate(
+        self, caplog
+    ):
+        """The same trap, reached the way production reaches it.
+
+        Real distortion values are weighted means, i.e. arbitrary doubles, not
+        the small dyadic fractions a hand-written fixture tends to produce. A
+        population of 19 identical copies of 100.1 has a range of exactly 0 and
+        a computed sample standard deviation of 1.5e-14, so a guard written as
+        `pooled_std == 0` does not fire and Cohen's *d* comes back as a finite
+        number of order 1e16. Degeneracy has to be decided on the range of the
+        inputs, and this asserts that it is.
+        """
+        distortions = {f"r{i}": 0.1 for i in range(19)}
+        a, b = self._pair(100, 300, distortions, distortions)
+        population_a = np.array(a.get_size_populations()) + a.get_size()
+        assert np.ptp(population_a) == 0.0, "the population is constant"
+        assert np.std(population_a, ddof=1) != 0.0, (
+            "the premise: its *computed* spread is not exactly zero"
+        )
+        with caplog.at_level(
+            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
+        ):
+            _, _, population_similar, cohensD = svcomposite_merging._similar_size(
+                a, b, 0.1, 0.0, 2.0
+            )
+        assert cohensD is None
+        assert not population_similar
+        assert any(
+            "DEGENERATE_SIZE_POPULATION" in record.message for record in caplog.records
+        )
 
     def test_empty_populations_are_not_reported_as_degenerate(self, caplog):
         """No population at all is missing data, not a degenerate one."""
