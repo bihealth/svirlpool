@@ -117,19 +117,75 @@ def svPrimitives_to_svPatterns(
     return svpatterns
 
 
+# ``distortions_by_svPattern`` returns ``dict.fromkeys(supporting_reads, 0.0)``
+# whenever it cannot weight anything, so a dict whose values are *all* exactly
+# 0.0 is the signature of a locus where the read-derived noise model carries no
+# information at all. With the production defaults this is the normal outcome
+# for essentially every locus beyond ~3.73 Mb (the exponential distance weight
+# underflows in double precision), so warning once per locus would emit millions
+# of lines over a whole genome. Only the first few loci per process are warned
+# about; every one of them is counted and the total is reported once in the run
+# summary.
+ALL_ZERO_DISTORTION_WARN_LIMIT = 5
+_all_zero_distortion_warnings_emitted = 0
+
+
+def _reset_all_zero_distortion_warnings() -> None:
+    """Reset the per-process rate limiter for all-zero distortion warnings."""
+    global _all_zero_distortion_warnings_emitted
+    _all_zero_distortion_warnings_emitted = 0
+
+
+def _report_all_zero_size_distortions(
+    svPattern: SVpatterns.SVpatternType,
+    consensusID: str,
+    n_reads: int,
+) -> None:
+    """Report a locus whose size distortions are all exactly 0.0.
+
+    Rate limited to ``ALL_ZERO_DISTORTION_WARN_LIMIT`` warnings per process;
+    beyond that the event is only visible at DEBUG level and in the run summary.
+    """
+    global _all_zero_distortion_warnings_emitted
+    try:
+        chrom, start, end = svPattern.get_reference_region()
+        region = f"{chrom}:{start}-{end}"
+    except Exception:  # pragma: no cover - defensive, region is for humans only
+        region = "unknown"
+    message = (
+        "ALL_ZERO_DISTORTIONS::add_consensus_sequence_and_size_distortions_to_svPatterns"
+        f"::(every size distortion is exactly 0.0), consensusID={consensusID}, "
+        f"region={region}, n_supporting_reads={n_reads}"
+    )
+    if _all_zero_distortion_warnings_emitted < ALL_ZERO_DISTORTION_WARN_LIMIT:
+        log.warning(message)
+        _all_zero_distortion_warnings_emitted += 1
+        if _all_zero_distortion_warnings_emitted == ALL_ZERO_DISTORTION_WARN_LIMIT:
+            log.warning(
+                "ALL_ZERO_DISTORTIONS::add_consensus_sequence_and_size_distortions_to_svPatterns"
+                f"::(further per-locus warnings suppressed after {ALL_ZERO_DISTORTION_WARN_LIMIT} "
+                "in this process; see the run summary for the total)"
+            )
+    else:
+        log.debug(message)
+
+
 def add_consensus_sequence_and_size_distortions_to_svPatterns(
     consensus_objects: dict[str, consensus_class.Consensus],
     svPatterns: list[SVpatterns.SVpatternType],
     distance_scale: float,
     falloff: float,
-) -> list[SVpatterns.SVpatternType]:
+) -> tuple[list[SVpatterns.SVpatternType], dict[str, int]]:
     """Add size distortions and inserted sequences to SVpatterns based on consensus results.
 
     This function processes SVpatterns one by one to avoid heavy memory re-allocations.
     Each processed element is copied to a new output list and deleted from input to free memory.
 
     Returns:
-        list[SVpatterns.SVpatternType]: New list with processed SVpatterns
+        tuple[list[SVpatterns.SVpatternType], dict[str, int]]: the processed
+        SVpatterns and a stats dict with ``n_patterns`` (patterns that received
+        size distortions) and ``n_all_zero_distortions`` (of those, the ones
+        whose distortion values were all exactly 0.0).
     """
     # Group SVpatterns by consensusID for efficient lookup
     svPatterns_dict = {}
@@ -141,6 +197,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
     # Track processed indices to avoid processing the same SVpattern twice
     processed_indices = set()
     output_svPatterns = []
+    stats = {"n_patterns": 0, "n_all_zero_distortions": 0}
     for consensusID, consensus in consensus_objects.items():
         if consensusID not in svPatterns_dict:
             continue
@@ -162,11 +219,26 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
             log.debug(
                 f"Size distortions for SVpattern {processed_svp.consensusID} in consensus {consensusID}: {size_distortions}"
             )
-            if size_distortions is not None and len(size_distortions) > 0:
-                processed_svp.size_distortions = size_distortions
-            else:
+            if size_distortions is None or len(size_distortions) == 0:
+                # An empty dict means the pattern has no supporting reads at all,
+                # which violates an invariant of SVpattern construction. Keep it a
+                # hard failure.
                 raise ValueError(
                     f"No size distortions found for SVpattern {processed_svp.consensusID} in consensus {consensusID}. This should not happen. Please check the input data. svPatterns: {processed_svp}\n{consensus}"
+                )
+            processed_svp.size_distortions = size_distortions
+            stats["n_patterns"] += 1
+            # A non-empty dict whose values are *all* exactly 0.0 is the failure
+            # mode this guard was written for: distortions_by_svPattern falls back
+            # to dict.fromkeys(supporting_reads, 0.0) when it can weight nothing.
+            # A *partly* zero dict is normal — reads without a distortion
+            # legitimately contribute 0.0.
+            if all(value == 0.0 for value in size_distortions.values()):
+                stats["n_all_zero_distortions"] += 1
+                _report_all_zero_size_distortions(
+                    svPattern=processed_svp,
+                    consensusID=consensusID,
+                    n_reads=len(size_distortions),
                 )
 
             # Set sequences based on SVpattern type
@@ -227,7 +299,7 @@ def add_consensus_sequence_and_size_distortions_to_svPatterns(
         if i not in processed_indices and svp is not None:
             output_svPatterns.append(svp)
 
-    return output_svPatterns
+    return output_svPatterns, stats
 
 
 def add_reference_sequence_to_svPatterns(
@@ -1678,11 +1750,17 @@ def write_sequence_fastas_to_file(
     )
 
 
-def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
+def _process_consensus_objects_to_svPatterns(
+    params: SVPatternProcessingParams,
+) -> dict[str, int]:
     """Process consensus objects to SV patterns for a single partition.
 
     Args:
         params: SVPatternProcessingParams containing all necessary parameters
+
+    Returns:
+        dict[str, int]: per-partition stats, aggregated into the run summary by
+        :func:`svPatterns_from_consensus_sequences`.
     """
     # Configure logging for this worker process
 
@@ -1708,6 +1786,9 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
     #     init_signal_loss_logger(output_path=_worker_loss_log)
     # else:
     #     init_signal_loss_logger()  # fallback to Python logger
+
+    partition_stats = {"n_patterns": 0, "n_all_zero_distortions": 0}
+    _reset_all_zero_distortion_warnings()
 
     with open(
         params.svPatterns_path, "w"
@@ -1836,12 +1917,16 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
                 f"After svPrimitives_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
             )
             # TODO: rewrite to not use input_consensus_container_results but the ready-made data files
-            svPatterns = add_consensus_sequence_and_size_distortions_to_svPatterns(
-                consensus_objects=consensus_objs,
-                svPatterns=svPatterns,
-                distance_scale=params.distance_scale,
-                falloff=params.falloff,
+            svPatterns, batch_stats = (
+                add_consensus_sequence_and_size_distortions_to_svPatterns(
+                    consensus_objects=consensus_objs,
+                    svPatterns=svPatterns,
+                    distance_scale=params.distance_scale,
+                    falloff=params.falloff,
+                )
             )
+            for key, value in batch_stats.items():
+                partition_stats[key] += value
             svp_types = {svp.get_sv_type() for svp in svPatterns}
             log.warning(
                 f"After add_consensus_sequence_and_size_distortions_to_svPatterns. {len(svPatterns)} SV patterns of types found: {svp_types}"
@@ -1870,6 +1955,8 @@ def _process_consensus_objects_to_svPatterns(params: SVPatternProcessingParams):
     # _worker_logger = get_signal_loss_logger()
     # _worker_logger.flush()
     # _worker_logger.close()
+
+    return partition_stats
 
 
 def sort_partitioned_alignments(
@@ -2090,7 +2177,7 @@ def svPatterns_from_consensus_sequences(
 
         # Process partitions in parallel
         with mp.Pool(processes=threads) as pool:
-            list(
+            partition_stats = list(
                 tqdm(
                     pool.map(_process_consensus_objects_to_svPatterns, process_args),
                     total=threads,
@@ -2101,6 +2188,21 @@ def svPatterns_from_consensus_sequences(
         log.info(
             f"Completed parallel processing of SV patterns across {threads} partitions."
         )
+
+        # Log summary statistics
+        total_patterns = sum(s["n_patterns"] for s in partition_stats)
+        total_all_zero = sum(s["n_all_zero_distortions"] for s in partition_stats)
+        log.info(
+            f"Summary: svPatterns with size distortions={total_patterns}, "
+            f"all-zero size distortions={total_all_zero}"
+        )
+        if total_all_zero > 0:
+            log.warning(
+                f"ALL_ZERO_DISTORTIONS|SUMMARY: {total_all_zero} of {total_patterns} "
+                f"svPatterns ({100.0 * total_all_zero / max(total_patterns, 1):.1f}%) "
+                "received a size-distortion dict whose values are all exactly 0.0. "
+                "The read-derived noise model contributes nothing at those loci."
+            )
 
         # Create a temporary file for concatenated JSON lines
         tmp_svpatterns_json = Path(tmp_dir) / "svpatterns_all.json"
