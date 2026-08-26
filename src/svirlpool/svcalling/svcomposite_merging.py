@@ -131,15 +131,26 @@ def _similar_size(
 
     # --- Arm 1: fractional bound on raw sizes --------------------------------
     max_size = max(abs(size_a), abs(size_b))
-    log_size = np.log2(abs(size_a - size_b) + 1)
     # apriori_size_difference_fraction_tolerance is the fraction of the larger of
     # the two sizes that they may differ by and still count as similar: 0.0 means
     # the sizes must be identical, 1.0 means any pair of non-negative sizes passes.
+    #
+    # There is deliberately no absolute floor under this bound. An earlier
+    # `or abs(size_a - size_b) < np.log2(abs(size_a - size_b) + 1)` disjunct read
+    # as one and was not: with d = |size_a - size_b|, log2(d + 1) > d only on the
+    # open interval 0 < d < 1, and d is a difference of alignment coordinates and
+    # so integral. The term never fired, and would have fired only for sub-bp
+    # differences if size ever became fractional. If a floor is wanted -- the
+    # dissertation text proposes F = 12 bp, the consensus-level indel parse
+    # threshold of `consensus_align --min-signal-size` -- it must be written as
+    # `abs(size_a - size_b) <= F` behind a named constant and benchmarked on its
+    # own, because it *loosens* the gate: at the default tolerance 0.06 it admits
+    # pairs the fractional arm rejects whenever max(size_a, size_b) < 200.
     fraction_similar = (
         max_size > 0
         and abs(size_a - size_b)
         <= apriori_size_difference_fraction_tolerance * max_size
-    ) or abs(size_a - size_b) < log_size
+    )
 
     # --- Arm 2: Cohen's d on tolerance-shifted populations -------------------
     size_tolerance_a = scale_by_complexity_factor * sizetolerance_from_SVcomposite(a)
