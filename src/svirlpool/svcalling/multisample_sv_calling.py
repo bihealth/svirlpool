@@ -410,7 +410,7 @@ class SVcall:
     )
 
     def to_log_id(self) -> str:
-        return f"{self.svtype}|{self.chrname}:{self.start}-{self.end}|consensusIDs={','.join(self.consensusIDs)}|svlen={self.svlen}|mateid={self.mateid}"
+        return f"{self.svtype}|{self.chrname}:{self.start}-{self.end}|consensusIDs={','.join(sorted(self.consensusIDs))}|svlen={self.svlen}|mateid={self.mateid}"
 
     def to_vcf_line(
         self,
@@ -429,7 +429,9 @@ class SVcall:
                 self.end + ONE_BASED
             ),  # end is inclusive in vcf, so we need to subtract 1 -> 'END':str(self.end+ONE_BASED-1)
             "SVLEN": str(self.svlen),
-            "CONSENSUSIDs": ",".join(self.consensusIDs),
+            # sorted: CONSENSUSIDs is an unordered Number=. list, and a
+            # canonical order is what makes two runs byte-comparable.
+            "CONSENSUSIDs": ",".join(sorted(self.consensusIDs)),
             "MATEID": self.mateid if len(self.mateid) > 0 else "NA",
         }
 
@@ -805,7 +807,7 @@ def svcall_object_from_svcomposite(
     )
     svlen: int = abs(svComposite.get_size())
     # Get read IDs supporting the SV. arguments: samplename, chrname, start, end, covtree
-    consensusIDs: list[str] = list({
+    consensusIDs: list[str] = sorted({
         svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
     })
 
@@ -990,7 +992,7 @@ def svcall_objects_from_Adjacencies(
         )
 
     # Collect consensusIDs from all SVpatterns in the composite
-    consensusIDs: list[str] = list({
+    consensusIDs: list[str] = sorted({
         svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
     })
 
@@ -1484,8 +1486,11 @@ def correct_genotypes_for_multi_assembly_loci(
         return svCalls
 
     # Step 3: For each affected SVcall + sample, override 1/1 → 0/1
+    #         sorted(): the emitted GENOTYPE_CORRECTION log lines are used for
+    #         run-to-run diffing, so their order must not depend on set
+    #         iteration over (samplename, crID) tuples.
     n_corrections = 0
-    for key in multi_assembly_keys:
+    for key in sorted(multi_assembly_keys):
         samplename, crID = key
         for svcall_idx in cr_svcall_indices[key]:
             svcall = svCalls[svcall_idx]
