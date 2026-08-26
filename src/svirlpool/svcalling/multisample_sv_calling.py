@@ -352,11 +352,22 @@ def generate_svComposites_from_dbs(
 # %%
 
 
+# Ceiling for the phred-scaled genotype quality of a reference call.  The
+# binomial model of `genotype_likelihood` approaches certainty asymptotically,
+# so without a cap GQ would run away at high depth; 60 is the value the rest of
+# the caller already treats as "as good as it gets".
+GQ_CEILING: int = 60
+
+# Genotype string used when there is no evidence at all.  Diploid form, matching
+# the default copy number assumed throughout this module.
+NO_CALL_GENOTYPE: str = "./."
+
+
 @attrs.define
 class Genotype:
     samplename: str
-    genotype: str  # e.g. "0/0", "0/1", "1/1"
-    gt_likelihood: float
+    genotype: str  # e.g. "0/0", "0/1", "1/1", "./." for a no-call
+    gt_likelihood: float | None  # GP; None -> "." (no genotype was called)
     genotype_quality: int  # GQ phred of gt_likelihood
     total_coverage: int  # TC
     ref_reads: int  # DR
@@ -369,21 +380,104 @@ class Genotype:
             "TC": self.total_coverage,
             "DR": self.ref_reads,
             "DV": self.var_reads,
-            "GP": self.gt_likelihood,
+            # A no-call has no genotype and therefore no genotype probability.
+            # "." is the VCF missing value and is what consumers expect here;
+            # emitting 1.0 would be the very claim this record is refusing.
+            "GP": "." if self.gt_likelihood is None else self.gt_likelihood,
         }
         return ":".join([str(properties[k]) for k in FORMAT_field.split(":")])
 
 
-def create_wild_type_genotype(samplename: str, total_coverage: int) -> Genotype:
+def phred_from_probability(probability: float, cap: int = GQ_CEILING) -> int:
+    """Phred-scale a posterior probability, capped at *cap*."""
+    if probability >= 1.0:
+        return cap
+    error = 1.0 - probability
+    if error <= 0.0:
+        return cap
+    return min(int(-10 * np.log10(error)), cap)
+
+
+def reference_genotype_string(copy_number: int) -> str:
+    """The all-reference genotype string for a locus of the given copy number."""
+    if copy_number <= 1:
+        return "0"
+    return "/".join(["0"] * copy_number)
+
+
+def create_no_call_genotype(samplename: str) -> Genotype:
+    """A genotype that refuses to make a call because there is no evidence.
+
+    Emitted where the coverage tracks show that the locus is not covered by any
+    read of this sample: a technical dropout must not be reported as an observed
+    reference allele.  TC/DR/DV are 0 because nothing was observed, GQ is 0
+    because no genotype was called, and GP is missing for the same reason.
+    """
     return Genotype(
         samplename=samplename,
-        genotype="0/0",
-        gt_likelihood=1.0,
-        genotype_quality=60,
+        genotype=NO_CALL_GENOTYPE,
+        gt_likelihood=None,
+        genotype_quality=0,
+        total_coverage=0,
+        ref_reads=0,
+        var_reads=0,
+    )
+
+
+def create_wild_type_genotype(
+    samplename: str,
+    total_coverage: int,
+    copy_number: int = 2,
+    legacy_force_call: bool = False,
+) -> Genotype:
+    """A homozygous-reference call justified by *total_coverage* observed reads.
+
+    The quality is derived from the same binomial model that scores every other
+    genotype (`genotype_likelihood` with zero alternate reads), so it grows with
+    depth and reaches `GQ_CEILING` only at high depth.
+
+    With *legacy_force_call* the pre-v0.3 behaviour is reproduced exactly:
+    ``0/0`` with ``GP = 1.0`` and ``GQ = 60`` regardless of depth, including
+    zero depth.  See ``--legacy-force-wildtype-genotypes``.
+    """
+    if legacy_force_call:
+        return Genotype(
+            samplename=samplename,
+            genotype="0/0",
+            gt_likelihood=1.0,
+            genotype_quality=GQ_CEILING,
+            total_coverage=total_coverage,
+            ref_reads=total_coverage,
+            var_reads=0,
+        )
+    if total_coverage <= 0:
+        # No observations: absence of evidence is not evidence of the reference.
+        return create_no_call_genotype(samplename=samplename)
+    likelihoods = genotype_likelihood(
+        n_alt_reads=0, n_total_reads=total_coverage, cn=copy_number
+    )
+    ref_gt = reference_genotype_string(copy_number)
+    likelihood = likelihoods.get(ref_gt, 0.0)
+    return Genotype(
+        samplename=samplename,
+        genotype=ref_gt,
+        gt_likelihood=likelihood,
+        genotype_quality=phred_from_probability(likelihood),
         total_coverage=total_coverage,
         ref_reads=total_coverage,
         var_reads=0,
     )
+
+
+def create_no_evidence_genotype(
+    samplename: str, legacy_force_wildtype: bool = False
+) -> Genotype:
+    """No-call, unless the legacy force-call control is switched on."""
+    if legacy_force_wildtype:
+        return create_wild_type_genotype(
+            samplename=samplename, total_coverage=0, legacy_force_call=True
+        )
+    return create_no_call_genotype(samplename=samplename)
 
 
 @attrs.define
@@ -420,6 +514,7 @@ class SVcall:
         refdict: dict[str, str],
         symbolic_threshold: int,
         ONE_BASED: int = 1,
+        legacy_force_wildtype: bool = False,
     ) -> str | None:
         info_fields: dict = {
             "PASS_ALTREADS": self.pass_altreads,
@@ -444,14 +539,39 @@ class SVcall:
         for samplename in samplenames:
             gt: Genotype | None = self.genotypes.get(samplename, None)
             if gt is None:
-                tree: IntervalTree | None = covtrees[samplename].get(self.chrname, None)
-                found_intervals: set[Interval] = tree[self.start] if tree else set()
-                coverage: int = len(found_intervals)
-                format_content.append(
-                    create_wild_type_genotype(
-                        samplename=samplename, total_coverage=coverage
-                    )
+                # This sample contributed no SVpattern to the composite, so no
+                # Genotype was computed for it.  Whether that means "reference"
+                # or "no data" is decided by the coverage tracks, not assumed.
+                tree: IntervalTree | None = covtrees.get(samplename, {}).get(
+                    self.chrname, None
                 )
+                found_intervals: set[Interval] = tree[self.start] if tree else set()
+                # Count distinct reads, not alignment fragments: a single read
+                # contributes several RAF intervals at a locus it spans, so
+                # len(found_intervals) over-counts depth (78 reads were reported
+                # as TC=210 at the 18 kb chr6 insertion).  This matches what
+                # get_ref_reads_from_covtrees returns for every other sample.
+                coverage: int = len({it.data for it in found_intervals})
+                if legacy_force_wildtype:
+                    # The control must reproduce the pre-fix record byte for
+                    # byte, including the over-counted depth.
+                    format_content.append(
+                        create_wild_type_genotype(
+                            samplename=samplename,
+                            total_coverage=len(found_intervals),
+                            legacy_force_call=True,
+                        )
+                    )
+                elif coverage == 0:
+                    format_content.append(
+                        create_no_call_genotype(samplename=samplename)
+                    )
+                else:
+                    format_content.append(
+                        create_wild_type_genotype(
+                            samplename=samplename, total_coverage=coverage
+                        )
+                    )
             else:
                 format_content.append(self.genotypes[samplename])
         # now construct the vcf line
@@ -584,6 +704,44 @@ def _single_evidence_genotype(
     return gt, 1.0
 
 
+def copy_number_at_locus(
+    samplename: str,
+    chrname: str,
+    start: int,
+    end: int,
+    cn_tracks: dict[str, dict[str, IntervalTree]],
+) -> int:
+    """Query the sample's copy-number track at the locus; 2 (diploid) if unknown."""
+    copy_number: int = 2  # Default diploid - if no copy number track is available
+    if samplename in cn_tracks and chrname in cn_tracks[samplename]:
+        try:
+            # Query overlapping intervals from the CN track IntervalTree
+            overlapping_cn = cn_tracks[samplename][chrname][start:end]
+            if overlapping_cn:
+                # Take the most common CN in the overlapping intervals
+                cn_values = [interval.data for interval in overlapping_cn]
+                copy_number = (
+                    max(set(cn_values), key=cn_values.count) if cn_values else 2
+                )
+                log.debug(
+                    f"Copy number at {chrname}:{start}-{end} for {samplename}: CN={copy_number} (from {len(cn_values)} overlapping bins)"
+                )
+            else:
+                log.debug(
+                    f"No CN data overlapping {chrname}:{start}-{end} for {samplename}, using default CN=2"
+                )
+        except Exception as e:
+            log.warning(
+                f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
+            )
+            # default copy number remains
+    else:
+        log.debug(
+            f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
+        )
+    return copy_number
+
+
 def genotype_of_sample(
     samplename: str,
     chrname: str,
@@ -596,14 +754,17 @@ def genotype_of_sample(
     breakpoint_mode: bool = False,
     breakpoint_margin: int = 100,
     single_evidence_gt: bool = False,
+    legacy_force_wildtype: bool = False,
 ) -> Genotype:
     genotype: Genotype
     if chrname not in covtrees.get(samplename, {}):
         log.warning(
-            f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree for sample {samplename}. Assigning 0/0 genotype."
+            f"SVcalls_from_SVcomposite: Chromosome {chrname} not found in coverage tree "
+            f"for sample {samplename}. Emitting a no-call ({NO_CALL_GENOTYPE})."
         )
-        genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
-        return genotype
+        return create_no_evidence_genotype(
+            samplename=samplename, legacy_force_wildtype=legacy_force_wildtype
+        )
     if breakpoint_mode:
         # For deletions: query at both breakpoints rather than across the full
         # deletion span.  Alt-supporting reads have effective_intervals ending
@@ -639,49 +800,39 @@ def genotype_of_sample(
 
     ref_reads: set[int] = all_reads.difference(alt_reads)
 
+    copy_number: int = copy_number_at_locus(
+        samplename=samplename,
+        chrname=chrname,
+        start=start,
+        end=end,
+        cn_tracks=cn_tracks,
+    )
+
     if len(alt_reads) == 0:
+        # `alt_reads` is `all_reads & raw_alt_reads`, so an empty `all_reads`
+        # necessarily lands here too.  The former separate `len(all_reads) == 0`
+        # branch below this one was unreachable; it is folded in as the explicit
+        # sub-case that follows.
         log.warning(
-            f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
+            f"SVcalls_from_SVcomposite: No alt reads found for sample {samplename} at {chrname}:{start}-{end}."
         )
-        genotype = create_wild_type_genotype(
-            samplename=samplename, total_coverage=len(all_reads)
-        )
-        return genotype
-
-    if len(all_reads) == 0:
-        log.warning(
-            f"SVcalls_from_SVcomposite: No ref/alt reads found for sample {samplename} at {chrname}:{start}-{end}. Assigning 0/0 genotype."
-        )
-        genotype = create_wild_type_genotype(samplename=samplename, total_coverage=0)
-        return genotype
-
-    # Query copy number for this locus from CN tracks
-    copy_number: int = 2  # Default diploid - if no copy number track is available
-    if samplename in cn_tracks and chrname in cn_tracks[samplename]:
-        try:
-            # Query overlapping intervals from the CN track IntervalTree
-            overlapping_cn = cn_tracks[samplename][chrname][start:end]
-            if overlapping_cn:
-                # Take the most common CN in the overlapping intervals
-                cn_values = [interval.data for interval in overlapping_cn]
-                copy_number = (
-                    max(set(cn_values), key=cn_values.count) if cn_values else 2
-                )
-                log.debug(
-                    f"Copy number at {chrname}:{start}-{end} for {samplename}: CN={copy_number} (from {len(cn_values)} overlapping bins)"
-                )
-            else:
-                log.debug(
-                    f"No CN data overlapping {chrname}:{start}-{end} for {samplename}, using default CN=2"
-                )
-        except Exception as e:
+        if len(all_reads) == 0:
+            # Genuinely no coverage: a technical dropout, not an observation of
+            # the reference allele.  Do not claim a genotype.
             log.warning(
-                f"Error querying copy number for {samplename} at {chrname}:{start}-{end}: {e}. Using default CN=2"
+                f"SVcalls_from_SVcomposite: No reads at all for sample {samplename} at "
+                f"{chrname}:{start}-{end}. Emitting a no-call ({NO_CALL_GENOTYPE})."
             )
-            # default copy number remains
-    else:
-        log.debug(
-            f"No CN tracks available for sample {samplename} at {chrname}, using default CN=2"
+            return create_no_evidence_genotype(
+                samplename=samplename, legacy_force_wildtype=legacy_force_wildtype
+            )
+        # Coverage present and no alternate support: the reference call is
+        # justified, with full reference support and a depth-derived quality.
+        return create_wild_type_genotype(
+            samplename=samplename,
+            total_coverage=len(all_reads),
+            copy_number=copy_number,
+            legacy_force_call=legacy_force_wildtype,
         )
 
     # Compute genotype either via the probabilistic binomial model or the
@@ -729,6 +880,7 @@ def SVcalls_from_SVcomposite(
     symbolic_threshold: int,
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    legacy_force_wildtype: bool = False,
 ) -> list[SVcall]:
     # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
     #   have one chr, start, end on the reference
@@ -759,6 +911,7 @@ def SVcalls_from_SVcomposite(
             all_alt_reads=all_alt_reads,
             single_evidence_gt=single_evidence_gt,
             min_alt_reads=min_alt_reads,
+            legacy_force_wildtype=legacy_force_wildtype,
         )
         log.debug(
             f"TRANSFORMED::SVcalls_from_SVcomposite::svcall_object_from_svcomposite:(to DEL, INS, INV, BND) {composite_id}; TRANSFORMED TO: {res.to_log_id()}",
@@ -776,6 +929,7 @@ def SVcalls_from_SVcomposite(
             symbolic_threshold=symbolic_threshold,
             single_evidence_gt=single_evidence_gt,
             min_alt_reads=min_alt_reads,
+            legacy_force_wildtype=legacy_force_wildtype,
         )
         # log each res
         for _res in res:
@@ -798,6 +952,7 @@ def svcall_object_from_svcomposite(
     all_alt_reads: dict[str, set[int]],
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    legacy_force_wildtype: bool = False,
 ) -> SVcall:
     chrname, start, end = get_svComposite_interval_on_reference(
         svComposite=svComposite,
@@ -822,6 +977,7 @@ def svcall_object_from_svcomposite(
             cn_tracks=cn_tracks,
             breakpoint_mode=is_deletion,
             single_evidence_gt=single_evidence_gt,
+            legacy_force_wildtype=legacy_force_wildtype,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -980,6 +1136,7 @@ def svcall_objects_from_Adjacencies(
     symbolic_threshold: int,
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    legacy_force_wildtype: bool = False,
 ) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
@@ -1090,6 +1247,7 @@ def svcall_objects_from_Adjacencies(
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             single_evidence_gt=single_evidence_gt,
+            legacy_force_wildtype=legacy_force_wildtype,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1105,6 +1263,7 @@ def svcall_objects_from_Adjacencies(
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             single_evidence_gt=single_evidence_gt,
+            legacy_force_wildtype=legacy_force_wildtype,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1241,7 +1400,9 @@ def get_svComposite_interval_on_reference(
 
 
 def generate_header(
-    reference: Path, samplenames: list[str], fasta_path: Path | None = None
+    reference: Path,
+    samplenames: list[str],
+    fasta_path: Path | None = None,
 ) -> list[str]:
     reference = Path(reference)
     header = [
@@ -1306,9 +1467,13 @@ def generate_header(
     header.append('##ALT=<ID=DUP,Description="Duplication">')
     header.append('##ALT=<ID=INV,Description="Inversion">')
     header.append('##ALT=<ID=BND,Description="Breakend; Translocation">')
-    header.append('##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">')
     header.append(
-        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype; ./. means no '
+        'read coverage at this locus for this sample, i.e. no call, not reference">'
+    )
+    header.append(
+        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality (phred); '
+        'homozygous-reference calls are capped at 60; 0 for a no-call">'
     )
     header.append('##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">')
     header.append(
@@ -1318,7 +1483,8 @@ def generate_header(
         '##FORMAT=<ID=DV,Number=1,Type=Integer,Description="Number of variant reads">'
     )
     header.append(
-        '##FORMAT=<ID=GP,Number=1,Type=Float,Description="Genotype probability">'
+        '##FORMAT=<ID=GP,Number=1,Type=Float,Description="Posterior probability of the '
+        'called genotype; missing (.) for a no-call">'
     )
 
     header.append(
@@ -1329,7 +1495,7 @@ def generate_header(
 
 
 def genotype_likelihood(
-    n_alt_reads: int, n_total_reads: int, cn: int
+    n_alt_reads: int, n_total_reads: int, cn: int, legacy_zero_coverage: bool = False
 ) -> dict[str, float]:
     """
     Compute genotype likelihoods given observed alt/total reads and copy number.
@@ -1338,11 +1504,19 @@ def genotype_likelihood(
         n_alt_reads: Number of reads supporting the alternate allele
         n_total_reads: Total number of reads covering the locus
         cn: Copy number at this locus (1, 2, 3, 4, etc.)
+        legacy_zero_coverage: Reproduce the pre-v0.3 behaviour of returning
+            certainty of ``0/0`` when nothing at all was observed.  See
+            ``--legacy-force-wildtype-genotypes``.
 
     Returns:
-        Dictionary mapping genotype strings to their likelihoods
+        Dictionary mapping genotype strings to their posterior probabilities.
+
+    With no observations at all (``n_total_reads == 0``) the posterior is
+    *uniform* over the genotypes admissible at this copy number: zero
+    observations support no genotype over any other.  Callers must treat that as
+    "no information" and emit a no-call rather than taking the argmax.
     """
-    if n_total_reads == 0:
+    if n_total_reads == 0 and legacy_zero_coverage:
         return {"0/0": 1.0, "0/1": 0.0, "1/1": 0.0}
 
     # Generate all possible genotypes for this copy number
@@ -1400,6 +1574,15 @@ def genotype_likelihood(
                 max(expected_alt_fraction, epsilon), 1.0 - epsilon
             )
             genotype_probs[genotype] = expected_alt_fraction
+
+    if n_total_reads == 0:
+        # No observations: report an uninformative (uniform) posterior rather
+        # than certainty of the reference genotype.
+        log.debug(
+            f"genotype_likelihood: no reads observed (CN={cn}); returning a uniform, "
+            "uninformative posterior."
+        )
+        return dict.fromkeys(genotype_probs, 1.0 / len(genotype_probs))
 
     # Compute binomial probabilities for each genotype
     likelihoods = {
@@ -1664,6 +1847,7 @@ def write_svCalls_to_vcf(
     refdict: dict[str, str],
     output: Path,
     symbolic_threshold: int,
+    legacy_force_wildtype: bool = False,
 ) -> None:
     # Determine FASTA output path
     if str(output).endswith(".vcf.gz"):
@@ -1688,7 +1872,9 @@ def write_svCalls_to_vcf(
     with open(tmp_result_unsorted.name, "w") as f:
         # write header
         header = generate_header(
-            reference=Path(reference), samplenames=samplenames, fasta_path=fasta_path
+            reference=Path(reference),
+            samplenames=samplenames,
+            fasta_path=fasta_path,
         )
         for line in header:
             print(line, file=f)
@@ -1701,6 +1887,7 @@ def write_svCalls_to_vcf(
                 vcfIDnumber=vcfIDnum,
                 refdict=refdict,
                 symbolic_threshold=symbolic_threshold,
+                legacy_force_wildtype=legacy_force_wildtype,
             )
             if line is not None:
                 print(line, file=f)
@@ -1859,6 +2046,7 @@ def multisample_sv_calling(
     collapse_repeats: bool = True,
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    legacy_force_wildtype: bool = False,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
@@ -1875,7 +2063,11 @@ def multisample_sv_calling(
 
     # Create covtrees - either real or dummy uniform coverage
     if skip_covtrees:
-        log.info("Skipping covtree computation, using uniform coverage of 30")
+        log.warning(
+            "--skip-covtrees: coverage tracks are fabricated and carry no information "
+            "about the samples. Every depth-derived field (TC, DR, DV, GQ) in the "
+            "output is meaningless. Investigation use only; never for a released VCF."
+        )
         covtrees: dict[str, dict[str, IntervalTree]] = (
             create_dummy_covtrees_from_reference(
                 reference=reference, samplenames=samplenames, default_coverage=30
@@ -2004,6 +2196,7 @@ def multisample_sv_calling(
             symbolic_threshold=symbolic_threshold,
             single_evidence_gt=single_evidence_gt,
             min_alt_reads=min_alt_reads,
+            legacy_force_wildtype=legacy_force_wildtype,
         )
     ]
 
@@ -2046,6 +2239,7 @@ def multisample_sv_calling(
         covtrees=covtrees,
         refdict=ref_bases_dict,
         symbolic_threshold=symbolic_threshold,
+        legacy_force_wildtype=legacy_force_wildtype,
     )
 
 
@@ -2092,6 +2286,7 @@ def run(args) -> None:
         collapse_repeats=not args.dont_collapse_repeats,
         single_evidence_gt=args.single_evidence_gt,
         min_alt_reads=args.min_alt_reads,
+        legacy_force_wildtype=args.legacy_force_wildtype_genotypes,
     )
 
 
@@ -2217,6 +2412,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Experimental: assign genotypes based solely on read presence rather than a probabilistic model. "
         "Any alt read(s) call the variant; any ref read(s) alongside alt make it heterozygous. "
         "Avoids false HOM calls when a small number of ref reads are present.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--legacy-force-wildtype-genotypes",
+        help="DEPRECATED CONTROL, kept for one release to reproduce pre-v0.3 output. "
+        "Restores the old behaviour of force-calling 0/0 with GQ=60 and GP=1.0 "
+        "whenever no alternate-supporting read is found, including at loci with no "
+        "read coverage at all. Without this flag such loci are emitted as no-calls "
+        "(./. with TC=0, GQ=0, GP=.) and covered reference loci get a depth-derived "
+        "GQ. Use only to reproduce the exact genotype fields of a pre-fix run for a "
+        "controlled comparison.",
         action="store_true",
         default=False,
     )
