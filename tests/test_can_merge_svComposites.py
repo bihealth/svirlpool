@@ -441,27 +441,113 @@ class TestCanMergeInsertions:
         )
 
     def test_very_different_sizes_reject(self):
-        """With the corrected fraction formula, very different sizes are rejected.
+        """Very different sizes are rejected when the sequence is well resolved.
 
-        Sizes 100 vs 200 (100% difference) fail the fraction test: the corrected
-        check |a_adj - b_adj| <= tol * max(a_adj, b_adj) requires the relative
-        size difference to be within `tol` (here 10%), and a 2x size difference
-        is not. The population (Cohen's D) test also fails here, so the merge
-        is correctly rejected.
+        Sizes 100 vs 200 (a 2x difference) fail the fraction test, which requires
+        the relative size difference to be within `tol` (here 10%). With a
+        high-complexity sequence the complexity allowance is close to zero, so the
+        shifted Cohen's D test fails as well and the merge is correctly rejected.
+
+        The sequence matters: complexity is what decides how much size disagreement
+        is tolerated (see test_very_different_sizes_merge_in_low_complexity for the
+        same sizes in a homopolymer).
         """
         a = _make_insertion_composite(
             size=100,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
+            sequence=_random_dna(100, seed=1),
         )
         b = _make_insertion_composite(
             size=200,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
+            sequence=_random_dna(200, seed=2),
         )
         assert not can_merge_svComposites_insertions(
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=300,
+            min_kmer_overlap=0.0,
+            scale_by_complexity_factor=1.0,
+        )
+
+    def test_very_different_sizes_merge_in_low_complexity(self):
+        """The same sizes DO merge inside a homopolymer, and that is intended.
+
+        Complexity is a proxy for how much placement and size ambiguity the aligner
+        introduces at a locus. In a poly-A run it has near-total freedom in both,
+        so `sizetolerance_from_SVcomposite` grants a tolerance approaching the full
+        event size and a 100 bp and a 200 bp insertion at the same position are
+        treated as one VNTR allele family.
+
+        This is the mirror image of test_very_different_sizes_reject: identical
+        sizes, identical thresholds, opposite outcome, decided only by sequence
+        complexity. Setting `scale_by_complexity_factor=0.0` withdraws the
+        allowance and restores rejection.
+        """
+        a = _make_insertion_composite(
+            size=100,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence="A" * 100,
+        )
+        b = _make_insertion_composite(
+            size=200,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence="A" * 200,
+        )
+        kwargs = {
+            "a": a,
+            "b": b,
+            "apriori_size_difference_fraction_tolerance": 0.1,
+            "d": 2.0,
+            "near": 300,
+            "min_kmer_overlap": 0.0,
+        }
+        assert can_merge_svComposites_insertions(
+            **kwargs, scale_by_complexity_factor=1.0
+        )
+        assert not can_merge_svComposites_insertions(
+            **kwargs, scale_by_complexity_factor=0.0
+        )
+
+    def test_identical_sizes_merge_regardless_of_complexity(self):
+        """Regression guard: a complexity difference is not a size difference.
+
+        Until this was fixed the gate compared complexity-ADJUSTED sizes,
+        `lerp(size, size * complexity, scale)`. Because the two composites'
+        complexity tracks are estimated from different consensus sequences in
+        different samples, that turned a complexity difference into a size
+        difference out of nothing: two events of IDENTICAL size were rejected once
+        their complexity estimates differed by more than about 0.090 — scale
+        invariantly, and hardest inside the repeats where the estimates diverge
+        most, which is precisely where merging matters.
+
+        Same size, maximally different sequence complexity, must merge.
+        """
+        a = _make_insertion_composite(
+            size=200,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence=_random_dna(200, seed=3),
+        )
+        b = _make_insertion_composite(
+            size=200,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence="A" * 200,
+        )
+        assert can_merge_svComposites_insertions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
@@ -701,23 +787,30 @@ class TestCanMergeDeletions:
         )
 
     def test_very_different_sizes_reject(self):
-        """With the corrected fraction formula, a 150% size difference is rejected.
+        """A 150% size difference is rejected when the reference is well resolved.
 
-        Sizes 100 vs 250 fail the corrected fraction test (the relative size
-        difference far exceeds the 10% tolerance). The population check also
-        fails (high Cohen's D), so the merge is correctly rejected.
+        Sizes 100 vs 250 fail the fraction test (the relative size difference far
+        exceeds the 10% tolerance). With a high-complexity reference span the
+        complexity allowance is small, so the shifted Cohen's D test fails too and
+        the merge is correctly rejected.
+
+        Deletions take their complexity from the REFERENCE span rather than an
+        assembled sequence (`get_reference_complexity_tracks`), which is the right
+        substrate: it is the reference the aligner is placing the event against.
         """
         a = _make_deletion_composite(
             size=100,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
+            sequence=_random_dna(100, seed=11),
         )
         b = _make_deletion_composite(
             size=250,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
+            sequence=_random_dna(250, seed=12),
         )
         assert not can_merge_svComposites_deletions(
             a=a,
@@ -726,6 +819,49 @@ class TestCanMergeDeletions:
             d=2.0,
             near=350,
             min_kmer_overlap=0.0,
+        )
+
+    def test_very_different_sizes_merge_in_low_complexity(self):
+        """The same sizes merge inside a low-complexity reference span.
+
+        The mirror of the test above, and the deletion counterpart of
+        TestCanMergeInsertions.test_very_different_sizes_merge_in_low_complexity.
+        In a homopolymer the aligner's choice of deletion boundaries — and
+        therefore of size — is close to arbitrary, so a 100 bp and a 250 bp
+        deletion at the same position are treated as one allele family.
+
+        This is also the regime where the k-mer test cannot help: a smaller
+        deletion nested in a larger one at the same locus is k-mer identical by
+        construction, so size is the only criterion left, and it is the one that
+        complexity relaxes here.
+        """
+        a = _make_deletion_composite(
+            size=100,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence="A" * 100,
+        )
+        b = _make_deletion_composite(
+            size=250,
+            size_distortions={"r1": 1, "r2": -1, "r3": 2},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence="A" * 250,
+        )
+        kwargs = {
+            "a": a,
+            "b": b,
+            "apriori_size_difference_fraction_tolerance": 0.1,
+            "d": 2.0,
+            "near": 350,
+            "min_kmer_overlap": 0.0,
+        }
+        assert can_merge_svComposites_deletions(
+            **kwargs, scale_by_complexity_factor=1.0
+        )
+        assert not can_merge_svComposites_deletions(
+            **kwargs, scale_by_complexity_factor=0.0
         )
 
     def test_empty_populations_fraction_pass(self):
@@ -1072,11 +1208,6 @@ class TestComplexityIsATolerance:
     indel and how large it calls it, so it must grant the *most* tolerance.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F4: on main the function returns the bare mean complexity, so the "
-        "relation is inverted (high complexity returns the larger number).",
-    )
     def test_low_complexity_grants_more_tolerance_than_high(self):
         homopolymer = _make_insertion_composite(size=200, sequence="A" * 200)
         well_resolved = _make_insertion_composite(
@@ -1094,12 +1225,6 @@ class TestComplexityIsATolerance:
         assert 0.0 <= tol_high_complexity <= 200.0
         assert 0.0 <= tol_low_complexity <= 200.0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F4: on main an all-zero track and an absent track are conflated, and "
-        "both return 0.0; an absent track additionally raises TypeError for "
-        "insertions and inversions.",
-    )
     def test_the_two_no_evidence_regimes_are_distinguished(self):
         """A present all-zero track is minimum complexity, not missing data.
 
@@ -1123,10 +1248,27 @@ class TestComplexityIsATolerance:
         )
         assert sizetolerance_from_SVcomposite(all_zero) == pytest.approx(200.0)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F3/F4: on main the gate is inert, so both regimes merge.",
-    )
+    def test_events_above_300_bp_get_no_allowance_whatever_their_sequence(self):
+        """A documented limitation, pinned so it cannot change unnoticed.
+
+        `set_sequence` computes a complexity track only for sequences up to
+        `sequence_complexity_max_length` (300 bp). Above that it stores a *dummy
+        all-ones* array instead -- a track that is present and well formed, and
+        that reads as maximum complexity. The allowance is therefore exactly
+        0 bp for every event above 300 bp, whatever its sequence actually is: a
+        5 kb poly-A insertion is treated as perfectly well-resolved sequence.
+
+        This is not what the complexity term is meant to express, and it is not
+        F4; it is a property of where the track is computed. Assert it so that
+        anyone who moves the 300 bp threshold sees this test rather than an
+        unexplained change in merge behaviour.
+        """
+        long_homopolymer = _make_insertion_composite(size=1000, sequence="A" * 1000)
+        assert sizetolerance_from_SVcomposite(long_homopolymer) == 0.0
+
+        short_homopolymer = _make_insertion_composite(size=300, sequence="A" * 300)
+        assert sizetolerance_from_SVcomposite(short_homopolymer) > 290.0
+
     def test_low_complexity_merges_what_high_complexity_rejects(self):
         """The sign of the effect, asserted on merge decisions.
 
@@ -1159,10 +1301,6 @@ class TestComplexityIsATolerance:
         assert low_complexity, "a homopolymer must grant tolerance"
         assert not high_complexity, "well-resolved sequence must not"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F3/F4: on main the gate is inert, so the allowance cannot be withdrawn.",
-    )
     def test_scale_by_complexity_factor_withdraws_the_allowance(self):
         """`--scale-by-complexity-factor 0.0` must turn the allowance off."""
         distortions = {"r1": 1, "r2": -1, "r3": 2}
@@ -1179,12 +1317,6 @@ class TestComplexityIsATolerance:
             "insertion", 100, 200, scale_by_complexity_factor=0.0, **kwargs
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F4: the fractional arm still compares complexity-ADJUSTED sizes, so a "
-        "complexity difference still reads as a size difference. Passes once "
-        "sizetolerance_from_SVcomposite stops rescaling the sizes.",
-    )
     def test_a_complexity_difference_is_not_a_size_difference(self):
         """Regression guard: two events of the SAME size must always merge.
 

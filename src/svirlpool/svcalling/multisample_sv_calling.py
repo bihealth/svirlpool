@@ -2156,7 +2156,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
-        help="Fraction of the larger (complexity-adjusted) size that two SVs may "
+        help="Fraction of the larger of the two sizes that two SVs may "
         "differ by and still be merged (default: 0.06). 0.0 = no tolerance (sizes must "
         "be identical); 1.0 = maximum tolerance, which is vacuous by construction and "
         "reproduces the pre-fix behaviour of an inert size gate. Decrease for stronger "
@@ -2203,9 +2203,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--scale-by-complexity-factor",
-        help="Weight (0.0 to 1.0) for scaling SV sizes by sequence complexity when merging. 0.0 disables complexity scaling, 1.0 applies full complexity scaling (default: 0.67).",
+        help=(
+            "Weight (0.0 to 1.0) on the size tolerance granted by low sequence "
+            "complexity when merging. Low-complexity sequence gives the aligner more "
+            "freedom in where it places an indel and how large it calls it, so the "
+            "two size populations' means are shifted toward each other by "
+            "weight * (1 - mean_complexity) * |size| before Cohen's d is computed. "
+            "0.0 grants no complexity allowance; 1.0 grants it in full (default: 1.0)."
+        ),
         type=float,
-        default=0.67,
+        default=1.0,
     )
     parser.add_argument(
         "--dont-collapse-repeats",
