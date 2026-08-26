@@ -565,6 +565,47 @@ class TestJointCallAcrossSamples:
         assert int(dv) == 0
         assert 0 < int(gq) < GQ_CEILING
 
+    def test_depth_counts_reads_not_alignment_fragments(self):
+        """A read contributing two RAF intervals at the locus is one read.
+
+        ``get_ref_reads_from_covtrees`` deduplicates by read hash everywhere
+        else; the VCF-level fallback used to count intervals, which inflates the
+        depth of long reads spanning large events (78 reads reported as TC=210
+        at the 18 kb chr6 insertion).
+        """
+        alt = _reads(6, prefix="alt")
+        composite = _make_insertion_composite(reads=alt)
+        covtrees = _covtree(alt)
+        tree = IntervalTree()
+        tree.addi(900, 1600, _hash("s2read0"))
+        tree.addi(950, 1200, _hash("s2read0"))  # second fragment of the same read
+        tree.addi(900, 1600, _hash("s2read1"))
+        covtrees["sample2"] = {CHR: tree}
+
+        calls = _svcalls(composite, covtrees)
+        line = calls[0].to_vcf_line(
+            vcfIDnumber=0,
+            samplenames=[SAMPLE, "sample2"],
+            covtrees=covtrees,
+            refdict={f"{CHR}:1000": "A"},
+            symbolic_threshold=100_000,
+        )
+        assert line is not None
+        gt, _gq, tc, dr, dv, _gp = line.split("\t")[-1].split(":")
+        assert (gt, int(tc), int(dr), int(dv)) == ("0/0", 2, 2, 0)
+
+        # ... and the control still reproduces the pre-fix (interval-counted) depth
+        legacy_line = calls[0].to_vcf_line(
+            vcfIDnumber=0,
+            samplenames=[SAMPLE, "sample2"],
+            covtrees=covtrees,
+            refdict={f"{CHR}:1000": "A"},
+            symbolic_threshold=100_000,
+            legacy_force_wildtype=True,
+        )
+        assert legacy_line is not None
+        assert legacy_line.split("\t")[-1] == "0/0:60:3:3:0:1.0"
+
     def test_legacy_flag_restores_the_force_call_in_the_vcf(self):
         alt = _reads(6, prefix="alt")
         composite = _make_insertion_composite(reads=alt)

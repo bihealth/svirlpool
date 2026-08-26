@@ -551,12 +551,19 @@ class SVcall:
                     self.chrname, None
                 )
                 found_intervals: set[Interval] = tree[self.start] if tree else set()
+                # Count distinct reads, not alignment fragments: a single read
+                # contributes several RAF intervals at a locus it spans, so
+                # len(found_intervals) over-counts depth (78 reads were reported
+                # as TC=210 at the 18 kb chr6 insertion).  This matches what
+                # get_ref_reads_from_covtrees returns for every other sample.
                 coverage: int = len({it.data for it in found_intervals})
                 if legacy_force_wildtype:
+                    # The control must reproduce the pre-fix record byte for
+                    # byte, including the over-counted depth.
                     format_content.append(
                         create_wild_type_genotype(
                             samplename=samplename,
-                            total_coverage=coverage,
+                            total_coverage=len(found_intervals),
                             legacy_force_call=True,
                         )
                     )
@@ -1496,8 +1503,8 @@ def generate_header(
         'read coverage at this locus for this sample, i.e. no call, not reference">'
     )
     header.append(
-        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality (phred), '
-        'capped at 60; 0 for a no-call">'
+        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality (phred); '
+        'homozygous-reference calls are capped at 60; 0 for a no-call">'
     )
     header.append('##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">')
     header.append(
