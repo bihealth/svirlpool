@@ -382,6 +382,11 @@ NO_CALL_GENOTYPE: str = "./."
 # 13.
 DEFAULT_BREAKPOINT_MARGIN: int = 150
 
+# The pre-N15 geometry: 100 bases at a deletion's two breakpoints, and no margin
+# at all for an insertion.  Restored by ``--legacy-force-wildtype-genotypes`` so
+# that the control arm reproduces a pre-fix run's genotype fields exactly.
+LEGACY_BREAKPOINT_MARGIN: int = 100
+
 
 @attrs.define
 class Genotype:
@@ -1034,6 +1039,13 @@ def svcall_object_from_svcomposite(
     # genotyper.
     is_deletion = issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion)
     is_insertion = issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion)
+    if legacy_force_wildtype:
+        # The control has to reproduce a pre-fix run's genotype fields exactly,
+        # which means restoring the *asymmetric* pre-fix geometry: no margin for
+        # an insertion, 100 bases for a deletion.  No single value of
+        # --genotype-breakpoint-margin can express that.
+        is_insertion = False
+        breakpoint_margin = LEGACY_BREAKPOINT_MARGIN
     genotypes: dict[str, Genotype] = {
         samplename: genotype_of_sample(
             samplename=samplename,
@@ -2529,8 +2541,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "whenever no alternate-supporting read is found, including at loci with no "
         "read coverage at all. Without this flag such loci are emitted as no-calls "
         "(./. with TC=0, GQ=0, GP=.) and covered reference loci get a depth-derived "
-        "GQ. Use only to reproduce the exact genotype fields of a pre-fix run for a "
-        "controlled comparison.",
+        "GQ. It also restores the pre-fix coverage-query geometry (no breakpoint "
+        "margin for insertions, 100 bases for deletions), overriding "
+        "--genotype-breakpoint-margin. Use only to reproduce the exact genotype "
+        "fields of a pre-fix run for a controlled comparison.",
         action="store_true",
         default=False,
     )
