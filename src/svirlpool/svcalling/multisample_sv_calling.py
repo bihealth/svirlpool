@@ -362,6 +362,26 @@ GQ_CEILING: int = 60
 # the default copy number assumed throughout this module.
 NO_CALL_GENOTYPE: str = "./."
 
+# Tolerance, in reference bases, for *breakpoint-placement disagreement* between
+# the read-to-reference alignments that build the coverage tracks and the
+# consensus-to-reference alignment that produces a call position.  The two place
+# the same breakpoint independently, and in repetitive sequence they disagree.
+#
+# The value is the default of ``--near``, the distance within which
+# ``merge_svComposites`` already declares two independently placed breakpoints to
+# be the *same event*.  Refusing to count a read whose alignment ends 150 bases
+# from the reported position, while merging two SVpatterns 150 bases apart into
+# one variant, is internally inconsistent; one tolerance governs both.  The
+# joint caller couples them by default (``--genotype-breakpoint-margin``
+# defaults to ``--near``); this literal is the fallback for direct callers.
+#
+# Empirically (muc1 plus eight HG002 tiles, 21 loci, 42 supporting reads missed
+# by a point query): 27 of the 34 recoverable reads are within 150 bases, at a
+# cost of 1.7 bases of extra depth per read recovered; past 150 the cost triples
+# for two more reads.  The previous value, 100, was undocumented and recovered
+# 13.
+DEFAULT_BREAKPOINT_MARGIN: int = 150
+
 
 @attrs.define
 class Genotype:
@@ -662,11 +682,25 @@ def get_ref_reads_from_covtrees(
     end: int,
     covtrees: dict[str, dict[str, IntervalTree]],
     min_radius: int = 1,
+    margin: int = 0,
 ) -> set[int]:
+    """Read-name hashes of every alignment fragment overlapping the queried window.
+
+    ``min_radius`` is a *minimum width*: a window narrower than ``2 * min_radius``
+    is grown symmetrically until it reaches that width.  ``margin`` is a genuine
+    margin: it is added to both ends whatever the width, so a read whose nearest
+    alignment fragment ends at most ``margin`` bases before ``start`` (or begins
+    at most ``margin`` bases after ``end``) is still reported.  See
+    ``genotype_of_sample`` for why a breakpoint query needs one.
+    """
     if end < start:
         raise ValueError(
             f"get_ref_reads_from_covtrees: end {end} is less than start {start} for sample {samplename} at {chrname}:{start}-{end}."
         )
+    margin = abs(margin)
+    if margin:
+        start = max(0, start - margin)
+        end = end + margin
     min_radius = abs(min_radius)
     if end - start < min_radius * 2:
         difference = min_radius * 2 - (end - start)
@@ -757,11 +791,29 @@ def genotype_of_sample(
     cn_tracks: dict[str, dict[str, IntervalTree]],
     min_radius: int = 1,
     breakpoint_mode: bool = False,
-    breakpoint_margin: int = 100,
+    breakpoint_margin: int = DEFAULT_BREAKPOINT_MARGIN,
+    apply_breakpoint_margin: bool = False,
     single_evidence_gt: bool = False,
     legacy_force_wildtype: bool = False,
     synthetic_coverage: bool = False,
 ) -> Genotype:
+    """Genotype one sample at one locus from its coverage tracks.
+
+    The coverage query has to tolerate *breakpoint-placement disagreement*.  A
+    read that carries the event has, by construction, sequence at the breakpoint
+    that does not align to the reference there; the aligner emits one fragment
+    ending before the breakpoint and another resuming after it, and no fragment
+    covering it.  The breakpoint is then placed twice and independently — once
+    by the read-to-reference alignment that built the coverage track, once by
+    the consensus-to-reference alignment that produced the call position — and
+    in repetitive sequence the two placements differ.  A point query at the call
+    position therefore selects *against* the very reads that support the call.
+
+    ``breakpoint_mode`` (deletions) queries the two breakpoints separately
+    rather than the deleted span.  ``apply_breakpoint_margin`` (insertions,
+    which have a single breakpoint and no span to query) widens the locus query
+    by ``breakpoint_margin`` on both sides.  Both use the same tolerance.
+    """
     genotype: Genotype
     if chrname not in covtrees.get(samplename, {}):
         log.warning(
@@ -794,6 +846,11 @@ def genotype_of_sample(
         )
         all_reads: set[int] = reads_at_start | reads_at_end
     else:
+        # For insertions the reference footprint is a single point, so there is
+        # no interior to query and `breakpoint_mode`'s two-window form would be
+        # identical to one widened window.  Widening keeps the query a strict
+        # superset of the un-margined one: no read a point query found can be
+        # lost.
         all_reads: set[int] = get_ref_reads_from_covtrees(
             samplename=samplename,
             chrname=chrname,
@@ -801,6 +858,7 @@ def genotype_of_sample(
             end=end,
             covtrees=covtrees,
             min_radius=min_radius,
+            margin=breakpoint_margin if apply_breakpoint_margin else 0,
         )
     alt_reads: set[int] = all_reads.intersection(raw_alt_reads)
 
@@ -896,6 +954,7 @@ def SVcalls_from_SVcomposite(
     symbolic_threshold: int,
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    breakpoint_margin: int = DEFAULT_BREAKPOINT_MARGIN,
     legacy_force_wildtype: bool = False,
     synthetic_coverage: bool = False,
 ) -> list[SVcall]:
@@ -928,6 +987,7 @@ def SVcalls_from_SVcomposite(
             all_alt_reads=all_alt_reads,
             single_evidence_gt=single_evidence_gt,
             min_alt_reads=min_alt_reads,
+            breakpoint_margin=breakpoint_margin,
             legacy_force_wildtype=legacy_force_wildtype,
             synthetic_coverage=synthetic_coverage,
         )
@@ -971,6 +1031,7 @@ def svcall_object_from_svcomposite(
     all_alt_reads: dict[str, set[int]],
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    breakpoint_margin: int = DEFAULT_BREAKPOINT_MARGIN,
     legacy_force_wildtype: bool = False,
     synthetic_coverage: bool = False,
 ) -> SVcall:
@@ -984,8 +1045,15 @@ def svcall_object_from_svcomposite(
         svPattern.samplenamed_consensusID for svPattern in svComposite.svPatterns
     })
 
-    #
+    # Both indels need the breakpoint-placement tolerance, in the geometry their
+    # SV type dictates: a deletion has two distant breakpoints and an interior
+    # that carries no alt-read alignments, so each breakpoint is queried
+    # separately; an insertion has a single breakpoint and no interior, so the
+    # point query is simply widened.  Only the deletion half of this was wired
+    # up (N15), which made an insertion's own supporting reads invisible to the
+    # genotyper.
     is_deletion = issubclass(svComposite.sv_type, SVpatterns.SVpatternDeletion)
+    is_insertion = issubclass(svComposite.sv_type, SVpatterns.SVpatternInsertion)
     genotypes: dict[str, Genotype] = {
         samplename: genotype_of_sample(
             samplename=samplename,
@@ -996,6 +1064,8 @@ def svcall_object_from_svcomposite(
             covtrees=covtrees,
             cn_tracks=cn_tracks,
             breakpoint_mode=is_deletion,
+            apply_breakpoint_margin=is_insertion,
+            breakpoint_margin=breakpoint_margin,
             single_evidence_gt=single_evidence_gt,
             legacy_force_wildtype=legacy_force_wildtype,
             synthetic_coverage=synthetic_coverage,
@@ -2080,9 +2150,21 @@ def multisample_sv_calling(
     collapse_repeats: bool = True,
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
+    genotype_breakpoint_margin: int | None = None,
     legacy_force_wildtype: bool = False,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
+    # The genotyping window's tolerance for breakpoint-placement disagreement.
+    # It is the same notion as `--near`, so it follows `--near` unless the user
+    # separates them deliberately.
+    breakpoint_margin: int = (
+        near if genotype_breakpoint_margin is None else (genotype_breakpoint_margin)
+    )
+    log.info(
+        "Genotyping breakpoint-placement margin: %d bp (%s)",
+        breakpoint_margin,
+        "from --near" if genotype_breakpoint_margin is None else "explicit",
+    )
     samplenames = [svirltile.get_metadata(Path(path))["samplename"] for path in input]
 
     # check if reference exists
@@ -2231,6 +2313,7 @@ def multisample_sv_calling(
             symbolic_threshold=symbolic_threshold,
             single_evidence_gt=single_evidence_gt,
             min_alt_reads=min_alt_reads,
+            breakpoint_margin=breakpoint_margin,
             legacy_force_wildtype=legacy_force_wildtype,
             synthetic_coverage=skip_covtrees,
         )
@@ -2323,6 +2406,7 @@ def run(args) -> None:
         collapse_repeats=not args.dont_collapse_repeats,
         single_evidence_gt=args.single_evidence_gt,
         min_alt_reads=args.min_alt_reads,
+        genotype_breakpoint_margin=args.genotype_breakpoint_margin,
         legacy_force_wildtype=args.legacy_force_wildtype_genotypes,
     )
 
@@ -2385,6 +2469,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "to precision.",
         type=int,
         default=3,
+    )
+    parser.add_argument(
+        "--genotype-breakpoint-margin",
+        help="Tolerance, in reference bases, for disagreement between where the "
+        "read alignments place a breakpoint and where the consensus alignment "
+        "places it, when querying the coverage tracks for a genotype. Reads that "
+        "carry an indel have no alignment across its breakpoint, so a point query "
+        "at the call position systematically misses them. Defaults to --near, "
+        "which is the same tolerance applied when merging SVpatterns into one "
+        "variant. Set to 0 to query the exact call position only.",
+        type=int,
+        default=None,
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
