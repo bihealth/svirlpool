@@ -979,3 +979,32 @@ class TestCompositeLevelDispatch:
         assert gt.var_reads == 30
         assert gt.ref_reads == 2
         assert gt.genotype == "1/1"
+
+
+class TestLegacyControlRestoresThePreFixWindow:
+    """The campaign requires a setting that reproduces the pre-fix output exactly.
+
+    The pre-fix geometry was *asymmetric* — 100 bases at a deletion's two
+    breakpoints, none at all for an insertion — so no single value of
+    ``--genotype-breakpoint-margin`` can express it.  The legacy control flag,
+    which exists to reproduce pre-fix genotype fields, restores it.
+    """
+
+    def test_legacy_control_loses_the_short_reads_again(self):
+        covtrees, supporting = _fragmented_locus(gap=118)
+        composite = _make_insertion_composite(reads=supporting, ref_start=1000)
+        assert _svcalls(composite, covtrees)[0].genotypes[SAMPLE].var_reads == 3
+        legacy = _svcalls(composite, covtrees, legacy_force_wildtype=True)[0]
+        assert legacy.genotypes[SAMPLE].var_reads == 0
+        assert legacy.genotypes[SAMPLE].total_coverage == 14
+
+    def test_legacy_control_overrides_an_explicit_margin(self):
+        covtrees, supporting = _fragmented_locus(gap=118)
+        composite = _make_insertion_composite(reads=supporting, ref_start=1000)
+        legacy = _svcalls(
+            composite,
+            covtrees,
+            breakpoint_margin=5000,
+            legacy_force_wildtype=True,
+        )[0]
+        assert legacy.genotypes[SAMPLE].var_reads == 0
