@@ -1342,3 +1342,216 @@ class TestComplexityIsATolerance:
                 sequence_a=_random_dna(200, seed=3),
                 sequence_b="A" * 200,
             ), f"{kind}: identical sizes must merge whatever the complexity"
+
+
+# ===========================================================================
+# F5: THE log_size DISJUNCT
+# ===========================================================================
+
+
+def _fraction_arm_with_log_disjunct(
+    size_a: float, size_b: float, tolerance: float
+) -> bool:
+    """Arm 1 exactly as it stood before F5, disjunct included.
+
+    Kept verbatim as the reference the post-F5 form is compared against, so the
+    equivalence below is asserted against the removed code and not merely
+    against a restatement of what replaced it.
+    """
+    max_size = max(abs(size_a), abs(size_b))
+    log_size = np.log2(abs(size_a - size_b) + 1)
+    return bool(
+        (max_size > 0 and abs(size_a - size_b) <= tolerance * max_size)
+        or abs(size_a - size_b) < log_size
+    )
+
+
+def _fraction_arm_without_log_disjunct(
+    size_a: float, size_b: float, tolerance: float
+) -> bool:
+    """Arm 1 as it stands after F5."""
+    max_size = max(abs(size_a), abs(size_b))
+    return bool(max_size > 0 and abs(size_a - size_b) <= tolerance * max_size)
+
+
+class TestLogSizeDisjunctIsUnreachable:
+    """`|a - b| < log2(|a - b| + 1)` never fired, and could not have.
+
+    The disjunct read as a floor on the admissible absolute size difference --
+    a small-size safety net -- and was not one. F5 removes it. These tests are
+    the proof that removing it is behaviour-preserving; there is deliberately
+    no fails-before/passes-after test, because a pure dead-code deletion cannot
+    have one, and manufacturing one would misrepresent the change.
+    """
+
+    def test_no_integer_difference_satisfies_it(self):
+        """Exhaustive over d in [0, 100000), as the defect catalogue claims."""
+        d = np.arange(0, 100_000, dtype=np.float64)
+        satisfied = d < np.log2(d + 1.0)
+        assert not satisfied.any(), (
+            f"the disjunct fires for integer differences {d[satisfied][:10]}"
+        )
+
+    def test_over_the_reals_the_solution_set_is_exactly_the_open_unit_interval(self):
+        """The catalogue's "no non-negative solution" holds over Z, not over R.
+
+        Let f(d) = log2(1 + d) - d on d >= 0. Then
+
+            f(0) = 0,  f(1) = log2(2) - 1 = 0,
+            f'(d) = 1 / ((1 + d) * ln 2) - 1,
+
+        so f'(d) = 0 at d = 1/ln2 - 1 ~= 0.4427 and f' > 0 to the left of it,
+        f' < 0 to the right. f is therefore strictly concave with a single
+        interior maximum between its two roots 0 and 1, positive on (0, 1) and
+        strictly negative on (1, inf). The inequality d < log2(d + 1) is
+        f(d) > 0, so its non-negative solution set is the *open* interval
+        (0, 1): empty at both endpoints, and empty over the integers, but not
+        empty over the reals.
+
+        That distinction matters for how the disjunct is retired. It was not
+        merely unreachable, it was unreachable *because* sizes happen to be
+        integral (see the next test) -- so it would have woken up silently, and
+        admitted sub-base-pair differences, had size ever become fractional.
+        Deleting it removes that latent coupling; the catalogue's stated reason
+        for deleting it does not survive contact with the real line.
+        """
+
+        def f(d: float) -> float:
+            return float(np.log2(1.0 + d) - d)
+
+        assert f(0.0) == 0.0
+        assert f(1.0) == 0.0
+        # Positive strictly between the two roots -- the disjunct *is*
+        # satisfiable over the reals.
+        for d in (1e-9, 0.01, 0.25, 1.0 / np.log(2.0) - 1.0, 0.5, 0.9, 1.0 - 1e-9):
+            assert f(d) > 0.0, f"expected f({d}) > 0"
+            assert d < np.log2(d + 1.0)
+        # ... and strictly negative everywhere above 1.
+        for d in (1.0 + 1e-9, 1.5, 2.0, 12.0, 1e3, 1e9):
+            assert f(d) < 0.0, f"expected f({d}) < 0"
+            assert not d < np.log2(d + 1.0)
+        # The interior maximum sits where the derivative vanishes.
+        peak = 1.0 / np.log(2.0) - 1.0
+        grid = np.linspace(0.0, 1.0, 100_001)
+        assert abs(grid[np.argmax(np.log2(1.0 + grid) - grid)] - peak) < 1e-4
+
+    def test_svcomposite_sizes_are_integral_so_the_disjunct_was_dead_in_production(
+        self,
+    ):
+        """`get_size()` is int-valued for all three SV types.
+
+        Sizes are differences of alignment coordinates, so `|size_a - size_b|`
+        is a non-negative integer and never lands in (0, 1).
+        """
+        for kind in _KINDS:
+            for size in (1, 12, 57, 500, 18028):
+                composite = _make_composite(kind, size=size)
+                got = composite.get_size()
+                assert isinstance(got, int), f"{kind}: get_size() returned {type(got)}"
+                assert got == size
+
+
+class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
+    """The F5 deletion is behaviour-preserving, on the arm and on the gate."""
+
+    _TOLERANCES = (0.0, 0.001, 0.01, 0.06, 0.1, 0.25, 0.5, 0.9, 1.0)
+
+    def test_the_two_arm_forms_agree_on_every_integer_size_pair(self):
+        """Direct before/after comparison of arm 1, with and without the disjunct."""
+        sizes = list(range(0, 60)) + [
+            12,
+            30,
+            50,
+            57,
+            58,
+            100,
+            182,
+            193,
+            199,
+            200,
+            201,
+            365,
+            390,
+            675,
+            792,
+            2554,
+            2782,
+            4930,
+            18028,
+        ]
+        for tolerance in self._TOLERANCES:
+            for size_a in sizes:
+                for size_b in sizes:
+                    with_disjunct = _fraction_arm_with_log_disjunct(
+                        size_a, size_b, tolerance
+                    )
+                    without = _fraction_arm_without_log_disjunct(
+                        size_a, size_b, tolerance
+                    )
+                    assert with_disjunct == without, (
+                        f"verdict moved at tol={tolerance} sizes=({size_a}, {size_b}): "
+                        f"{with_disjunct} -> {without}"
+                    )
+
+    def test_the_gate_matches_the_pure_fractional_bound_for_all_three_sv_types(self):
+        """The live gate's verdict is the fractional bound, with no floor under it.
+
+        The population arm is off (`size_distortions=None`) and the complexity
+        allowance is withdrawn (`scale_by_complexity_factor=0.0`), so the gate's
+        return value *is* arm 1. Sweeping sizes, tolerances and all three entry
+        points, it agrees with the disjunct-free bound everywhere -- and, by the
+        test above, therefore with the pre-F5 form as well.
+        """
+        sizes = (1, 2, 11, 12, 13, 24, 25, 30, 50, 57, 58, 182, 193, 199, 200, 201, 390)
+        for kind in _KINDS:
+            for tolerance in self._TOLERANCES:
+                for size_a in sizes:
+                    for size_b in sizes:
+                        expected = _fraction_arm_without_log_disjunct(
+                            size_a, size_b, tolerance
+                        )
+                        got = _size_gate(kind, size_a, size_b, tolerance=tolerance)
+                        assert got == expected, (
+                            f"{kind}: tol={tolerance} sizes=({size_a}, {size_b}) "
+                            f"gave {got}, expected {expected}"
+                        )
+
+    def test_the_gate_still_agrees_across_the_catalogue_size_pairs(self):
+        """The pairs the other size-gate tests use, re-checked against the bound."""
+        for kind in _KINDS:
+            for size_a, size_b in _SIZE_PAIRS:
+                for tolerance in self._TOLERANCES:
+                    expected = _fraction_arm_without_log_disjunct(
+                        size_a, size_b, tolerance
+                    )
+                    assert (
+                        _size_gate(kind, size_a, size_b, tolerance=tolerance)
+                        == expected
+                    ), f"{kind}: ({size_a}, {size_b}) at tol={tolerance}"
+
+    def test_no_floor_is_granted_below_the_fractional_bound(self):
+        """There is no absolute-difference floor, and in particular none at 12 bp.
+
+        The dissertation text proposes F = 12 bp -- the consensus-level indel
+        parse threshold (`consensus_align.py --min-signal-size`, default 12).
+        F5 deliberately does *not* introduce it: a floor is a loosening of the
+        gate and belongs in its own, separately benchmarkable change, not behind
+        a dead-code removal. This test pins the absence, so that adding a floor
+        later is a visible, deliberate edit rather than a silent one.
+
+        The window in which a 12 bp floor would differ from the default
+        fractional bound is max(size_a, size_b) < 12 / 0.06 = 200 bp; above that
+        the fractional arm already admits +/-12 bp on its own.
+        """
+        tolerance = 0.06
+        for kind in _KINDS:
+            # Inside the window: a 12 bp difference on a 50 bp event is 24% and
+            # is rejected, floor or no floor.
+            assert not _size_gate(kind, 50, 62, tolerance=tolerance)
+            assert not _size_gate(kind, 100, 112, tolerance=tolerance)
+            # The tightest miss: 12 bp apart, just under the crossover.
+            assert not _size_gate(kind, 185, 197, tolerance=tolerance)
+            # At and above the crossover (0.06 * max >= 12, i.e. max >= 200)
+            # the fractional arm admits 12 bp on its own.
+            assert _size_gate(kind, 200, 212, tolerance=tolerance)
+            assert _size_gate(kind, 1000, 1012, tolerance=tolerance)
