@@ -1567,9 +1567,28 @@ def distortions_by_svPattern(
     if len(distortions) == 0:
         return result
 
-    # Calculate SV pattern boundaries
-    sv_start = svPattern.SVprimitives[0].ref_start
-    sv_end = svPattern.SVprimitives[-1].ref_end
+    # Calculate SV pattern boundaries.
+    # ConsensusDistortion.position is signal.ref_start of a cut read aligned to the
+    # *core* consensus FASTA (consensus.final_consensus), i.e. a core-consensus offset
+    # in [0, len(consensus.consensus_sequence)]. SVprimitive.read_start/read_end come
+    # from the *padded* consensus-to-reference alignment. Both operands must be
+    # brought into the core-consensus space before their distance is meaningful;
+    # SVprimitive.ref_start/ref_end are reference-genome coordinates and must not be
+    # used here (see add_genotypeMeasurements_to_SVprimitives, which performs the same
+    # conversion with core_interval_start=consensus_padding.padding_size_left).
+    if consensus.consensus_padding is None:
+        raise ValueError(
+            f"Consensus {consensus.ID} has no consensus_padding, cannot map SVpattern "
+            "boundaries into consensus coordinates."
+        )
+    core_sequence_start: int = consensus.consensus_padding.padding_size_left
+    boundary_a = svPattern.SVprimitives[0].read_start - core_sequence_start
+    boundary_b = svPattern.SVprimitives[-1].read_end - core_sequence_start
+    sv_start = min(boundary_a, boundary_b)
+    sv_end = max(boundary_a, boundary_b)
+
+    consensus_length = len(consensus.consensus_sequence)
+    out_of_range_distortions = 0
 
     # Group distortions by read name
     distortions_by_read: dict[str, list[tuple[float, float]]] = {}
@@ -1577,6 +1596,11 @@ def distortions_by_svPattern(
         distance = min(
             abs(distortion.position - sv_start), abs(distortion.position - sv_end)
         )
+        if distance > consensus_length:
+            # Both operands live on the same consensus, so this is impossible unless
+            # the two coordinate spaces have drifted apart again. Warn rather than
+            # raise: a single aberrant locus must not abort a whole-genome run.
+            out_of_range_distortions += 1
         weight = exponential_weight(
             distance=distance, scale=distance_scale, falloff=falloff
         )
@@ -1584,6 +1608,16 @@ def distortions_by_svPattern(
         if distortion.readname not in distortions_by_read:
             distortions_by_read[distortion.readname] = []
         distortions_by_read[distortion.readname].append((distortion.size, weight))
+
+    if out_of_range_distortions:
+        log.warning(
+            f"distortions_by_svPattern: coordinate space mismatch on consensus "
+            f"{consensus.ID}: {out_of_range_distortions}/{len(distortions)} distortions "
+            f"are further than the consensus length ({consensus_length} bp) from the "
+            f"SVpattern at {svPattern.chr}:{svPattern.ref_start}-{svPattern.ref_end} "
+            f"(consensus-local pattern interval {sv_start}-{sv_end}). "
+            "The weighted distortion estimates for this pattern are unreliable."
+        )
 
     # Calculate weighted mean for each read
     weighted_means: dict[str, float] = dict.fromkeys(
