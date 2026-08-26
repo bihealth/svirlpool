@@ -297,20 +297,34 @@ def has_similar_sv_signals(
     )
     if dels_insufficient and ins_insufficient:
         return False
+
     # both signal sizes distributions of signals greater than min_abs_signal_size of are checkd with cohen's d
-    D_dels = (
-        cohens_d(np.array(dels_this), np.array(dels_other))
-        if len(dels_this) > 0 and len(dels_other) > 0
-        else cohensd
-    )
-    D_ins = (
-        cohens_d(np.array(ins_this), np.array(ins_other))
-        if len(ins_this) > 0 and len(ins_other) > 0
-        else cohensd
-    )
-    if abs(D_dels) < cohensd or abs(D_ins) < cohensd:
-        return True
-    return False
+    def _sizes_similar(these: list[int], others: list[int]) -> bool:
+        """Whether two signal-size distributions are close enough to merge.
+
+        `cohens_d` returns None when the effect size is not estimable: both
+        groups constant, or a single observation in each. There is then no
+        within-group spread to measure a difference of means against, and the
+        only statement the data still support is whether the two groups
+        coincide at all -- which is what we fall back on.
+
+        This is spelled out because it is a *policy* choice and not the obvious
+        one: the vertical-merge gate in `svcalling.svcomposite_merging` makes the
+        opposite call and refuses to merge on a non-estimable effect size. Here
+        the groups being compared are raw signal sizes from two neighbouring
+        candidate regions, a single matching signal in each is a normal input,
+        and refusing on it would fragment candidate regions. It also reproduces
+        exactly what the utility used to fabricate for this case (0.0 for equal
+        means, inf otherwise), so candidate-region merging is unchanged.
+        """
+        if len(these) == 0 or len(others) == 0:
+            return False
+        D = cohens_d(np.array(these), np.array(others))
+        if D is None:
+            return float(np.mean(these)) == float(np.mean(others))
+        return abs(D) < cohensd
+
+    return _sizes_similar(dels_this, dels_other) or _sizes_similar(ins_this, ins_other)
 
 
 def ensure_min_cr_size(

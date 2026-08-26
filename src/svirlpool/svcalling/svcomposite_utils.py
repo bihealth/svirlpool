@@ -51,11 +51,41 @@ def _svcomposite_short_id(svc: SVcomposite) -> str:
     return f"crIDs={{{','.join(map(str, crIDs))}}}|cIDs={cids}"
 
 
-def cohens_d(x: list | np.ndarray, y: list | np.ndarray) -> float:
+def cohens_d(x: list | np.ndarray, y: list | np.ndarray) -> float | None:
     """
     Calculate Cohen's d effect size between two samples.
     Cohen's d = (mean1 - mean2) / pooled_standard_deviation
     Where pooled_standard_deviation = sqrt(((n1-1)*s1² + (n2-1)*s2²) / (n1+n2-2))
+
+    Returns ``None`` when the effect size is **not estimable**, i.e. when the
+    pooled standard deviation is zero. That happens when both samples are
+    constant -- including the special case of a single observation in each,
+    where the pooled variance is 0/0 and cannot be formed at all.
+
+    Cohen's *d* expresses a difference of means *in units of the within-group
+    spread*. With no observed spread there are no such units, so there is no
+    effect size to report, whatever the means do. This function used to
+    fabricate one anyway: ``float("inf")`` when the means differed and ``0.0``
+    when they did not. Both are wrong in the same way and only differ in which
+    direction they mislead -- ``inf`` reads as "maximally separated" and ``0.0``
+    as "indistinguishable", and neither is supported by the data. A silent
+    ``inf`` from exactly this branch is what let a genome-wide failure of the
+    read-derived noise model (every distortion value pinned at 0.0, hence every
+    population constant) pass through an entire benchmark campaign unnoticed.
+
+    ``None`` rather than ``nan`` is deliberate. ``nan`` compares False against
+    every threshold, so a caller that forgets to check keeps running on a
+    plausible-looking answer -- the same failure mode in a new disguise; and
+    ``nan`` is already in use by ``svcomposite_merging._similar_size`` to mean
+    "not computed", which is a different statement. ``None`` cannot be compared
+    with ``<=`` at all, so no caller can ignore it by accident.
+
+    What a non-estimable effect size *means* is left to the caller, and the two
+    callers in this codebase answer differently -- see
+    ``svcomposite_merging._similar_size`` (refuse to merge on it) and
+    ``candidateregions.signalstrength_to_crs`` (fall back to whether the two
+    constant groups coincide). That divergence is the reason the policy is not
+    baked in here.
     """
     if len(x) == 0 or len(y) == 0:
         raise ValueError("Both samples must contain at least one value")
@@ -72,9 +102,9 @@ def cohens_d(x: list | np.ndarray, y: list | np.ndarray) -> float:
 
     # Handle edge cases
     if nx == 1 and ny == 1:
-        # Can't calculate pooled standard deviation with only one observation each
-        # Return a large effect size if means differ, 0 if they're the same
-        return float("inf") if mean_x != mean_y else 0.0
+        # The pooled variance is 0/0 here, so it cannot even be formed; guarding
+        # before the division is what keeps this a ZeroDivisionError-free path.
+        return None
 
     # Calculate sample standard deviations (with Bessel's correction, ddof=1)
     std_x = np.std(x_arr, ddof=1) if nx > 1 else 0.0
@@ -84,9 +114,10 @@ def cohens_d(x: list | np.ndarray, y: list | np.ndarray) -> float:
     pooled_var = ((nx - 1) * std_x**2 + (ny - 1) * std_y**2) / (nx + ny - 2)
     pooled_std = np.sqrt(pooled_var)
 
-    # Handle case where pooled standard deviation is 0 (all values identical)
+    # Both samples constant: no within-group spread to scale the difference of
+    # means by, so there is no effect size. Not an error, and not a number.
     if pooled_std == 0:
-        return 0.0 if mean_x == mean_y else float("inf")
+        return None
 
     # Calculate Cohen's d
     cohens_d_value = (mean_x - mean_y) / pooled_std

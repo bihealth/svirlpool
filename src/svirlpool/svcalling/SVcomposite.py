@@ -114,10 +114,22 @@ class SVcomposite:
         ) / sum(weights)
         return int(round(weighted_mean_size))
 
-    def get_size_populations(self) -> list[int]:
-        """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins."""
+    def get_size_populations(self) -> list[float]:
+        """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins.
+
+        The values are weighted means of the background size-distortion signals
+        supporting each read (`distortions_by_svPattern`), so they are genuinely
+        fractional. They are returned unrounded: the sole consumer is Cohen's *d*
+        in the vertical-merge size gate, which measures a difference of means in
+        units of the *within-group spread*, and that spread is often smaller than
+        one base pair. Truncating to whole base pairs shrinks it, inflates |d| and
+        biases the gate toward rejection -- and where every value falls in [0, 1)
+        it collapses the population to a constant vector, at which point no effect
+        size exists at all. This getter used to wrap every value in `int()`, which
+        was invisible only for as long as every value was exactly 0.0.
+        """
         return [
-            int(size)
+            float(size)
             for svp in self.svPatterns
             if svp.size_distortions is not None
             for size in svp.size_distortions.values()

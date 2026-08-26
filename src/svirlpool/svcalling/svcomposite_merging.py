@@ -101,13 +101,116 @@ def sizetolerance_from_SVcomposite(a: SVcomposite) -> float:
     return (1.0 - mean_complexity) * float(abs(a.get_size()))
 
 
+# A pair whose two size populations are both *constant* has no within-group
+# spread for Cohen's d to scale a difference of means by, so no effect size
+# exists for the population arm to test. `cohens_d` used to return `inf` for
+# that input, which reads as "maximally separated, therefore reject" and is
+# indistinguishable, in the output, from a real and very large effect size.
+# That silence is what let the read-derived noise model fail genome-wide
+# through an entire benchmark campaign (F1/F2).
+#
+# It is not a rare input. While the distortion estimates are broken every
+# population is constant, so this fires for essentially every candidate pair;
+# warning once per pair over a whole genome would emit millions of lines. Only
+# the first few pairs per process are warned about; every one is counted and
+# the totals are reported once per chromosome.
+DEGENERATE_POPULATION_WARN_LIMIT = 5
+_degenerate_population_warnings_emitted = 0
+_degenerate_population_pairs = 0
+_effect_size_pairs = 0
+
+
+def _reset_degenerate_population_warnings() -> None:
+    """Reset the per-process rate limiter and the degenerate-population counters."""
+    global _degenerate_population_warnings_emitted
+    global _degenerate_population_pairs
+    global _effect_size_pairs
+    _degenerate_population_warnings_emitted = 0
+    _degenerate_population_pairs = 0
+    _effect_size_pairs = 0
+
+
+def _record_effect_size(a: SVcomposite, b: SVcomposite, cohensD: float | None) -> None:
+    """Count one attempted effect size, and report it if it was not estimable.
+
+    Rate limited to ``DEGENERATE_POPULATION_WARN_LIMIT`` warnings per process;
+    beyond that the event is visible only at DEBUG level and in the summary
+    logged by the per-chromosome merge drivers.
+    """
+    global _degenerate_population_warnings_emitted
+    global _degenerate_population_pairs
+    global _effect_size_pairs
+    _effect_size_pairs += 1
+    if cohensD is not None:
+        return
+    _degenerate_population_pairs += 1
+    message = (
+        "DEGENERATE_SIZE_POPULATION::_similar_size::(both size populations are "
+        "constant, so Cohen's d has no within-group spread to scale by; the "
+        "population arm abstains and this pair can only be merged by the "
+        f"fractional arm)	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
+        f"regions_a={_regions_str_from_svcomposite(a)}	regions_b={_regions_str_from_svcomposite(b)}"
+    )
+    if _degenerate_population_warnings_emitted < DEGENERATE_POPULATION_WARN_LIMIT:
+        log.warning(message)
+        _degenerate_population_warnings_emitted += 1
+        if _degenerate_population_warnings_emitted == DEGENERATE_POPULATION_WARN_LIMIT:
+            log.warning(
+                "DEGENERATE_SIZE_POPULATION|RATE_LIMIT: further per-pair warnings are "
+                f"suppressed after {DEGENERATE_POPULATION_WARN_LIMIT} in this process; "
+                "see the merge summary for the total."
+            )
+    else:
+        log.debug(message)
+
+
+def _log_degenerate_population_summary(context: str) -> None:
+    """Report how much of the population arm was decided on nothing."""
+    if _effect_size_pairs == 0:
+        return
+    log.info(
+        f"Summary ({context}): pairs reaching Cohen's d={_effect_size_pairs}, "
+        f"of those not estimable={_degenerate_population_pairs}"
+    )
+    if _degenerate_population_pairs > 0:
+        log.warning(
+            f"DEGENERATE_SIZE_POPULATION|SUMMARY ({context}): "
+            f"{_degenerate_population_pairs} of {_effect_size_pairs} pairs "
+            f"({100.0 * _degenerate_population_pairs / _effect_size_pairs:.1f}%) "
+            "had two constant size populations, so no effect size could be "
+            "estimated and the population arm contributed nothing to those "
+            "merge decisions."
+        )
+
+
+def _cohens_d_report(cohensD: float | None, d: float) -> str:
+    """The `verbose` line for the population arm's effect size.
+
+    Three outcomes have to stay apart, and used to be reported as two:
+
+    * ``None``  -- reached the effect size and it is not estimable (both
+      populations constant). This is the F2 case and must be visible.
+    * ``nan``   -- never reached it: a population was empty, or the granted
+      complexity tolerance already covered the gap between the two means.
+    * a float   -- a real effect size, compared against `d`.
+
+    Collapsing the first two into "print nothing" is what made a degenerate
+    population indistinguishable from an arm that simply did not run.
+    """
+    if cohensD is None:
+        return "  Cohen's D: not estimable (both size populations are constant)"
+    if np.isnan(cohensD):
+        return "  Cohen's D: not computed (the population arm did not reach it)"
+    return f"  Cohen's D: {cohensD:.3f}, threshold: {d}"
+
+
 def _similar_size(
     a: SVcomposite,
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
     scale_by_complexity_factor: float,
     d: float,
-) -> tuple[bool, bool, bool, float]:
+) -> tuple[bool, bool, bool, float | None]:
     """Two-armed size-similarity test, shared by insertions, deletions and inversions.
 
     Arm 1 — a fractional bound on the **raw** sizes:
@@ -123,8 +226,11 @@ def _similar_size(
     weaker arm dominates. That is intended, but it is also why a vacuous arm 1
     silences arm 2 completely.
 
-    Returns (similar_size, fraction_similar, population_similar, cohensD); cohensD
-    is nan when it was not computed.
+    Returns (similar_size, fraction_similar, population_similar, cohensD).
+    `cohensD` is nan when it was not computed at all, and None when it was
+    computed and found not estimable -- see `_cohens_d_report`. The two are kept
+    apart deliberately: one says the arm did not run, the other says it ran on
+    data that cannot support a conclusion, and only the second is a problem.
     """
     size_a = a.get_size()
     size_b = b.get_size()
@@ -145,19 +251,18 @@ def _similar_size(
     size_tolerance_a = scale_by_complexity_factor * sizetolerance_from_SVcomposite(a)
     size_tolerance_b = scale_by_complexity_factor * sizetolerance_from_SVcomposite(b)
 
-    # The distortion values are truncated toward zero TWICE before they reach
-    # Cohen's d: once by `int(size)` in SVcomposite.get_size_populations, and
-    # again by this cast, which is a no-op on the already-integral result. Both
-    # are carried over unchanged from the three copies this helper replaces, and
-    # both were harmless only for as long as F1 kept every value at exactly 0.0.
-    # Once the distortion estimates are real (F1), truncating them shrinks the
-    # pooled standard deviation and so inflates |d|, biasing the population arm
-    # toward rejection — the sub-bp resolution the noise model is built on is
-    # discarded before it is used. Fixing that means changing the getter's
-    # return type as well, not just this cast, so it is left for F1/F2 rather
-    # than changed silently here.
-    population_a = np.array(a.get_size_populations(), dtype=np.int32) + size_a
-    population_b = np.array(b.get_size_populations(), dtype=np.int32) + size_b
+    # The distortion values used to be truncated toward zero TWICE before they
+    # reached Cohen's d: once by `int(size)` in
+    # SVcomposite.get_size_populations, and again by an `np.int32` cast here.
+    # That was harmless only for as long as every value was exactly 0.0. On real
+    # estimates truncation shrinks the within-group spread, which inflates |d|
+    # and biases the arm toward rejection; worse, sub-bp estimates all truncate
+    # to the same 0 and turn an informative population into a *constant* one,
+    # manufacturing exactly the degeneracy handled below. The populations are
+    # kept in floating point: this is a noise model, and quantising it to whole
+    # base pairs discards the resolution it exists to provide.
+    population_a = np.array(a.get_size_populations(), dtype=np.float64) + size_a
+    population_b = np.array(b.get_size_populations(), dtype=np.float64) + size_b
 
     cohensD = float("nan")
     if len(population_a) > 0 and len(population_b) > 0:
@@ -183,7 +288,12 @@ def _similar_size(
                 shifted_a = population_a + size_tolerance_a
                 shifted_b = population_b - size_tolerance_b
             cohensD = cohens_d(shifted_a, shifted_b)
-            population_similar = abs(cohensD) <= abs(d)
+            _record_effect_size(a, b, cohensD)
+            # A non-estimable effect size is not a small one. The arm abstains,
+            # which given the OR with the fractional arm means it neither
+            # carries nor blocks the merge -- the pair is decided by arm 1
+            # alone, as it would be with no populations at all.
+            population_similar = cohensD is not None and abs(cohensD) <= abs(d)
     else:
         population_similar = False
 
@@ -268,8 +378,7 @@ def can_merge_svComposites_insertions(
             f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
             f"similar_size={similar_size}"
         )
-        if not np.isnan(cohensD):
-            print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
+        print(_cohens_d_report(cohensD, d))
         print(f"  Population A sizes: {list(a.get_size_populations())}")
         print(f"  Population B sizes: {list(b.get_size_populations())}")
 
@@ -383,8 +492,7 @@ def can_merge_svComposites_deletions(
             f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
             f"similar_size={similar_size}"
         )
-        if not np.isnan(cohensD):
-            print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
+        print(_cohens_d_report(cohensD, d))
         print(f"  Population A sizes: {list(a.get_size_populations())}")
         print(f"  Population B sizes: {list(b.get_size_populations())}")
 
@@ -798,8 +906,7 @@ def can_merge_svComposites_inversions(
             f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
             f"similar_size={similar_size}"
         )
-        if not np.isnan(cohensD):
-            print(f"  Cohen's D: {cohensD:.3f}, threshold: {d}")
+        print(_cohens_d_report(cohensD, d))
         print(f"  Population A sizes: {list(a.get_size_populations())}")
         print(f"  Population B sizes: {list(b.get_size_populations())}")
 
@@ -1289,6 +1396,7 @@ def merge_svComposites_across_chromosomes(
     This function processes all chromosomes sequentially.
     """
     log.debug("CHROMOSOME_MERGE|ACROSS_CHR|START|n_composites=%d", len(svComposites))
+    _reset_degenerate_population_warnings()
 
     # build overlap trees for all chromosomes
     overlap_trees: dict[str, IntervalTree] = defaultdict(IntervalTree)
@@ -1376,6 +1484,7 @@ def merge_svComposites_across_chromosomes(
         len(svComposites),
         len(merged_svComposites),
     )
+    _log_degenerate_population_summary("adjacencies, all chromosomes")
     return merged_svComposites
 
 
@@ -1396,6 +1505,9 @@ def merge_svComposites_for_chromosome(
     log.debug(
         "CHROMOSOME_MERGE|CHR|START|chr=%s|n_composites=%d", chr_name, len(svComposites)
     )
+    # This is the entry point of a worker process when threads > 1, so the
+    # per-process rate limiter and counters belong here.
+    _reset_degenerate_population_warnings()
 
     # Build overlap trees for this chromosome only
     overlaptree = IntervalTree()
@@ -1494,6 +1606,7 @@ def merge_svComposites_for_chromosome(
         len(svComposites),
         len(merged_svComposites),
     )
+    _log_degenerate_population_summary(chr_name)
     return merged_svComposites
 
 
