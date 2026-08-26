@@ -153,7 +153,15 @@ def test_get_supporting_reads_is_sorted_with_end_reads() -> None:
 def test_get_supporting_reads_is_independent_of_insertion_order(
     with_end: bool,
 ) -> None:
-    """Supplying the same readnames in different orders must give one result."""
+    """Supplying the same readnames in different orders must give one result.
+
+    Note on strength: insertion-order independence *alone* is a weak detector,
+    because within one process ``set`` iteration over the same small element
+    set usually lands in the same order whatever the insertion order -- whether
+    it does depends on the hash seed of that particular pytest process.  The
+    canonical-order assertion at the end is what makes this test fail on
+    ``main`` deterministically.
+    """
     permutations = [
         (READS_START, READS_END),
         (list(reversed(READS_START)), list(reversed(READS_END))),
@@ -165,6 +173,7 @@ def test_get_supporting_reads_is_independent_of_insertion_order(
         for start, end in permutations
     ]
     assert all(r == results[0] for r in results), results
+    assert results[0] == sorted(results[0])
 
 
 def test_get_supporting_reads_is_stable_across_hash_seeds() -> None:
