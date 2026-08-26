@@ -22,6 +22,7 @@ import vcfpy
 from svirlpool.analysis.barplot_mendelian_consistency import (
     create_plot,
     create_table,
+    select_stratum,
 )
 from svirlpool.analysis.mendelian_consistency import (
     _STACK_ORDER,
@@ -88,7 +89,9 @@ def status_of(
 ) -> GTInheritanceStatus:
     """Build a one-record VCF for the trio and return its consistency status."""
     path = write_trio_vcf(
-        tmp_path, [(child, father, mother)], name=f"one_{abs(hash((child, father, mother)))}.vcf"
+        tmp_path,
+        [(child, father, mother)],
+        name=f"one_{abs(hash((child, father, mother)))}.vcf",
     )
     record = read_records(path)[0]
     return is_variant_inconsistent(variant=record, names_trio=TRIO, **kwargs)
@@ -132,7 +135,12 @@ class TestParseGenotypeObserved:
 
     @pytest.mark.parametrize(
         ("gt", "expected"),
-        [("0|0", (2, 0, 2)), ("0|1", (1, 1, 2)), ("1|0", (1, 1, 2)), ("1|1", (0, 2, 2))],
+        [
+            ("0|0", (2, 0, 2)),
+            ("0|1", (1, 1, 2)),
+            ("1|0", (1, 1, 2)),
+            ("1|1", (0, 2, 2)),
+        ],
     )
     def test_phased_separator_is_understood(self, gt, expected):
         """``|`` is a valid VCF allele separator and must not be read as one allele.
@@ -191,7 +199,12 @@ class TestParseGenotypeLegacy:
 
     @pytest.mark.parametrize(
         ("gt", "expected"),
-        [("./.", (2, 0, 2)), (".", (1, 0, 1)), ("././.", (3, 0, 3)), ("0/.", (2, 0, 2))],
+        [
+            ("./.", (2, 0, 2)),
+            (".", (1, 0, 1)),
+            ("././.", (3, 0, 3)),
+            ("0/.", (2, 0, 2)),
+        ],
     )
     def test_missing_as_reference_reproduces_the_old_mapping(self, gt, expected):
         assert parse_genotype(gt, missing_as_reference=True) == expected
@@ -246,8 +259,7 @@ class TestDiploidRule:
     )
     def test_mendelian_consistent_trios(self, tmp_path, child, father, mother):
         assert (
-            status_of(tmp_path, child, father, mother)
-            is GTInheritanceStatus.consistent
+            status_of(tmp_path, child, father, mother) is GTInheritanceStatus.consistent
         )
 
     @pytest.mark.parametrize(
@@ -274,7 +286,9 @@ class TestDiploidRule:
 
 class TestHemizygousAndPolyploidRules:
     def test_hemizygous_alt_from_a_reference_mother_is_inconsistent(self, tmp_path):
-        assert status_of(tmp_path, "1", "0/1", "0/0") is GTInheritanceStatus.inconsistent
+        assert (
+            status_of(tmp_path, "1", "0/1", "0/0") is GTInheritanceStatus.inconsistent
+        )
 
     def test_hemizygous_alt_from_a_carrier_mother_is_consistent(self, tmp_path):
         assert status_of(tmp_path, "1", "0/0", "0/1") is GTInheritanceStatus.consistent
@@ -503,7 +517,11 @@ class TestReportedOutput:
         entry = data["child"]["all"]
         assert entry["no_call"]["count"] == 3
         assert entry["no_call"]["percentage"] == pytest.approx(0.5)
-        assert entry["no_call_rate"] == pytest.approx(0.5)
+        assert entry["no_call"]["denominator"] == "total"
+        assert entry["summary"]["no_call_rate"] == pytest.approx(0.5)
+        assert entry["summary"]["informative"] == 2
+        assert entry["summary"]["total"] == 6
+        assert entry["consistent"]["percentage"] == pytest.approx(0.5)
 
 
 class TestPlottingMetadata:
@@ -515,20 +533,51 @@ class TestPlottingMetadata:
 
 
 class TestBarplotConsumer:
-    def test_barplot_still_reads_the_emitted_tsv(self, mixed_stats, tmp_path):
+    """The TSV is consumed by ``barplot_mendelian_consistency``."""
+
+    @pytest.fixture
+    def tsv(self, mixed_stats, tmp_path):
+        dict_stats, size_stats = mixed_stats
+        path = tmp_path / "stats.tsv"
+        all_dict_stats_to_tsv({"child": dict_stats}, path, {"child": size_stats})
+        return path
+
+    def test_stratum_selection_leaves_one_row_per_status(self, tsv):
+        """The TSV carries a block of rows per SV type and per size bin.
+        Stacking them all into one bar is what made the plotted percentages a
+        multiple of 100."""
         import pandas as pd
 
-        dict_stats, size_stats = mixed_stats
-        tsv = tmp_path / "stats.tsv"
-        all_dict_stats_to_tsv({"child": dict_stats}, tsv, {"child": size_stats})
+        df = pd.read_csv(tsv, sep="\t")
+        unfiltered = df[df["status"].isin(["consistent", "inconsistent"])]
+        assert len(unfiltered) > 2  # several strata, same sample
+        selected = select_stratum(df)
+        selected = selected[selected["status"].isin(["consistent", "inconsistent"])]
+        assert len(selected) == 2
+        assert selected["percentage"].sum() == pytest.approx(1.0)
+
+    def test_barplot_pipeline_runs_on_the_emitted_tsv(self, tsv):
+        import pandas as pd
 
         df = pd.read_csv(tsv, sep="\t")
+        df = select_stratum(df)
         df = df[df["status"].isin(["consistent", "inconsistent"])]
-        df = df[(df["svtype"] == "all") & (df["size_bin"] == "all")]
         df = df[["sample", "status", "count", "percentage"]]
-        df["file_group"] = "arm"
-        df["file_group"] = pd.Categorical(df["file_group"], categories=["arm"])
-        fig = create_plot(df.copy(), title="t")
+        df["file_group"] = pd.Categorical(["arm"] * len(df), categories=["arm"])
+        # run() calls create_plot first; it is what makes "status" categorical.
+        fig = create_plot(df, title="t")
         assert fig is not None
-        table = create_table(df.copy())
+        table = create_table(df)
         assert "consistent" in table.columns
+        assert "inconsistent" in table.columns
+
+    def test_no_call_rows_do_not_reach_the_stacked_bars(self, tsv):
+        """no_call is a fraction of all trios, not of the verdicts, so it must
+        not be stacked with consistent/inconsistent."""
+        import pandas as pd
+
+        df = pd.read_csv(tsv, sep="\t")
+        df = select_stratum(df)
+        kept = df[df["status"].isin(["consistent", "inconsistent"])]
+        assert "no_call" not in set(kept["status"])
+        assert kept["percentage"].sum() == pytest.approx(1.0)

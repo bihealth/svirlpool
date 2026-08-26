@@ -130,8 +130,30 @@ def create_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # %%
+def select_stratum(
+    df: pd.DataFrame, svtype: str = "all", size_bin: str = "all"
+) -> pd.DataFrame:
+    """Reduce a mendelian_consistency TSV to a single (svtype, size_bin) stratum.
+
+    The TSV carries one block of rows per SV type and, when size stratification
+    is on, one per size bin as well.  Without this the same sample contributes
+    several rows per status and they are stacked on top of each other, so a bar
+    that should reach 100% reaches a multiple of it.
+    """
+    if "svtype" in df.columns:
+        df = df[df["svtype"] == svtype]
+    if "size_bin" in df.columns:
+        df = df[df["size_bin"] == size_bin]
+    return df
+
+
 def plot_mendelian(
-    inputs: list[Path], names: list[str], output: Path, title: str
+    inputs: list[Path],
+    names: list[str],
+    output: Path,
+    title: str,
+    svtype: str = "all",
+    size_bin: str = "all",
 ) -> pd.DataFrame:
     # make sure the output has the right extension (svg or png)
     if output.suffix not in [".svg", ".png"]:
@@ -153,11 +175,22 @@ def plot_mendelian(
     for input_file, group_name in zip(inputs, names, strict=True):
         df = pd.read_csv(input_file, sep="\t")
 
+        # Pick a single stratum before dropping the columns that identify it,
+        # otherwise every SV type and size bin is stacked into the same bar.
+        df = select_stratum(df, svtype=svtype, size_bin=size_bin)
+        if df.empty:
+            raise ValueError(
+                f"{input_file}: no rows for svtype={svtype!r}, size_bin={size_bin!r}"
+            )
+
         # Keep only required columns and ignore others
         required_columns = ["sample", "status", "count", "percentage"]
         df = df[required_columns]
 
-        # Keep only rows with consistent or inconsistent status
+        # Keep only rows with consistent or inconsistent status.  These two
+        # share the "informative" denominator and so add up to 100%; no_call
+        # is a fraction of all evaluated trios and is reported separately by
+        # mendelian_consistency rather than stacked here.
         df = df[df["status"].isin(["consistent", "inconsistent"])]
 
         # Handle percentage conversion - it might be string with "%" or already float
@@ -191,7 +224,12 @@ def plot_mendelian(
 
 def run(args, **kwargs):
     combined_df = plot_mendelian(
-        inputs=args.input, names=args.names, output=args.output, title=args.title
+        inputs=args.input,
+        names=args.names,
+        output=args.output,
+        title=args.title,
+        svtype=args.svtype,
+        size_bin=args.size_bin,
     )
 
     # Save table if requested
@@ -231,6 +269,25 @@ def get_parser() -> argparse.ArgumentParser:
         type=str,
         default="Mendelian Violations",
         help="Title of the plot. Default: 'Mendelian Violations'",
+    )
+    parser.add_argument(
+        "--svtype",
+        type=str,
+        default="all",
+        help=(
+            "Which SVTYPE block of the input TSV to plot. Default: 'all' "
+            "(every SV type pooled)."
+        ),
+    )
+    parser.add_argument(
+        "--size-bin",
+        type=str,
+        default="all",
+        dest="size_bin",
+        help=(
+            "Which size bin of the input TSV to plot, when the TSV was written "
+            "with size stratification. Default: 'all' (every size pooled)."
+        ),
     )
     parser.add_argument(
         "--table",
