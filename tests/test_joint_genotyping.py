@@ -623,3 +623,321 @@ class TestJointCallAcrossSamples:
         )
         assert line is not None
         assert line.split("\t")[-1] == "0/0:60:0:0:0:1.0"
+
+
+# ===========================================================================
+# 8. N15 — the breakpoint-placement margin is deletion-only
+# ===========================================================================
+#
+# A read that carries an insertion at position ``p`` has, by construction,
+# sequence at ``p`` that does not align to the reference at ``p``.  When the
+# insertion is large or its flanks are repetitive, the aligner emits two
+# fragments — one ending before ``p``, one resuming after it — and *no* fragment
+# covering ``p``.  The very property that makes the read alt-supporting is what
+# removes it from a point query at ``p``.
+#
+# The two breakpoints are also placed independently: once by the read-to-
+# reference alignment (which produced the coverage track) and once by the
+# consensus-to-reference alignment (which produced the call position).  In
+# repetitive sequence those two placements disagree by a repeat-period-scale
+# amount.  Measured on the muc1 example and eight HG002 tiles, that
+# disagreement is 26–158 bp for 28 of 42 lost reads.
+#
+# ``breakpoint_mode`` recognises exactly this geometry — but is wired to
+# deletions only (``is_deletion`` in ``svcall_object_from_svcomposite``).  These
+# tests pin the asymmetry and its repair.
+
+# The margin defaults to the same value as ``--near`` (150), the distance within
+# which the merger already declares two independently placed breakpoints to be
+# the same event.
+DEFAULT_BREAKPOINT_MARGIN = 150
+
+
+def _covtree_from_intervals(
+    intervals: dict[str, list[tuple[int, int]]],
+    chrname: str = CHR,
+    samplename: str = SAMPLE,
+) -> dict[str, dict[str, IntervalTree]]:
+    """Build a covtree with explicit per-read alignment-fragment intervals."""
+    tree = IntervalTree()
+    for readname, spans in intervals.items():
+        for begin, end in spans:
+            tree.addi(begin, end, _hash(readname))
+    return {samplename: {chrname: tree}}
+
+
+def _fragmented_locus(
+    *,
+    gap: int,
+    n_supporting: int = 3,
+    n_spanning: int = 14,
+    locus: int = 1000,
+) -> tuple[dict[str, dict[str, IntervalTree]], list[str]]:
+    """The muc1 1:69668 configuration, in miniature.
+
+    ``n_supporting`` alt reads whose alignment fragment stops ``gap`` bases short
+    of ``locus`` and resumes far downstream, plus ``n_spanning`` unrelated reads
+    that cover ``locus`` contiguously.  The locus therefore looks well covered
+    and quiet, which is precisely why the defect is invisible.
+    """
+    supporting = _reads(n_supporting, prefix="alt")
+    intervals: dict[str, list[tuple[int, int]]] = {
+        # ends at locus - gap + 1 (exclusive end), i.e. a gap of exactly `gap`
+        name: [(locus - 400, locus - gap + 1), (locus + 10_000, locus + 10_300)]
+        for name in supporting
+    }
+    for name in _reads(n_spanning, prefix="ref"):
+        intervals[name] = [(locus - 400, locus + 400)]
+    return _covtree_from_intervals(intervals), supporting
+
+
+class TestInsertionBreakpointMargin:
+    """Supporting reads whose alignment stops short of the insertion breakpoint."""
+
+    def test_a_point_query_loses_every_supporting_read(self):
+        """Characterisation: with no margin the sample is 0/0 for its own variant."""
+        covtrees, supporting = _fragmented_locus(gap=118)
+        gt = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            breakpoint_margin=0,
+        )
+        assert gt.genotype == "0/0"
+        assert gt.var_reads == 0
+        assert gt.total_coverage == 14
+
+    def test_the_margin_recovers_them_by_default(self):
+        """The repair: the default margin counts the reads that produced the call."""
+        covtrees, supporting = _fragmented_locus(gap=118)
+        gt = _genotype_of([], supporting, covtrees=covtrees, start=1000, end=1001)
+        assert gt.var_reads == 3
+        assert gt.total_coverage == 17
+        assert gt.ref_reads == 14
+
+    def test_a_deletion_in_the_same_configuration_was_already_handled(self):
+        """The asymmetry itself: ``breakpoint_mode`` recovers what the default loses.
+
+        Same covtree, same reads, same locus — only the query geometry differs.
+        """
+        covtrees, supporting = _fragmented_locus(gap=118)
+        as_insertion = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            breakpoint_margin=0,
+        )
+        as_deletion = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            breakpoint_mode=True,
+            breakpoint_margin=DEFAULT_BREAKPOINT_MARGIN,
+        )
+        assert as_insertion.var_reads == 0
+        assert as_deletion.var_reads == 3
+
+    @pytest.mark.parametrize(
+        ("gap", "expected_alt"),
+        [
+            (1, 3),
+            (50, 3),
+            (DEFAULT_BREAKPOINT_MARGIN - 1, 3),
+            (DEFAULT_BREAKPOINT_MARGIN, 3),  # just inside
+            (DEFAULT_BREAKPOINT_MARGIN + 1, 0),  # just outside
+            (DEFAULT_BREAKPOINT_MARGIN + 100, 0),
+        ],
+    )
+    def test_margin_boundary_is_exact(self, gap, expected_alt):
+        covtrees, supporting = _fragmented_locus(gap=gap)
+        gt = _genotype_of([], supporting, covtrees=covtrees, start=1000, end=1001)
+        assert gt.var_reads == expected_alt
+
+    def test_margin_is_configurable(self):
+        covtrees, supporting = _fragmented_locus(gap=400)
+        assert (
+            _genotype_of(
+                [], supporting, covtrees=covtrees, start=1000, end=1001
+            ).var_reads
+            == 0
+        )
+        assert (
+            _genotype_of(
+                [],
+                supporting,
+                covtrees=covtrees,
+                start=1000,
+                end=1001,
+                breakpoint_margin=400,
+            ).var_reads
+            == 3
+        )
+
+    def test_composite_level_insertion_gets_the_margin(self):
+        """End to end: an INS composite must not be 0/0 for its own supporting reads.
+
+        This is the muc1 ``1:69668`` record: a PRECISE insertion assembled from
+        six reads, genotyped ``0/0`` with ``DV=0``.
+        """
+        covtrees, supporting = _fragmented_locus(gap=118)
+        composite = _make_insertion_composite(reads=supporting, ref_start=1000)
+        calls = _svcalls(composite, covtrees)
+        assert len(calls) == 1
+        gt = calls[0].genotypes[SAMPLE]
+        assert gt.var_reads == 3, "the insertion's own supporting reads are invisible"
+        assert calls[0].pass_altreads is True
+
+    def test_composite_level_deletion_dispatch_is_unchanged(self):
+        """Deletions keep the two-breakpoint geometry; only the margin value moved."""
+        covtrees, supporting = _fragmented_locus(gap=118)
+        gt_bp = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            breakpoint_mode=True,
+        )
+        assert gt_bp.var_reads == 3
+
+
+class TestMarginDoesNotManufactureSupport:
+    """The false-positive containment — the real danger of widening a window."""
+
+    def test_a_nearby_unrelated_read_is_never_counted_as_alt(self):
+        """A read near the breakpoint that the assembly did not name is not support.
+
+        ``alt_reads = all_reads & raw_alt_reads``, so widening the *coverage*
+        query can only add reads to ``TC``/``DR``.  A read can enter ``DV`` only
+        if the assembly already listed it as supporting this composite.
+        """
+        covtrees, supporting = _fragmented_locus(gap=118)
+        # A read whose alignment sits 120 bp before the breakpoint but which is
+        # not among the composite's supporting reads.
+        covtrees[SAMPLE][CHR].addi(600, 881, _hash("bystander"))
+        gt = _genotype_of([], supporting, covtrees=covtrees, start=1000, end=1001)
+        assert gt.var_reads == 3
+        assert _hash("bystander") not in {_hash(r) for r in supporting}
+        # the bystander is counted as reference depth, never as alt support
+        assert gt.total_coverage == 18
+        assert gt.ref_reads == 15
+
+    @pytest.mark.parametrize("margin", [0, 1, 50, 150, 500, 5000])
+    def test_dv_never_exceeds_tc(self, margin):
+        """``DV > TC`` would mean the window double-counts; it cannot, by construction."""
+        covtrees, supporting = _fragmented_locus(gap=118)
+        gt = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            breakpoint_margin=margin,
+        )
+        assert gt.var_reads <= gt.total_coverage
+        assert gt.var_reads + gt.ref_reads == gt.total_coverage
+
+    @pytest.mark.parametrize("margin", [0, 1, 50, 150, 500, 5000])
+    def test_widening_never_loses_a_read_a_point_query_found(self, margin):
+        """Monotonicity: the widened query is a strict superset of the point query."""
+        covtrees, supporting = _fragmented_locus(gap=118)
+        # give one supporting read an extra fragment that *does* span the locus
+        covtrees[SAMPLE][CHR].addi(990, 1010, _hash("alt0"))
+        gt = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            breakpoint_margin=margin,
+        )
+        assert gt.var_reads >= 1
+
+    def test_a_read_with_no_interval_anywhere_stays_uncounted(self):
+        """Mechanism 2 of N15: reads absent from the coverage track altogether.
+
+        ``alignments_to_rafs`` drops whole reads (the non-separated-read filter,
+        ``min_mapq``, ``min_segment_size``) that the local assembler happily used
+        as supporting reads.  Those reads have *no* interval on the chromosome,
+        so no widening of the genotyping window can ever recover them.  This is a
+        separate defect from the short-fragment one and is documented, not fixed,
+        here.
+        """
+        covtrees, supporting = _fragmented_locus(gap=118)
+        raw_alt = {_hash(r) for r in supporting} | {_hash("never_in_the_covtree")}
+        gt = genotype_of_sample(
+            samplename=SAMPLE,
+            chrname=CHR,
+            start=1000,
+            end=1001,
+            raw_alt_reads=raw_alt,
+            covtrees=covtrees,
+            cn_tracks={},
+            breakpoint_margin=5000,
+        )
+        assert gt.var_reads == 3  # not 4 — the absent read is unrecoverable
+
+
+class TestMarginLeavesTheF9PathsIntact:
+    """The no-call and copy-number behaviour introduced by F9 must be unchanged."""
+
+    def test_no_coverage_at_all_is_still_a_no_call(self):
+        gt = _genotype_of(
+            [], ["altread"], covtrees=_covtree_empty(), start=1000, end=1001
+        )
+        assert gt.genotype == "./."
+        assert gt.genotype_quality == 0
+        assert gt.total_coverage == 0
+
+    def test_covered_locus_without_support_is_still_a_wild_type(self):
+        gt = _genotype_of(_reads(10), ["unrelated_alt_read"])
+        assert gt.genotype == "0/0"
+        assert gt.var_reads == 0
+        assert 0 < gt.genotype_quality <= GQ_CEILING
+
+    @pytest.mark.parametrize(
+        ("copy_number", "expected"),
+        [(1, "1"), (2, "1/1"), (3, "1/1/1"), (4, "1/1/1/1")],
+    )
+    def test_non_diploid_copy_number_still_works_with_the_margin(
+        self, copy_number, expected
+    ):
+        covtrees, supporting = _fragmented_locus(gap=118, n_spanning=0)
+        cn_tree = IntervalTree()
+        cn_tree.addi(0, 2_000_000, copy_number)
+        gt = _genotype_of(
+            [],
+            supporting,
+            covtrees=covtrees,
+            start=1000,
+            end=1001,
+            cn_tracks={SAMPLE: {CHR: cn_tree}},
+        )
+        assert gt.var_reads == 3
+        assert gt.genotype == expected
+
+    def test_haploid_locus_with_no_support_is_still_reference(self):
+        cn_tree = IntervalTree()
+        cn_tree.addi(0, 2_000_000, 1)
+        gt = _genotype_of(
+            _reads(10),
+            ["unrelated_alt_read"],
+            cn_tracks={SAMPLE: {CHR: cn_tree}},
+        )
+        assert gt.genotype == "0"
+        assert gt.var_reads == 0
+
+    def test_legacy_control_is_unaffected_by_the_margin(self):
+        """``--legacy-force-wildtype-genotypes`` must still reproduce the old call."""
+        gt = _genotype_of(
+            [], ["altread"], covtrees=_covtree_empty(), legacy_force_wildtype=True
+        )
+        assert gt.genotype == "0/0"
+        assert gt.genotype_quality == GQ_CEILING
+        assert gt.total_coverage == 0
