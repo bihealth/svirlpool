@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from svirlpool.localassembly import SVpatterns, SVprimitives
-from svirlpool.svcalling import genotyping
+from svirlpool.svcalling import genotyping, svcomposite_merging
 from svirlpool.svcalling.SVcomposite import SVcomposite
 from svirlpool.svcalling.svcomposite_merging import (
     can_merge_svComposites_deletions,
@@ -25,6 +25,7 @@ from svirlpool.svcalling.svcomposite_merging import (
     can_merge_svComposites_inversions,
     sizetolerance_from_SVcomposite,
 )
+from svirlpool.svcalling.svcomposite_utils import cohens_d
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -1342,3 +1343,388 @@ class TestComplexityIsATolerance:
                 sequence_a=_random_dna(200, seed=3),
                 sequence_b="A" * 200,
             ), f"{kind}: identical sizes must merge whatever the complexity"
+
+
+# ===========================================================================
+# F2 -- A DEGENERATE SIZE POPULATION IS NOT AN EFFECT SIZE
+#
+# `cohens_d` used to fabricate a value whenever the pooled standard deviation
+# was zero: `inf` if the two means differed, `0.0` if they did not. Both are
+# statements about the separation of two distributions *relative to their
+# spread*, made from data that carry no information about spread at all. The
+# `inf` in particular reads as "maximally separated, therefore reject", and it
+# is what let F1 -- every distortion value stuck at exactly 0.0, i.e. every
+# population a constant vector -- pass through an entire benchmark campaign
+# without a single visible symptom.
+#
+# The contract now is: the utility reports "not estimable" (None) and the
+# caller decides what to do about it.
+# ===========================================================================
+
+
+class TestCohensDIsNotEstimableOnDegenerateInput:
+    """Direct unit tests for the effect-size utility itself."""
+
+    def test_two_constant_populations_with_different_means(self):
+        """Both groups constant, means apart.
+
+        Pre-fix this returned `float("inf")`: an infinitely large effect size
+        inferred from zero observed variability. That is the value that made the
+        population arm reject silently everywhere F1 was active.
+        """
+        assert cohens_d([500] * 8, [600] * 8) is None
+
+    def test_two_constant_populations_with_equal_means(self):
+        """Both groups constant, means identical.
+
+        Pre-fix this returned `0.0`. It is no more defensible than the `inf`:
+        the quotient is 0/0, and 0.0 asserts "no difference relative to the
+        spread" from data with no spread. It merely fails in the permissive
+        direction instead of the restrictive one, which is why nobody noticed.
+        """
+        assert cohens_d([500] * 8, [500] * 8) is None
+
+    def test_single_observation_in_each_group(self):
+        """One observation each: no within-group variability can be estimated.
+
+        Pre-fix: `inf` for differing values, `0.0` for equal ones. This is not a
+        contrived input -- it is what two composites with one supporting read
+        each produce.
+        """
+        assert cohens_d([500], [600]) is None
+        assert cohens_d([500], [500]) is None
+
+    def test_a_constant_group_against_a_spread_group_is_estimable(self):
+        """Degeneracy is a property of the *pair*, not of one group.
+
+        With one group constant and the other spread, the pooled standard
+        deviation is positive and the effect size is a real number.
+        """
+        value = cohens_d([500] * 8, [400, 450, 500, 550, 600, 650, 700, 750])
+        assert value is not None
+        assert np.isfinite(value)
+
+    def test_a_genuine_effect_size_is_unchanged(self):
+        """Regression guard: the non-degenerate arithmetic must not move."""
+        x = [10.0, 12.0, 14.0, 16.0, 18.0]
+        y = [20.0, 22.0, 24.0, 26.0, 28.0]
+        expected = (np.mean(x) - np.mean(y)) / np.sqrt(
+            (
+                (len(x) - 1) * np.std(x, ddof=1) ** 2
+                + (len(y) - 1) * np.std(y, ddof=1) ** 2
+            )
+            / (len(x) + len(y) - 2)
+        )
+        assert cohens_d(x, y) == pytest.approx(float(expected))
+
+    def test_empty_input_still_raises(self):
+        """An empty sample is a caller bug, not a degenerate population."""
+        with pytest.raises(ValueError):
+            cohens_d([], [1, 2, 3])
+        with pytest.raises(ValueError):
+            cohens_d([1, 2, 3], [])
+
+
+class TestDegeneratePopulationsDoNotDecideMerges:
+    """The same thing seen through the size gate.
+
+    Which inputs actually reach the degenerate branch is narrower than it looks,
+    because arm 2 short-circuits to `population_similar = True` whenever the two
+    population means are already within the granted complexity tolerance. What
+    is left is: *both* populations constant AND the size gap strictly greater
+    than that tolerance.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_rate_limiter(self):
+        svcomposite_merging._reset_degenerate_population_warnings()
+        yield
+        svcomposite_merging._reset_degenerate_population_warnings()
+
+    @staticmethod
+    def _pair(size_a: int, size_b: int, distortions_a, distortions_b):
+        a = _make_insertion_composite(
+            size=size_a,
+            size_distortions=distortions_a,
+            samplename="sample1",
+            consensusID="1.0",
+            sequence=_random_dna(size_a, seed=11),
+        )
+        b = _make_insertion_composite(
+            size=size_b,
+            size_distortions=distortions_b,
+            samplename="sample2",
+            consensusID="2.0",
+            sequence=_random_dna(size_b, seed=12),
+        )
+        return a, b
+
+    def test_degenerate_pair_is_rejected_and_warned_about(self, caplog):
+        """Both populations constant, gap far beyond any tolerance.
+
+        This is exactly the state F1 produces genome-wide: every distortion
+        value 0.0, so every population a constant vector at the composite's own
+        size. Pre-fix `cohensD` came back as `inf` and `population_similar` was
+        False -- the right verdict reached by an invented number, and reached in
+        complete silence.
+        """
+        a, b = self._pair(
+            100,
+            200,
+            {"r1": 0.0, "r2": 0.0, "r3": 0.0},
+            {"r1": 0.0, "r2": 0.0, "r3": 0.0},
+        )
+        with caplog.at_level(
+            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
+        ):
+            similar, fraction_similar, population_similar, cohensD = (
+                svcomposite_merging._similar_size(a, b, 0.1, 0.0, 2.0)
+            )
+        # `is False` is deliberately avoided throughout: arm 1 returns a numpy
+        # bool, so identity against the Python singleton does not hold.
+        assert not population_similar
+        assert not fraction_similar
+        assert not similar
+        assert cohensD is None, "a non-estimable effect size must not be a number"
+        assert any(
+            "DEGENERATE_SIZE_POPULATION" in record.message for record in caplog.records
+        ), "the degenerate population must be reported, not swallowed"
+
+    def test_the_warning_is_rate_limited(self, caplog):
+        """A whole-genome run hits this at every locus while F1 is unfixed."""
+        with caplog.at_level(
+            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
+        ):
+            for _ in range(svcomposite_merging.DEGENERATE_POPULATION_WARN_LIMIT + 20):
+                a, b = self._pair(100, 200, {"r1": 0.0}, {"r1": 0.0})
+                svcomposite_merging._similar_size(a, b, 0.1, 0.0, 2.0)
+        per_locus = [
+            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION::" in r.message
+        ]
+        assert len(per_locus) == svcomposite_merging.DEGENERATE_POPULATION_WARN_LIMIT
+        assert any("suppressed" in r.message for r in caplog.records)
+
+    def test_a_degenerate_pair_inside_the_tolerance_never_reaches_the_effect_size(
+        self, caplog
+    ):
+        """The short-circuit above the call: no warning, and the arm accepts.
+
+        With a homopolymer sequence the complexity allowance is the full event
+        size, so the two population means are already within it and arm 2 never
+        asks for an effect size. Degeneracy here is not an error -- nothing was
+        computed on it.
+        """
+        a = _make_insertion_composite(
+            size=100,
+            size_distortions={"r1": 0.0},
+            samplename="sample1",
+            consensusID="1.0",
+        )
+        b = _make_insertion_composite(
+            size=180,
+            size_distortions={"r1": 0.0},
+            samplename="sample2",
+            consensusID="2.0",
+        )
+        with caplog.at_level(
+            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
+        ):
+            _, _, population_similar, cohensD = svcomposite_merging._similar_size(
+                a, b, 0.1, 1.0, 2.0
+            )
+        assert population_similar
+        assert isinstance(cohensD, float) and np.isnan(cohensD), (
+            "nan still means 'not computed', and must stay distinguishable from "
+            "'computed and not estimable'"
+        )
+        assert not [
+            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
+        ]
+
+    def test_empty_populations_are_not_reported_as_degenerate(self, caplog):
+        """No population at all is missing data, not a degenerate one."""
+        a, b = self._pair(100, 200, None, None)
+        with caplog.at_level(
+            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
+        ):
+            _, _, population_similar, cohensD = svcomposite_merging._similar_size(
+                a, b, 0.1, 0.0, 2.0
+            )
+        assert not population_similar
+        assert isinstance(cohensD, float) and np.isnan(cohensD)
+        assert not [
+            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
+        ]
+
+    def test_a_real_population_still_yields_a_real_effect_size(self, caplog):
+        """Regression guard: the arm is guarded, not disabled.
+
+        Populations with genuine spread must still be measured, and must still
+        be able to carry a merge that the fractional arm rejects.
+        """
+        spread = {
+            f"r{i}": v
+            for i, v in enumerate([-80.0, -50.0, -20.0, 0.0, 20.0, 50.0, 80.0])
+        }
+        a, b = self._pair(500, 600, spread, spread)
+        with caplog.at_level(
+            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
+        ):
+            similar, fraction_similar, population_similar, cohensD = (
+                svcomposite_merging._similar_size(a, b, 0.1, 0.0, 2.0)
+            )
+        assert not fraction_similar, "the fractional arm must not be what passes here"
+        assert population_similar
+        assert similar
+        assert cohensD is not None and np.isfinite(cohensD)
+        assert not [
+            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
+        ]
+
+    def test_a_real_population_still_rejects_when_the_effect_size_is_large(self):
+        """The same populations, a size gap they cannot absorb."""
+        spread = {
+            f"r{i}": v for i, v in enumerate([-8.0, -5.0, -2.0, 0.0, 2.0, 5.0, 8.0])
+        }
+        a, b = self._pair(500, 900, spread, spread)
+        _, _, population_similar, cohensD = svcomposite_merging._similar_size(
+            a, b, 0.1, 0.0, 2.0
+        )
+        assert cohensD is not None and np.isfinite(cohensD)
+        assert abs(cohensD) > 2.0
+        assert not population_similar
+
+    def test_max_cohens_d_still_moves_the_decision(self):
+        """`--max_cohens_d` must actually be a knob again.
+
+        On `main` it had no influence on any merge decision at all: with
+        degenerate populations the comparison was `inf <= d`, False for every
+        finite `d`.
+        """
+        spread = {
+            f"r{i}": v
+            for i, v in enumerate([-40.0, -25.0, -10.0, 0.0, 10.0, 25.0, 40.0])
+        }
+        a, b = self._pair(500, 600, spread, spread)
+        _, _, lenient, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.0, 5.0)
+        _, _, strict, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.0, 0.5)
+        assert lenient
+        assert not strict
+
+
+class TestVerboseReportsWhyThereIsNoEffectSize:
+    """The three `verbose` consumers of the returned Cohen's D.
+
+    They were the only place the value surfaced at all, and they used `nan` as
+    "not computed". They now have to distinguish that from "computed, and not
+    estimable", which is the whole point of F2.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_rate_limiter(self):
+        svcomposite_merging._reset_degenerate_population_warnings()
+        yield
+
+    @staticmethod
+    def _merge(kind, size_a, size_b, distortions, *, scale, capsys):
+        a = _make_composite(
+            kind,
+            size=size_a,
+            size_distortions=distortions,
+            samplename="sample1",
+            consensusID="1.0",
+            sequence=_random_dna(size_a, seed=21),
+        )
+        b = _make_composite(
+            kind,
+            size=size_b,
+            size_distortions=distortions,
+            samplename="sample2",
+            consensusID="2.0",
+            sequence=_random_dna(size_b, seed=22),
+        )
+        _MERGERS[kind](
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=10 * max(size_a, size_b),
+            min_kmer_overlap=0.0,
+            scale_by_complexity_factor=scale,
+            verbose=True,
+        )
+        return capsys.readouterr().out
+
+    def test_degenerate_case_is_named_in_the_report(self, capsys):
+        for kind in _KINDS:
+            out = self._merge(
+                kind, 100, 200, {"r1": 0.0, "r2": 0.0}, scale=0.0, capsys=capsys
+            )
+            assert "Cohen's D" in out, kind
+            assert "not estimable" in out, kind
+
+    def test_computed_case_still_prints_the_number(self, capsys):
+        spread = {
+            f"r{i}": v
+            for i, v in enumerate([-80.0, -50.0, -20.0, 0.0, 20.0, 50.0, 80.0])
+        }
+        for kind in _KINDS:
+            out = self._merge(kind, 500, 600, spread, scale=0.0, capsys=capsys)
+            assert "Cohen's D:" in out, kind
+            assert "not estimable" not in out, kind
+            assert "threshold: 2.0" in out, kind
+
+    def test_not_computed_case_says_so(self, capsys):
+        """Populations absent: nothing was computed, and the report says that
+        rather than printing nothing at all."""
+        for kind in _KINDS:
+            out = self._merge(kind, 500, 520, None, scale=0.0, capsys=capsys)
+            assert "not computed" in out, kind
+
+
+class TestSizePopulationsKeepSubBasepairResolution:
+    """N2 -- the distortion values must reach Cohen's *d* unquantised.
+
+    `get_size_populations()` used to wrap every value in `int()` and
+    `_similar_size` cast the result to `np.int32` on top. Both were invisible
+    while F1 pinned every value at exactly 0.0. With real distortion estimates
+    they are not: truncation toward zero shrinks the within-group spread, which
+    inflates `|d|` and biases the arm toward rejection -- and, at the values the
+    noise model actually produces, can collapse a perfectly informative
+    population into a *constant* one, manufacturing the very degeneracy this
+    section is about.
+    """
+
+    def test_populations_are_not_truncated(self):
+        composite = _make_insertion_composite(
+            size=500, size_distortions={"r1": 35.95, "r2": 129.96, "r3": 16.46}
+        )
+        assert composite.get_size_populations() == pytest.approx([35.95, 129.96, 16.46])
+
+    def test_sub_basepair_distortions_do_not_become_a_degenerate_population(self):
+        """Three distinct sub-bp estimates truncate to three identical zeros.
+
+        Both populations below have a real spread of 0.8 bp. Truncated, both
+        become constant vectors and the pair reached `cohens_d` as a degenerate
+        one -- `inf` pre-fix, "not estimable" under the new contract. Untruncated
+        it is an ordinary, perfectly measurable effect size.
+        """
+        a = _make_insertion_composite(
+            size=100,
+            size_distortions={"r1": 0.1, "r2": 0.5, "r3": 0.9},
+            samplename="sample1",
+            consensusID="1.0",
+            sequence=_random_dna(100, seed=31),
+        )
+        b = _make_insertion_composite(
+            size=102,
+            size_distortions={"r1": -0.9, "r2": -0.5, "r3": -0.1},
+            samplename="sample2",
+            consensusID="2.0",
+            sequence=_random_dna(102, seed=32),
+        )
+        _, _, _, cohensD = svcomposite_merging._similar_size(a, b, 0.0, 0.0, 2.0)
+        assert cohensD is not None, (
+            "truncation turned two spread populations into constant vectors"
+        )
+        assert np.isfinite(cohensD)
