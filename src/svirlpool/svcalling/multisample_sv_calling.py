@@ -2156,7 +2156,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
-        help="Size difference fraction tolerance for merging SVs (default: 0.06). Decrease for stronger separation of haplotypes",
+        help="Fraction of the larger (complexity-adjusted) size that two SVs may "
+        "differ by and still be merged (default: 0.06). 0.0 = no tolerance (sizes must "
+        "be identical); 1.0 = maximum tolerance, which is vacuous by construction and "
+        "reproduces the pre-fix behaviour of an inert size gate. Decrease for stronger "
+        "separation of haplotypes.",
         type=float,
         default=0.06,
     )

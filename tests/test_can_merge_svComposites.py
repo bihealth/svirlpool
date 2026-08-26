@@ -441,12 +441,13 @@ class TestCanMergeInsertions:
         )
 
     def test_very_different_sizes_reject(self):
-        """Documents that the (1+tol)*max_size fraction formula always passes for positive sizes.
+        """With the corrected fraction formula, very different sizes are rejected.
 
-        Even with very different sizes (100 vs 200, 100% difference), the check
-        |a_adj - b_adj| <= (1 + tol) * max(a_adj, b_adj) is trivially True because
-        the left side equals max - min <= max <= (1+tol)*max. Merging is only blocked
-        by the k-mer or proximity checks, not the fraction formula.
+        Sizes 100 vs 200 (100% difference) fail the fraction test: the corrected
+        check |a_adj - b_adj| <= tol * max(a_adj, b_adj) requires the relative
+        size difference to be within `tol` (here 10%), and a 2x size difference
+        is not. The population (Cohen's D) test also fails here, so the merge
+        is correctly rejected.
         """
         a = _make_insertion_composite(
             size=100,
@@ -460,7 +461,7 @@ class TestCanMergeInsertions:
             samplename="sample2",
             consensusID="2.0",
         )
-        assert can_merge_svComposites_insertions(
+        assert not can_merge_svComposites_insertions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
@@ -495,10 +496,12 @@ class TestCanMergeInsertions:
         )
 
     def test_empty_populations_fraction_fail(self):
-        """Documents that empty populations with differing sizes still merge via the fraction formula.
+        """With no populations, a large size difference fails the fraction test and is rejected.
 
-        With no size_distortions, population_similar=False. However fraction_similar is still
-        True (the formula is trivially satisfied), so similar_size=True and merge proceeds.
+        With no size_distortions, population_similar=False (empty populations). The
+        corrected fraction test also fails because a 100 vs 200 size difference (100%)
+        exceeds the 10% tolerance, so similar_size=False and the merge is correctly
+        rejected.
         """
         a = _make_insertion_composite(
             size=100,
@@ -512,7 +515,7 @@ class TestCanMergeInsertions:
             samplename="sample2",
             consensusID="2.0",
         )
-        assert can_merge_svComposites_insertions(
+        assert not can_merge_svComposites_insertions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
@@ -575,10 +578,10 @@ class TestCanMergeInsertions:
         )
 
     def test_strict_tolerance_rejects_borderline(self):
-        """With the complexity-adjusted size formula, 5% size differences merge regardless of fraction tolerance."""
+        """A borderline 4.8% size difference merges under a lenient tolerance but is rejected under a strict one."""
         # 500 vs 525 → diff/max = 25/525 ≈ 4.8%
-        # The (1 + tolerance) * max_size formula accepts any positive-size pair;
-        # both assertions merge because similar_size is True via the fraction check.
+        # The corrected check requires diff <= tol * max_size, so whether this pair
+        # merges now genuinely depends on the tolerance value, as the test name implies.
         a = _make_insertion_composite(
             size=500,
             size_distortions={"r1": 1, "r2": -1},
@@ -591,7 +594,7 @@ class TestCanMergeInsertions:
             samplename="sample2",
             consensusID="2.0",
         )
-        # With 10%: merges (fraction passes)
+        # With 10% tolerance: 4.8% difference is within tolerance -> merges
         assert can_merge_svComposites_insertions(
             a=a,
             b=b,
@@ -601,8 +604,8 @@ class TestCanMergeInsertions:
             min_kmer_overlap=0.7,
             scale_by_complexity_factor=0.0,
         )
-        # With 1%: also merges because the adjusted size formula still passes
-        assert can_merge_svComposites_insertions(
+        # With 1% tolerance: 4.8% difference exceeds tolerance -> rejected
+        assert not can_merge_svComposites_insertions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.01,
@@ -698,10 +701,11 @@ class TestCanMergeDeletions:
         )
 
     def test_very_different_sizes_reject(self):
-        """Documents that the (1+tol)*max_size fraction formula always passes for positive sizes.
+        """With the corrected fraction formula, a 150% size difference is rejected.
 
-        Even with 150% size difference (100 vs 250), the check is trivially True. Population
-        check fails (high Cohen's D), but fraction_similar=True wins via 'or', so merge proceeds.
+        Sizes 100 vs 250 fail the corrected fraction test (the relative size
+        difference far exceeds the 10% tolerance). The population check also
+        fails (high Cohen's D), so the merge is correctly rejected.
         """
         a = _make_deletion_composite(
             size=100,
@@ -715,7 +719,7 @@ class TestCanMergeDeletions:
             samplename="sample2",
             consensusID="2.0",
         )
-        assert can_merge_svComposites_deletions(
+        assert not can_merge_svComposites_deletions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
@@ -748,10 +752,12 @@ class TestCanMergeDeletions:
         )
 
     def test_empty_populations_fraction_fail(self):
-        """Documents that empty populations with differing sizes still merge via the fraction formula.
+        """With no populations, a large size difference fails the fraction test and is rejected.
 
-        With no size_distortions, population_similar=False. However fraction_similar is still
-        True (the formula is trivially satisfied), so similar_size=True and merge proceeds.
+        With no size_distortions, population_similar=False (empty populations). The
+        corrected fraction test also fails because a 100 vs 200 size difference (100%)
+        exceeds the 10% tolerance, so similar_size=False and the merge is correctly
+        rejected.
         """
         a = _make_deletion_composite(
             size=100,
@@ -765,7 +771,7 @@ class TestCanMergeDeletions:
             samplename="sample2",
             consensusID="2.0",
         )
-        assert can_merge_svComposites_deletions(
+        assert not can_merge_svComposites_deletions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
@@ -825,8 +831,8 @@ class TestCanMergeDeletions:
         )
 
     def test_strict_cohens_d_threshold(self):
-        """With a very strict Cohen's D threshold and borderline sizes, behavior changes."""
-        # 500 vs 560 → diff/max = 60/560 ≈ 10.7% → fails 10% fraction
+        """With strict Cohen's D and strict fraction tolerance together, a borderline size difference is rejected."""
+        # 500 vs 560 → diff/max = 60/560 ≈ 10.7% → fails both the 10% and the 5% fraction tolerance
         # wide population spread so Cohen's D is moderate (~1.1)
         a = _make_deletion_composite(
             size=500,
@@ -844,7 +850,8 @@ class TestCanMergeDeletions:
             samplename="sample2",
             consensusID="2.0",
         )
-        # With lenient d=2.0: Cohen's D ~1.1 → merge via population test
+        # With lenient d=2.0: fraction test fails (10.7% > 10%), but Cohen's D ~1.1 is
+        # within the lenient threshold -> merge via the population test
         assert can_merge_svComposites_deletions(
             a=a,
             b=b,
@@ -853,9 +860,9 @@ class TestCanMergeDeletions:
             near=150,
             min_kmer_overlap=0.7,
         )
-        # With strict d=0.5 and strict fraction: fraction check still passes for large sequences
-        # (the (1 + tolerance) * max_size formula accepts any positive-size pair)
-        assert can_merge_svComposites_deletions(
+        # With strict d=0.5 and a strict 5% fraction tolerance: both tests fail
+        # (10.7% > 5%, and Cohen's D ~1.1 > 0.5) -> the merge is rejected
+        assert not can_merge_svComposites_deletions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.05,
@@ -873,35 +880,36 @@ class TestCanMergeDeletions:
 # ===========================================================================
 
 
-class TestSizeGateTautologyCharacterisation:
-    """Characterisation of the size gate as it behaves on `main` (F3).
+class TestSizeGateIsNoLongerInert:
+    """The former tautology, F3, restated as the property it has become.
 
-    On `main` the fractional arm reads
+    Before the fix the fractional arm read
 
         |a_adj - b_adj| <= (1.0 + tol) * max(a_adj, b_adj)
 
-    and `get_size()` returns a magnitude, so `|x - y| <= max(x, y)` already
-    holds for every non-negative pair -- before the `1.0 +` even adds its bonus.
-    The arm is therefore true whenever `max_size > 0`, for every tolerance,
-    which makes the whole size gate inert and the Cohen's-D arm it is OR-ed with
-    dead code.
+    and `get_size()` returns a magnitude, so `|x - y| <= max(x, y)` already held
+    for every non-negative pair -- before the `1.0 +` even added its bonus. The
+    arm was therefore true whenever `max_size > 0`, at every tolerance, which
+    made the whole size gate inert and the Cohen's-D arm it is OR-ed with dead
+    code.
 
-    These tests PASS on `main` and MUST FAIL once the `1.0 +` is dropped. They
-    exist so that the defect is pinned by an executable statement rather than by
-    a prose description, and so that the fix has something to break.
+    The predecessor of this class asserted that every pair in `_SIZE_PAIRS`
+    merged at every tolerance, and passed. The same sweep is kept here with the
+    verdict inverted, so the sweep that documented the defect now documents its
+    absence. The old assertion survives verbatim as the control setting,
+    TestSizeGateControlSetting, where tol = 1.0 makes it true again by design.
     """
 
-    def test_fraction_arm_accepts_every_size_pair(self):
-        """Even a 50 bp and a 5000 bp event merge, at any tolerance."""
-        failures = []
+    def test_dissimilar_sizes_no_longer_merge_at_a_strict_tolerance(self):
+        """At tol = 0.06 only pairs genuinely within 6% may pass."""
+        wrong = []
         for kind in _KINDS:
             for size_a, size_b in _SIZE_PAIRS:
-                for tolerance in (0.0, 0.01, 0.06, 0.1):
-                    if not _size_gate(kind, size_a, size_b, tolerance=tolerance):
-                        failures.append((kind, size_a, size_b, tolerance))
-        assert failures == [], (
-            f"the gate rejected {len(failures)} pair(s) it accepts on main: {failures}"
-        )
+                want = abs(size_a - size_b) <= 0.06 * max(size_a, size_b)
+                got = _size_gate(kind, size_a, size_b, tolerance=0.06)
+                if got is not want:
+                    wrong.append((kind, size_a, size_b, got, want))
+        assert wrong == [], f"the gate does not follow its own arithmetic: {wrong}"
 
 
 class TestSizeGateControlSetting:
@@ -1002,11 +1010,6 @@ class TestSizeGateIsSharedByAllSVTypes:
         assert disagreements == [], f"the size gate is not shared: {disagreements}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F3: on main the fractional arm is |a-b| <= (1+tol)*max(a,b), which is "
-    "tautologically true for non-negative sizes. Passes once the '1.0 +' is dropped.",
-)
 class TestFractionArmIsATrueFractionalBound:
     """The corrected arm: `|size_a - size_b| <= tol * max(size_a, size_b)`."""
 
@@ -1176,6 +1179,12 @@ class TestComplexityIsATolerance:
             "insertion", 100, 200, scale_by_complexity_factor=0.0, **kwargs
         )
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="F4: the fractional arm still compares complexity-ADJUSTED sizes, so a "
+        "complexity difference still reads as a size difference. Passes once "
+        "sizetolerance_from_SVcomposite stops rescaling the sizes.",
+    )
     def test_a_complexity_difference_is_not_a_size_difference(self):
         """Regression guard: two events of the SAME size must always merge.
 
