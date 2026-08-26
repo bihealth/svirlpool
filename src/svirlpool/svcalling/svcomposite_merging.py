@@ -145,6 +145,17 @@ def _similar_size(
     size_tolerance_a = scale_by_complexity_factor * sizetolerance_from_SVcomposite(a)
     size_tolerance_b = scale_by_complexity_factor * sizetolerance_from_SVcomposite(b)
 
+    # The distortion values are truncated toward zero TWICE before they reach
+    # Cohen's d: once by `int(size)` in SVcomposite.get_size_populations, and
+    # again by this cast, which is a no-op on the already-integral result. Both
+    # are carried over unchanged from the three copies this helper replaces, and
+    # both were harmless only for as long as F1 kept every value at exactly 0.0.
+    # Once the distortion estimates are real (F1), truncating them shrinks the
+    # pooled standard deviation and so inflates |d|, biasing the population arm
+    # toward rejection — the sub-bp resolution the noise model is built on is
+    # discarded before it is used. Fixing that means changing the getter's
+    # return type as well, not just this cast, so it is left for F1/F2 rather
+    # than changed silently here.
     population_a = np.array(a.get_size_populations(), dtype=np.int32) + size_a
     population_b = np.array(b.get_size_populations(), dtype=np.int32) + size_b
 
