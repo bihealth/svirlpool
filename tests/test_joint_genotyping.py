@@ -695,20 +695,32 @@ def _fragmented_locus(
     return _covtree_from_intervals(intervals), supporting
 
 
+def _genotype_insertion(supporting, covtrees, **kwargs):
+    """``genotype_of_sample`` with the geometry an insertion locus dispatches.
+
+    ``svcall_object_from_svcomposite`` selects the query geometry from the SV
+    type: ``breakpoint_mode`` for deletions, ``apply_breakpoint_margin`` for
+    insertions.  These tests exercise the insertion branch directly; the
+    composite-level tests below check the dispatch itself.
+    """
+    return _genotype_of(
+        [],
+        supporting,
+        covtrees=covtrees,
+        start=1000,
+        end=1001,
+        apply_breakpoint_margin=True,
+        **kwargs,
+    )
+
+
 class TestInsertionBreakpointMargin:
     """Supporting reads whose alignment stops short of the insertion breakpoint."""
 
     def test_a_point_query_loses_every_supporting_read(self):
         """Characterisation: with no margin the sample is 0/0 for its own variant."""
         covtrees, supporting = _fragmented_locus(gap=118)
-        gt = _genotype_of(
-            [],
-            supporting,
-            covtrees=covtrees,
-            start=1000,
-            end=1001,
-            breakpoint_margin=0,
-        )
+        gt = _genotype_insertion(supporting, covtrees, breakpoint_margin=0)
         assert gt.genotype == "0/0"
         assert gt.var_reads == 0
         assert gt.total_coverage == 14
@@ -716,7 +728,7 @@ class TestInsertionBreakpointMargin:
     def test_the_margin_recovers_them_by_default(self):
         """The repair: the default margin counts the reads that produced the call."""
         covtrees, supporting = _fragmented_locus(gap=118)
-        gt = _genotype_of([], supporting, covtrees=covtrees, start=1000, end=1001)
+        gt = _genotype_insertion(supporting, covtrees)
         assert gt.var_reads == 3
         assert gt.total_coverage == 17
         assert gt.ref_reads == 14
@@ -733,7 +745,6 @@ class TestInsertionBreakpointMargin:
             covtrees=covtrees,
             start=1000,
             end=1001,
-            breakpoint_margin=0,
         )
         as_deletion = _genotype_of(
             [],
@@ -760,26 +771,14 @@ class TestInsertionBreakpointMargin:
     )
     def test_margin_boundary_is_exact(self, gap, expected_alt):
         covtrees, supporting = _fragmented_locus(gap=gap)
-        gt = _genotype_of([], supporting, covtrees=covtrees, start=1000, end=1001)
+        gt = _genotype_insertion(supporting, covtrees)
         assert gt.var_reads == expected_alt
 
     def test_margin_is_configurable(self):
         covtrees, supporting = _fragmented_locus(gap=400)
+        assert _genotype_insertion(supporting, covtrees).var_reads == 0
         assert (
-            _genotype_of(
-                [], supporting, covtrees=covtrees, start=1000, end=1001
-            ).var_reads
-            == 0
-        )
-        assert (
-            _genotype_of(
-                [],
-                supporting,
-                covtrees=covtrees,
-                start=1000,
-                end=1001,
-                breakpoint_margin=400,
-            ).var_reads
+            _genotype_insertion(supporting, covtrees, breakpoint_margin=400).var_reads
             == 3
         )
 
@@ -825,7 +824,7 @@ class TestMarginDoesNotManufactureSupport:
         # A read whose alignment sits 120 bp before the breakpoint but which is
         # not among the composite's supporting reads.
         covtrees[SAMPLE][CHR].addi(600, 881, _hash("bystander"))
-        gt = _genotype_of([], supporting, covtrees=covtrees, start=1000, end=1001)
+        gt = _genotype_insertion(supporting, covtrees)
         assert gt.var_reads == 3
         assert _hash("bystander") not in {_hash(r) for r in supporting}
         # the bystander is counted as reference depth, never as alt support
@@ -836,14 +835,7 @@ class TestMarginDoesNotManufactureSupport:
     def test_dv_never_exceeds_tc(self, margin):
         """``DV > TC`` would mean the window double-counts; it cannot, by construction."""
         covtrees, supporting = _fragmented_locus(gap=118)
-        gt = _genotype_of(
-            [],
-            supporting,
-            covtrees=covtrees,
-            start=1000,
-            end=1001,
-            breakpoint_margin=margin,
-        )
+        gt = _genotype_insertion(supporting, covtrees, breakpoint_margin=margin)
         assert gt.var_reads <= gt.total_coverage
         assert gt.var_reads + gt.ref_reads == gt.total_coverage
 
@@ -853,14 +845,7 @@ class TestMarginDoesNotManufactureSupport:
         covtrees, supporting = _fragmented_locus(gap=118)
         # give one supporting read an extra fragment that *does* span the locus
         covtrees[SAMPLE][CHR].addi(990, 1010, _hash("alt0"))
-        gt = _genotype_of(
-            [],
-            supporting,
-            covtrees=covtrees,
-            start=1000,
-            end=1001,
-            breakpoint_margin=margin,
-        )
+        gt = _genotype_insertion(supporting, covtrees, breakpoint_margin=margin)
         assert gt.var_reads >= 1
 
     def test_a_read_with_no_interval_anywhere_stays_uncounted(self):
@@ -883,6 +868,7 @@ class TestMarginDoesNotManufactureSupport:
             raw_alt_reads=raw_alt,
             covtrees=covtrees,
             cn_tracks={},
+            apply_breakpoint_margin=True,
             breakpoint_margin=5000,
         )
         assert gt.var_reads == 3  # not 4 — the absent read is unrecoverable
@@ -915,13 +901,8 @@ class TestMarginLeavesTheF9PathsIntact:
         covtrees, supporting = _fragmented_locus(gap=118, n_spanning=0)
         cn_tree = IntervalTree()
         cn_tree.addi(0, 2_000_000, copy_number)
-        gt = _genotype_of(
-            [],
-            supporting,
-            covtrees=covtrees,
-            start=1000,
-            end=1001,
-            cn_tracks={SAMPLE: {CHR: cn_tree}},
+        gt = _genotype_insertion(
+            supporting, covtrees, cn_tracks={SAMPLE: {CHR: cn_tree}}
         )
         assert gt.var_reads == 3
         assert gt.genotype == expected
@@ -945,3 +926,60 @@ class TestMarginLeavesTheF9PathsIntact:
         assert gt.genotype == "0/0"
         assert gt.genotype_quality == GQ_CEILING
         assert gt.total_coverage == 0
+
+
+class TestCompositeLevelDispatch:
+    """The behaviour a real run sees: geometry chosen from the SV type."""
+
+    @pytest.mark.parametrize(
+        ("gap", "expected_alt", "expected_filter"),
+        [
+            (118, 3, True),  # muc1 1:69668
+            (DEFAULT_BREAKPOINT_MARGIN, 3, True),
+            (DEFAULT_BREAKPOINT_MARGIN + 1, 0, False),
+        ],
+    )
+    def test_insertion_composite_counts_short_reads_within_the_margin(
+        self, gap, expected_alt, expected_filter
+    ):
+        covtrees, supporting = _fragmented_locus(gap=gap)
+        composite = _make_insertion_composite(reads=supporting, ref_start=1000)
+        call = _svcalls(composite, covtrees)[0]
+        assert call.genotypes[SAMPLE].var_reads == expected_alt
+        assert call.pass_altreads is expected_filter
+
+    def test_insertion_composite_never_invents_support(self):
+        """A bystander read inside the widened window stays reference depth."""
+        covtrees, supporting = _fragmented_locus(gap=118)
+        for i in range(5):
+            covtrees[SAMPLE][CHR].addi(600, 881, _hash(f"bystander{i}"))
+        composite = _make_insertion_composite(reads=supporting, ref_start=1000)
+        gt = _svcalls(composite, covtrees)[0].genotypes[SAMPLE]
+        assert gt.var_reads == 3
+        assert gt.ref_reads == 19
+        assert gt.total_coverage == 22
+
+    def test_insertion_composite_margin_is_configurable_end_to_end(self):
+        covtrees, supporting = _fragmented_locus(gap=400)
+        composite = _make_insertion_composite(reads=supporting, ref_start=1000)
+        assert _svcalls(composite, covtrees)[0].genotypes[SAMPLE].var_reads == 0
+        assert (
+            _svcalls(composite, covtrees, breakpoint_margin=500)[0]
+            .genotypes[SAMPLE]
+            .var_reads
+            == 3
+        )
+
+    def test_a_well_supported_insertion_is_not_degraded(self):
+        """Negative control, the shape of the chr6 18 kb INS (DR=2, DV=76).
+
+        Widening the window may only add reference depth; it must not move a
+        call that a point query already resolved.
+        """
+        alt = _reads(30, prefix="alt")
+        covtrees = _covtree(alt + _reads(2, prefix="ref"))
+        composite = _make_insertion_composite(reads=alt, ref_start=1000)
+        gt = _svcalls(composite, covtrees)[0].genotypes[SAMPLE]
+        assert gt.var_reads == 30
+        assert gt.ref_reads == 2
+        assert gt.genotype == "1/1"
