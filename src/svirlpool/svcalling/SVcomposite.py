@@ -125,7 +125,23 @@ class SVcomposite:
         whether the underlying signals were insertions or deletions, since
         insertion/deletion sign information is not carried through this
         aggregation. SVpatterns whose size_distortions is None contribute no
-        values at all (they are skipped, not treated as zero)."""
+        values at all (they are skipped, not treated as zero); a supporting read
+        with no nearby indel signal *is* present, with the value 0.0.
+
+        The magnitude is fixed at the source:
+        ``alignments_to_rafs.parse_SVsignals_from_alignment`` builds deletions
+        with ``size=int(abs(delr - dell))`` and insertions with
+        ``size=int(abs(rinsr - rinsl))``, so the two are indistinguishable by
+        value; only ``SVsignal.sv_type`` (0 = insertion, 1 = deletion) tells them
+        apart, and that field is dropped by the aggregation.
+
+        Consequence for the noise model: a locus whose background noise is
+        balanced insertions and deletions reads as *noisy*, not as quiet, since
+        the two cannot cancel. That is the behaviour of the current design, not
+        an accident of this method; the older signed intent survives only in the
+        commented-out ``build_size_population_by_svPattern`` in
+        ``localassembly/SVpatterns.py``. Changing it is a design decision about
+        the noise model, not a documentation fix."""
         return [
             int(size)
             for svp in self.svPatterns
