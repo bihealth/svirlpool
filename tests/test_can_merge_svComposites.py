@@ -1454,6 +1454,12 @@ class TestCohensDIsNotEstimableOnDegenerateInput:
 class TestDegeneratePopulationsDoNotDecideMerges:
     """The same thing seen through the size gate.
 
+    The distortion values in these fixtures are deliberately non-negative:
+    production signal sizes are magnitudes (`size=int(abs(delr - dell))`), so a
+    population containing negative values is a shape the pipeline cannot
+    produce. Older fixtures in this file do use negative values; these do not
+    add to that.
+
     Which inputs actually reach the degenerate branch is narrower than it looks,
     because arm 2 short-circuits to `population_similar = True` whenever the two
     population means are already within the granted complexity tolerance. What
@@ -1622,7 +1628,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
         """
         spread = {
             f"r{i}": v
-            for i, v in enumerate([-80.0, -50.0, -20.0, 0.0, 20.0, 50.0, 80.0])
+            for i, v in enumerate([0.0, 30.0, 60.0, 80.0, 100.0, 130.0, 160.0])
         }
         a, b = self._pair(500, 600, spread, spread)
         with caplog.at_level(
@@ -1642,7 +1648,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
     def test_a_real_population_still_rejects_when_the_effect_size_is_large(self):
         """The same populations, a size gap they cannot absorb."""
         spread = {
-            f"r{i}": v for i, v in enumerate([-8.0, -5.0, -2.0, 0.0, 2.0, 5.0, 8.0])
+            f"r{i}": v for i, v in enumerate([0.0, 3.0, 6.0, 8.0, 10.0, 13.0, 16.0])
         }
         a, b = self._pair(500, 900, spread, spread)
         _, _, population_similar, cohensD = svcomposite_merging._similar_size(
@@ -1660,8 +1666,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
         finite `d`.
         """
         spread = {
-            f"r{i}": v
-            for i, v in enumerate([-40.0, -25.0, -10.0, 0.0, 10.0, 25.0, 40.0])
+            f"r{i}": v for i, v in enumerate([0.0, 15.0, 30.0, 40.0, 50.0, 65.0, 80.0])
         }
         a, b = self._pair(500, 600, spread, spread)
         _, _, lenient, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.0, 5.0)
@@ -1724,7 +1729,7 @@ class TestVerboseReportsWhyThereIsNoEffectSize:
     def test_computed_case_still_prints_the_number(self, capsys):
         spread = {
             f"r{i}": v
-            for i, v in enumerate([-80.0, -50.0, -20.0, 0.0, 20.0, 50.0, 80.0])
+            for i, v in enumerate([0.0, 30.0, 60.0, 80.0, 100.0, 130.0, 160.0])
         }
         for kind in _KINDS:
             out = self._merge(kind, 500, 600, spread, scale=0.0, capsys=capsys)
