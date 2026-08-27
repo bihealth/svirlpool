@@ -3050,7 +3050,15 @@ def process_consensus_container(
         log.info(
             f"Trying to add {len(unused_reads)} unused reads to the consensus objects."
         )
-    pool_unused_reads = {readname: cutreads[readname] for readname in unused_reads}
+    # sorted(): this dict is written out as a FASTA in iteration order and the
+    # resulting alignment order is appended to
+    # Consensus.cut_read_alignment_signals / .intervals_cutread_alignments,
+    # which are serialised into consensus_containers.txt and the consensus
+    # batch JSONL.  Iterating the readname set directly made that order depend
+    # on the process-local string hash seed.
+    pool_unused_reads = {
+        readname: cutreads[readname] for readname in sorted(unused_reads)
+    }
     add_unaligned_reads_to_consensuses_inplace(
         pool=pool_unused_reads,
         samplename=samplename,
@@ -3064,7 +3072,7 @@ def process_consensus_container(
         for consensus in consensus_objects.values():
             unused_reads -= consensus.get_used_readnames()
         log.info(
-            f"{len(unused_reads)} reads could not be added to the consensus objects:\n{'\n'.join(list(unused_reads))}"
+            f"{len(unused_reads)} reads could not be added to the consensus objects:\n{'\n'.join(sorted(unused_reads))}"
         )
 
     # ================================ ADDING UNUSED READS TO CONSENSUS OBJECTS END ================================ #
@@ -3086,7 +3094,7 @@ def process_consensus_container(
     )
 
     unused_seqobjects: dict[str, datatypes.SequenceObject] = {}
-    for readname in set_unused_readnames:
+    for readname in sorted(set_unused_readnames):
         read_seqRecord = cutreads[readname]
         unused_seqobjects[readname] = datatypes.SequenceObject(
             id=read_seqRecord.id,

@@ -129,6 +129,17 @@ class SVpattern(ABC):
         return merged_intervals
 
     def get_supporting_reads(self) -> list[str]:
+        """Return the de-duplicated supporting readnames in canonical (sorted) order.
+
+        The order is deliberately sorted rather than arbitrary: this list is
+        frozen into ``dict.fromkeys(...)`` by ``distortions_by_svPattern`` and
+        the resulting ``SVpattern.size_distortions`` dict is pickled into the
+        svirltile DB.  ``list(set(...))`` would make that key order depend on
+        the process-local string hash seed, so two runs on identical input
+        produced byte-different tiles and could not be regression-diffed.
+        No caller depends on the position of any particular element - every
+        consumer either takes ``len(...)`` or folds the result into a set.
+        """
         start = [
             readname
             for svp in self.SVprimitives
@@ -146,8 +157,8 @@ class SVpattern(ABC):
                 + str(self)
             )
         if not end:
-            return list(set(start))
-        return list(set(start + end))
+            return sorted(set(start))
+        return sorted(set(start + end))
 
     # def get_total_coverage(self) -> int:
     #     return max([svp.get_total_coverage() for svp in self.SVprimitives])
