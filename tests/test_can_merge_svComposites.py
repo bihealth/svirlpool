@@ -2038,11 +2038,24 @@ def _consensus_with_read_signals(
     reads back to the consensus sequence and stores
     ``parse_ReadAlignmentSignals_from_alignment`` for each of them.
     """
+    # Post-F1, distortions_by_svPattern maps SVpattern boundaries into consensus
+    # coordinates and therefore requires the padding record.  These fixtures use
+    # zero padding, so core and padded coordinates coincide and the magnitudes
+    # this class is about are unaffected.
+    padding = consensus_class.ConsensusPadding(
+        sequence="A" * 1000,
+        readname_left="pad_read_left",
+        readname_right="pad_read_right",
+        padding_size_left=0,
+        padding_size_right=0,
+        consensus_interval_on_sequence_with_padding=(0, 1000),
+    )
     return consensus_class.Consensus(
         ID=consensusID,
         crIDs=[1],
         original_regions=[("chr1", 0, 1000)],
         consensus_sequence="A" * 1000,
+        consensus_padding=padding,
         cut_read_alignment_signals=[
             parse_ReadAlignmentSignals_from_alignment(
                 samplename="sample1",
