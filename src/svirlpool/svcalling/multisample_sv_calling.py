@@ -10,6 +10,7 @@ import pickle
 import subprocess
 import tempfile
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime
 from itertools import groupby
 from math import ceil, floor
@@ -353,17 +354,35 @@ def generate_svComposites_from_dbs(
 
 
 # Ceiling for the phred-scaled genotype quality of *every* genotype this module
-# emits, reference and alternate alike.  The binomial model of
-# `genotype_likelihood` approaches certainty asymptotically, so without a cap GQ
-# would run away at high depth; 60 is the value the rest of the caller already
-# treats as "as good as it gets", and the value the VCF header declares.
+# emits, reference and alternate alike.  99 is the near-universal convention
+# (GATK, bcftools, freebayes all cap GQ there), and it is where this caller's
+# header now declares the ceiling.
 #
-# The cap is also what makes GQ *monotone* in the evidence.  A posterior that
-# saturates to exactly 1.0 in float64 carries no more information than the cap
-# can express, so it has to map to the cap; the uncapped expression instead sent
-# a moderately supported call to 141 and a strictly better supported one to 60,
-# inverting the ordering at the top of the range.
-GQ_CEILING: int = 60
+# GQ is deliberately capped while `PL` is not: GQ is a single headline number in
+# a conventional range, and the *uncapped* evidence strength that a consumer
+# needs for ranking lives in PL, which is emitted alongside it.  Before v0.3 the
+# cap was 60, which a clean heterozygote reached at about 18x -- so GQ stopped
+# discriminating inside the depth range this caller actually operates in.
+GQ_CEILING: int = 99
+
+# The pre-v0.3 ceiling.  Kept only so that `--legacy-force-wildtype-genotypes`
+# reproduces a pre-fix run's genotype fields exactly; it is not a modelling
+# choice, it is the literal that used to be hard-coded in two places.
+LEGACY_GQ_CEILING: int = 60
+
+# Per-read error rate of the genotype model: the alternate-allele fraction
+# expected at a homozygous-reference locus, and (as 1 - e) the fraction expected
+# at a homozygous-alternate one.  Exposed as `--genotype-error-rate`.
+#
+# It is NOT only an error rate.  Because the genotype call is the argmax of
+# binomial likelihoods evaluated at fixed expected fractions, this one number
+# also fixes the allele-fraction boundaries between genotypes: with e = 0.05 a
+# locus is called 0/0 below AF 0.218, 0/1 between 0.218 and 0.782, and 1/1 above
+# 0.782, at every depth.  Raising e moves both boundaries inward, trading
+# homozygote confidence against heterozygote confidence.  The default is
+# unchanged from the value that was hard-coded before v0.3; it has deliberately
+# *not* been fitted to any dataset.
+DEFAULT_GENOTYPE_ERROR_RATE: float = 0.05
 
 # Genotype string used when there is no evidence at all.  Diploid form, matching
 # the default copy number assumed throughout this module.
@@ -395,33 +414,82 @@ DEFAULT_BREAKPOINT_MARGIN: int = 150
 LEGACY_BREAKPOINT_MARGIN: int = 100
 
 
+# The FORMAT emitted by default, and the pre-v0.3 one restored by the legacy
+# control.  They differ in more than one field, so the control has to select the
+# whole string: pre-v0.3 GP was a single scalar (the posterior of the called
+# genotype) rather than the per-genotype vector the VCF specification asks for.
+FORMAT_FIELDS: str = "GT:GQ:TC:DR:DV:PL:GP"
+LEGACY_FORMAT_FIELDS: str = "GT:GQ:TC:DR:DV:GP"
+
+
+def genotype_alt_allele_count(genotype: str) -> int:
+    """Number of alternate alleles in a genotype string ("0/1" -> 1)."""
+    return sum(1 for allele in genotype.split("/") if allele not in ("0", "."))
+
+
+def ordered_genotypes(genotypes: Iterable[str]) -> list[str]:
+    """Genotypes in VCF ``Number=G`` order: by increasing alternate-allele count.
+
+    For the biallelic case this module models, that is exactly the ordering the
+    VCF specification defines for ``PL``/``GP`` (0/0, 0/1, 1/1 for a diploid).
+    """
+    return sorted(genotypes, key=genotype_alt_allele_count)
+
+
 @attrs.define
 class Genotype:
     samplename: str
     genotype: str  # e.g. "0/0", "0/1", "1/1", "./." for a no-call
-    gt_likelihood: float | None  # GP; None -> "." (no genotype was called)
+    gt_likelihood: float | None  # posterior of the called genotype; None -> "."
     genotype_quality: int  # GQ phred of gt_likelihood
     total_coverage: int  # TC
     ref_reads: int  # DR
     var_reads: int  # DV
+    # Per-genotype vectors, in VCF Number=G order.  None where the model was not
+    # used (a no-call, the legacy force-call, or --single-evidence-gt), in which
+    # case the fields are emitted as the VCF missing value.
+    phred_likelihoods: dict[str, int] | None = None  # PL
+    posteriors: dict[str, float] | None = None  # GP
 
-    def to_format_field(self, FORMAT_field="GT:GQ:TC:DR:DV:GP") -> str:
+    def _vector(self, values: dict[str, float] | None, fmt: str) -> str:
+        if not values:
+            return "."
+        return ",".join(format(values[g], fmt) for g in ordered_genotypes(values))
+
+    def to_format_field(self, FORMAT_field: str = FORMAT_FIELDS) -> str:
         properties = {
             "GT": self.genotype,
             "GQ": self.genotype_quality,
             "TC": self.total_coverage,
             "DR": self.ref_reads,
             "DV": self.var_reads,
-            # A no-call has no genotype and therefore no genotype probability.
-            # "." is the VCF missing value and is what consumers expect here;
-            # emitting 1.0 would be the very claim this record is refusing.
-            "GP": "." if self.gt_likelihood is None else self.gt_likelihood,
+            # Phred-scaled likelihoods, normalised so the best genotype is 0.
+            # Uncapped on purpose: this is the field that still separates two
+            # well-supported calls after GQ has hit its ceiling.
+            "PL": self._vector(self.phred_likelihoods, "d"),
+            # Posterior probabilities, one per genotype, summing to 1.  A
+            # no-call has no genotype and therefore no posterior; "." is the VCF
+            # missing value, and emitting 1.0 would be the very claim the record
+            # is refusing to make.
+            "GP": (
+                self._vector(self.posteriors, ".6g")
+                if self.posteriors
+                else ("." if self.gt_likelihood is None else str(self.gt_likelihood))
+            ),
         }
         return ":".join([str(properties[k]) for k in FORMAT_field.split(":")])
 
 
 def phred_from_probability(probability: float, cap: int = GQ_CEILING) -> int:
-    """Phred-scale a posterior probability, capped at *cap*."""
+    """Phred-scale a posterior probability, capped at *cap*.
+
+    Retained for callers that hold a posterior rather than a likelihood vector.
+    Note that it cannot see past the float64 resolution of ``1 - p``: the
+    subtraction loses all precision once the posterior is within ~1e-16 of 1,
+    which for this model happens at about 50x.  `genotype_quality_from_phred`
+    computes the same quantity in log space and does not have that limit; it is
+    what the genotyper uses.
+    """
     if probability >= 1.0:
         return cap
     error = 1.0 - probability
@@ -443,7 +511,7 @@ def legacy_genotype_quality(probability: float) -> int:
     """
     if probability < 1.0:
         return int(-10 * np.log10(1.0 - probability))
-    return GQ_CEILING
+    return LEGACY_GQ_CEILING
 
 
 def reference_genotype_string(copy_number: int) -> str:
@@ -477,23 +545,24 @@ def create_wild_type_genotype(
     total_coverage: int,
     copy_number: int = 2,
     legacy_force_call: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> Genotype:
     """A homozygous-reference call justified by *total_coverage* observed reads.
 
-    The quality is derived from the same binomial model that scores every other
-    genotype (`genotype_likelihood` with zero alternate reads), so it grows with
-    depth and reaches `GQ_CEILING` only at high depth.
+    Scored by the same model that scores every other genotype -- the binomial
+    likelihoods with zero alternate reads -- so the quality grows with depth and
+    the record carries the same PL/GP vectors as an alternate-supported call.
 
     With *legacy_force_call* the pre-v0.3 behaviour is reproduced exactly:
-    ``0/0`` with ``GP = 1.0`` and ``GQ = 60`` regardless of depth, including
-    zero depth.  See ``--legacy-force-wildtype-genotypes``.
+    ``0/0`` with a scalar ``GP = 1.0`` and ``GQ = 60`` regardless of depth,
+    including zero depth.  See ``--legacy-force-wildtype-genotypes``.
     """
     if legacy_force_call:
         return Genotype(
             samplename=samplename,
             genotype="0/0",
             gt_likelihood=1.0,
-            genotype_quality=GQ_CEILING,
+            genotype_quality=LEGACY_GQ_CEILING,
             total_coverage=total_coverage,
             ref_reads=total_coverage,
             var_reads=0,
@@ -501,19 +570,25 @@ def create_wild_type_genotype(
     if total_coverage <= 0:
         # No observations: absence of evidence is not evidence of the reference.
         return create_no_call_genotype(samplename=samplename)
-    likelihoods = genotype_likelihood(
-        n_alt_reads=0, n_total_reads=total_coverage, cn=copy_number
+    log_likelihoods = genotype_log_likelihoods(
+        n_alt_reads=0,
+        n_total_reads=total_coverage,
+        cn=copy_number,
+        error_rate=error_rate,
     )
+    phred = phred_scaled_likelihoods(log_likelihoods)
+    posteriors = posteriors_from_log_likelihoods(log_likelihoods)
     ref_gt = reference_genotype_string(copy_number)
-    likelihood = likelihoods.get(ref_gt, 0.0)
     return Genotype(
         samplename=samplename,
         genotype=ref_gt,
-        gt_likelihood=likelihood,
-        genotype_quality=phred_from_probability(likelihood),
+        gt_likelihood=posteriors.get(ref_gt, 0.0),
+        genotype_quality=genotype_quality_from_phred(phred),
         total_coverage=total_coverage,
         ref_reads=total_coverage,
         var_reads=0,
+        phred_likelihoods=phred,
+        posteriors=posteriors,
     )
 
 
@@ -563,6 +638,7 @@ class SVcall:
         symbolic_threshold: int,
         ONE_BASED: int = 1,
         legacy_force_wildtype: bool = False,
+        error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
     ) -> str | None:
         info_fields: dict = {
             "PASS_ALTREADS": self.pass_altreads,
@@ -584,7 +660,7 @@ class SVcall:
 
         info_line = ";".join([f"{key}={value}" for key, value in info_fields.items()])
         info_line += ";" + ("PRECISE" if self.precise else "IMPRECISE")
-        FORMAT_field = "GT:GQ:TC:DR:DV:GP"
+        FORMAT_field = LEGACY_FORMAT_FIELDS if legacy_force_wildtype else FORMAT_FIELDS
         format_content: list[Genotype] = []
         for samplename in samplenames:
             gt: Genotype | None = self.genotypes.get(samplename, None)
@@ -619,7 +695,9 @@ class SVcall:
                 else:
                     format_content.append(
                         create_wild_type_genotype(
-                            samplename=samplename, total_coverage=coverage
+                            samplename=samplename,
+                            total_coverage=coverage,
+                            error_rate=error_rate,
                         )
                     )
             else:
@@ -820,6 +898,7 @@ def genotype_of_sample(
     apply_breakpoint_margin: bool = False,
     single_evidence_gt: bool = False,
     legacy_force_wildtype: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> Genotype:
     """Genotype one sample at one locus from its coverage tracks.
 
@@ -921,11 +1000,16 @@ def genotype_of_sample(
             total_coverage=len(all_reads),
             copy_number=copy_number,
             legacy_force_call=legacy_force_wildtype,
+            error_rate=error_rate,
         )
 
     # Compute genotype either via the probabilistic binomial model or the
     # single-evidence rule (any alt read counts; no noise assumed).
+    phred: dict[str, int] | None = None
+    posteriors: dict[str, float] | None = None
     if single_evidence_gt:
+        # Read presence alone decides the call; no model was evaluated, so there
+        # are no per-genotype likelihoods to report.
         gt, gt_likelihood_val = _single_evidence_genotype(
             n_alt_reads=len(alt_reads),
             n_ref_reads=len(ref_reads),
@@ -933,30 +1017,44 @@ def genotype_of_sample(
             copy_number=copy_number,
         )
         gt_likelihoods: dict[str, float] = {gt: gt_likelihood_val}
-    else:
-        gt_likelihoods = genotype_likelihood(
-            n_alt_reads=len(alt_reads), n_total_reads=len(all_reads), cn=copy_number
+        genotype_quality = GQ_CEILING
+    elif legacy_force_wildtype:
+        # The control reproduces a pre-fix run field for field: the scalar GP,
+        # the hard-coded error rate, and the uncapped quality expression.
+        gt_likelihoods = legacy_genotype_posteriors(
+            n_alt_reads=len(alt_reads),
+            n_total_reads=len(all_reads),
+            cn=copy_number,
         )
         gt = max(gt_likelihoods.items(), key=lambda x: x[1])[0]
+        genotype_quality = legacy_genotype_quality(gt_likelihoods[gt])
+    else:
+        log_likelihoods = genotype_log_likelihoods(
+            n_alt_reads=len(alt_reads),
+            n_total_reads=len(all_reads),
+            cn=copy_number,
+            error_rate=error_rate,
+        )
+        phred = phred_scaled_likelihoods(log_likelihoods)
+        posteriors = posteriors_from_log_likelihoods(log_likelihoods)
+        gt_likelihoods = posteriors
+        # The call is the most likely genotype -- equivalently the one with
+        # PL 0 -- and the quality is how far ahead of the runner-up it is, in
+        # log space.  Both exits of this function use that one scale, so a
+        # reference call and an alternate call are directly comparable.
+        gt = min(phred.items(), key=lambda item: item[1])[0]
+        genotype_quality = genotype_quality_from_phred(phred)
 
     genotype = Genotype(
         samplename=samplename,
         genotype=gt,
         gt_likelihood=gt_likelihoods[gt],
-        # One scale for both exits of this function.  The homozygous-reference
-        # exit above already phred-scales through `phred_from_probability`; an
-        # alternate-supported call has to be comparable with it, which means the
-        # same ceiling and the same monotonicity.  Under the legacy control the
-        # pre-fix expression is restored verbatim so the control arm reproduces
-        # a pre-fix run field for field.
-        genotype_quality=(
-            legacy_genotype_quality(gt_likelihoods[gt])
-            if legacy_force_wildtype
-            else phred_from_probability(gt_likelihoods[gt])
-        ),
+        genotype_quality=genotype_quality,
         total_coverage=len(all_reads),
         ref_reads=len(ref_reads),
         var_reads=len(alt_reads),
+        phred_likelihoods=phred,
+        posteriors=posteriors,
     )
     log.debug(
         f"GENOTYPE|RESULT    sample={samplename}   region={chrname}:{start}-{end}    GT={gt}    GQ={genotype.genotype_quality}    ref={len(ref_reads)}    alt={len(alt_reads)}    total={len(all_reads)}    CN={copy_number}",
@@ -976,6 +1074,7 @@ def SVcalls_from_SVcomposite(
     min_alt_reads: int = 3,
     breakpoint_margin: int = DEFAULT_BREAKPOINT_MARGIN,
     legacy_force_wildtype: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> list[SVcall]:
     # intra-alignment fragment variants (closed locus), e.g. INS, DEL, INV, DUP
     #   have one chr, start, end on the reference
@@ -1008,6 +1107,7 @@ def SVcalls_from_SVcomposite(
             min_alt_reads=min_alt_reads,
             breakpoint_margin=breakpoint_margin,
             legacy_force_wildtype=legacy_force_wildtype,
+            error_rate=error_rate,
         )
         log.debug(
             f"TRANSFORMED::SVcalls_from_SVcomposite::svcall_object_from_svcomposite:(to DEL, INS, INV, BND) {composite_id}; TRANSFORMED TO: {res.to_log_id()}",
@@ -1026,6 +1126,7 @@ def SVcalls_from_SVcomposite(
             single_evidence_gt=single_evidence_gt,
             min_alt_reads=min_alt_reads,
             legacy_force_wildtype=legacy_force_wildtype,
+            error_rate=error_rate,
         )
         # log each res
         for _res in res:
@@ -1050,6 +1151,7 @@ def svcall_object_from_svcomposite(
     min_alt_reads: int = 3,
     breakpoint_margin: int = DEFAULT_BREAKPOINT_MARGIN,
     legacy_force_wildtype: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> SVcall:
     chrname, start, end = get_svComposite_interval_on_reference(
         svComposite=svComposite,
@@ -1091,6 +1193,7 @@ def svcall_object_from_svcomposite(
             breakpoint_margin=breakpoint_margin,
             single_evidence_gt=single_evidence_gt,
             legacy_force_wildtype=legacy_force_wildtype,
+            error_rate=error_rate,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1250,6 +1353,7 @@ def svcall_objects_from_Adjacencies(
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
     legacy_force_wildtype: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> list[SVcall]:
     """Generate SVcall objects from a SVcomposite that represents novel adjacencies with two connected break ends of each sample.
     The given svComposite generates two SVcall objects, that both represent one end of the novel adjacency.
@@ -1361,6 +1465,7 @@ def svcall_objects_from_Adjacencies(
             cn_tracks=cn_tracks,
             single_evidence_gt=single_evidence_gt,
             legacy_force_wildtype=legacy_force_wildtype,
+            error_rate=error_rate,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1377,6 +1482,7 @@ def svcall_objects_from_Adjacencies(
             cn_tracks=cn_tracks,
             single_evidence_gt=single_evidence_gt,
             legacy_force_wildtype=legacy_force_wildtype,
+            error_rate=error_rate,
         )
         for samplename in all_alt_reads.keys()
     }
@@ -1516,6 +1622,7 @@ def generate_header(
     reference: Path,
     samplenames: list[str],
     fasta_path: Path | None = None,
+    legacy_force_wildtype: bool = False,
 ) -> list[str]:
     reference = Path(reference)
     header = [
@@ -1585,8 +1692,10 @@ def generate_header(
         'read coverage at this locus for this sample, i.e. no call, not reference">'
     )
     header.append(
-        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality of the '
-        'called genotype (phred), capped at 60; 0 for a no-call">'
+        f'##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality of '
+        f"the called genotype: the phred-scaled likelihood ratio against the next "
+        f"most likely genotype, capped at {GQ_CEILING}. See PL for the uncapped "
+        f'values; 0 for a no-call">'
     )
     header.append('##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">')
     header.append(
@@ -1595,10 +1704,24 @@ def generate_header(
     header.append(
         '##FORMAT=<ID=DV,Number=1,Type=Integer,Description="Number of variant reads">'
     )
-    header.append(
-        '##FORMAT=<ID=GP,Number=1,Type=Float,Description="Posterior probability of the '
-        'called genotype; missing (.) for a no-call">'
-    )
+    if legacy_force_wildtype:
+        header.append(
+            '##FORMAT=<ID=GP,Number=1,Type=Float,Description="Posterior probability of '
+            'the called genotype; missing (.) for a no-call">'
+        )
+    else:
+        header.append(
+            '##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Phred-scaled genotype '
+            "likelihoods, normalised so the most likely genotype is 0, in the order "
+            "0/0,0/1,1/1 for a diploid locus. Not capped: this is the field that "
+            "still separates two well-supported calls after GQ reaches its ceiling. "
+            'Missing (.) for a no-call">'
+        )
+        header.append(
+            '##FORMAT=<ID=GP,Number=G,Type=Float,Description="Genotype posterior '
+            "probabilities under a uniform prior, summing to 1, in the same order as "
+            'PL. Missing (.) for a no-call">'
+        )
 
     header.append(
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
@@ -1607,11 +1730,150 @@ def generate_header(
     return header
 
 
+def expected_alt_fractions(
+    cn: int, error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE
+) -> dict[str, float]:
+    """Genotype string -> the alternate-read fraction expected under it.
+
+    One formula for every copy number.  ``n`` alternate copies out of ``cn``
+    predict an alternate fraction of ``n / cn``, clamped into
+    ``[error_rate, 1 - error_rate]`` so that the two extremes admit read noise.
+    Before v0.3 the CN=1..4 cases were written out by hand; the clamped general
+    expression reproduces all four exactly, and the hand-written copies had
+    drifted apart in style without drifting in value.
+    """
+    if cn <= 0:
+        # Copy number 0 (homozygous deletion) admits a single genotype and no
+        # reads.  `genotype_likelihood` short-circuits it; this keeps the shape
+        # well defined for any caller that gets here anyway.
+        return {"0": error_rate}
+    fractions: dict[str, float] = {}
+    for n_alt_copies in range(cn + 1):
+        # Alleles ascending ("0/1", not "1/0"): the VCF convention, and what the
+        # hand-written CN=2..4 tables used.  The pre-v0.3 CN>4 branch built them
+        # the other way round and so emitted non-canonical genotype strings.
+        genotype = "/".join(["0"] * (cn - n_alt_copies) + ["1"] * n_alt_copies)
+        fractions[genotype] = min(max(n_alt_copies / cn, error_rate), 1.0 - error_rate)
+    return fractions
+
+
+def genotype_log_likelihoods(
+    n_alt_reads: int,
+    n_total_reads: int,
+    cn: int,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
+) -> dict[str, float]:
+    """Natural-log binomial likelihood of the observed counts under each genotype.
+
+    Everything downstream of the model works from these logs.  Likelihoods
+    themselves underflow (0.05**n reaches the float64 floor by n=220) and, worse,
+    a posterior formed from them saturates to exactly 1.0 by about 50x, taking
+    the genotype quality with it.  In log space neither happens.
+    """
+    return {
+        genotype: float(binom.logpmf(n_alt_reads, n_total_reads, p))
+        for genotype, p in expected_alt_fractions(cn=cn, error_rate=error_rate).items()
+    }
+
+
+# Value substituted for a non-finite phred-scaled likelihood.  Reachable only
+# for impossible counts (n_alt > n_total); a finite sentinel keeps the VCF
+# parseable rather than emitting "inf".
+PL_SENTINEL: int = 99999
+
+
+def phred_scaled_likelihoods(log_likelihoods: dict[str, float]) -> dict[str, int]:
+    """PL: phred-scaled likelihoods, shifted so the most likely genotype is 0.
+
+    Deliberately **uncapped**.  GQ is a headline number in a conventional range
+    and saturates; PL is the field that still separates two well-supported calls
+    afterwards, and it grows roughly linearly with depth.
+    """
+    best = max(log_likelihoods.values())
+    scale = 10.0 / np.log(10.0)
+    phred: dict[str, int] = {}
+    for genotype, log_likelihood in log_likelihoods.items():
+        value = (best - log_likelihood) * scale
+        phred[genotype] = int(round(value)) if np.isfinite(value) else PL_SENTINEL
+    return phred
+
+
+def posteriors_from_log_likelihoods(
+    log_likelihoods: dict[str, float],
+) -> dict[str, float]:
+    """Flat-prior posterior probabilities, by log-sum-exp.
+
+    The prior over genotypes is uniform: this caller makes no allele-frequency
+    or Hardy-Weinberg assumption.  Subtracting the maximum before exponentiating
+    is what makes this safe at any depth; the pre-v0.3 code divided raw
+    ``binom.pmf`` values, which could underflow to an all-zero vector and fall
+    back to a silent uniform.
+    """
+    best = max(log_likelihoods.values())
+    weights = {
+        genotype: float(np.exp(log_likelihood - best))
+        for genotype, log_likelihood in log_likelihoods.items()
+    }
+    total = sum(weights.values())
+    return {genotype: weight / total for genotype, weight in weights.items()}
+
+
+def genotype_quality_from_phred(
+    phred_likelihoods: dict[str, int], cap: int = GQ_CEILING
+) -> int:
+    """GQ: the phred-scaled likelihood ratio between the best genotype and the next.
+
+    This is the conventional definition (the difference between the two smallest
+    PL values) and it is the same quantity the pre-v0.3 code was reaching for
+    with ``-10 log10(1 - P(best))`` -- the two agree to within the 3 dB that
+    counting one runner-up rather than all of them costs.  The difference is that
+    this one is computed in log space, so it neither saturates nor inverts.
+    """
+    values = sorted(phred_likelihoods.values())
+    if len(values) < 2:
+        return cap
+    return int(min(values[1] - values[0], cap))
+
+
+def legacy_genotype_posteriors(
+    n_alt_reads: int, n_total_reads: int, cn: int
+) -> dict[str, float]:
+    """The pre-v0.3 posterior arithmetic, reproduced verbatim.
+
+    Raw ``binom.pmf`` values divided by their sum, rather than the log-sum-exp
+    the fixed path uses.  The two agree to within one unit in the last place,
+    but ``legacy_genotype_quality`` amplifies exactly that last place: at
+    DV=23/TC=50 it is the difference between GQ 154 and GQ 153.  The control
+    exists to reproduce a pre-fix run *exactly*, so it has to reproduce the
+    arithmetic and not merely the formula.
+    """
+    fractions = expected_alt_fractions(cn=cn, error_rate=DEFAULT_GENOTYPE_ERROR_RATE)
+    likelihoods = {
+        genotype: binom.pmf(n_alt_reads, n_total_reads, p)
+        for genotype, p in fractions.items()
+    }
+    total_likelihood = sum(likelihoods.values())
+    if total_likelihood <= 0.0:
+        return dict.fromkeys(likelihoods, 1.0 / len(likelihoods))
+    probabilities = {
+        genotype: float(likelihood / total_likelihood)
+        for genotype, likelihood in likelihoods.items()
+    }
+    return {
+        genotype: (0.0 if np.isnan(probability) else probability)
+        for genotype, probability in probabilities.items()
+    }
+
+
 def genotype_likelihood(
-    n_alt_reads: int, n_total_reads: int, cn: int, legacy_zero_coverage: bool = False
+    n_alt_reads: int,
+    n_total_reads: int,
+    cn: int,
+    legacy_zero_coverage: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> dict[str, float]:
     """
-    Compute genotype likelihoods given observed alt/total reads and copy number.
+    Posterior probability of each genotype given observed alt/total reads and CN.
 
     Args:
         n_alt_reads: Number of reads supporting the alternate allele
@@ -1620,6 +1882,9 @@ def genotype_likelihood(
         legacy_zero_coverage: Reproduce the pre-v0.3 behaviour of returning
             certainty of ``0/0`` when nothing at all was observed.  See
             ``--legacy-force-wildtype-genotypes``.
+        error_rate: Alternate fraction expected at a homozygous-reference locus.
+            See ``--genotype-error-rate``; this also sets the allele-fraction
+            boundaries between genotypes.
 
     Returns:
         Dictionary mapping genotype strings to their posterior probabilities.
@@ -1628,65 +1893,19 @@ def genotype_likelihood(
     *uniform* over the genotypes admissible at this copy number: zero
     observations support no genotype over any other.  Callers must treat that as
     "no information" and emit a no-call rather than taking the argmax.
+
+    Note that a posterior cannot express confidence beyond the float64
+    resolution of 1.0, which this model reaches at about 50x.  Anything that
+    needs to rank calls above that should use `phred_scaled_likelihoods`.
     """
     if n_total_reads == 0 and legacy_zero_coverage:
         return {"0/0": 1.0, "0/1": 0.0, "1/1": 0.0}
 
-    # Generate all possible genotypes for this copy number
-    # For CN=n, we can have 0 to n copies of the alt allele.
-    # Use a small error rate epsilon to model read noise/ref-overcounting.
-    epsilon = 0.05
-    genotype_probs = {}
+    if cn == 0:
+        # Homozygous deletion - no copies, so no reads and only one genotype.
+        return {"0": 1.0}
 
-    if cn == 1:
-        # Haploid (e.g., male X/Y chromosomes, or deletions reducing CN to 1)
-        # Possible genotypes: 0 (ref) or 1 (alt)
-        genotype_probs = {
-            "0": epsilon,  # ~0% alt reads expected, allowing noise
-            "1": 1.0
-            - epsilon,  # ~100% alt reads expected, allowing occasional ref reads
-        }
-    elif cn == 2:
-        # Diploid (normal autosomal)
-        # Possible genotypes: 0/0, 0/1, 1/1
-        genotype_probs = {
-            "0/0": epsilon,  # ~0% alt reads expected
-            "0/1": 0.5,  # exact half alt reads expected
-            "1/1": 1.0 - epsilon,  # ~100% alt reads expected
-        }
-    elif cn == 3:
-        # Triploid (duplication)
-        # Possible genotypes: 0/0/0, 0/0/1, 0/1/1, 1/1/1
-        genotype_probs = {
-            "0/0/0": epsilon,
-            "0/0/1": 1.0 / 3.0,
-            "0/1/1": 2.0 / 3.0,
-            "1/1/1": 1.0 - epsilon,
-        }
-    elif cn == 4:
-        # Tetraploid
-        # Possible genotypes: 0/0/0/0, 0/0/0/1, 0/0/1/1, 0/1/1/1, 1/1/1/1
-        genotype_probs = {
-            "0/0/0/0": epsilon,
-            "0/0/0/1": 0.25,
-            "0/0/1/1": 0.50,
-            "0/1/1/1": 0.75,
-            "1/1/1/1": 1.0 - epsilon,
-        }
-    else:
-        # General case for CN > 4 or CN == 0
-        if cn == 0:
-            # Homozygous deletion - no copies, should have no reads
-            return {"0": 1.0}
-
-        # For higher CN, generate genotypes dynamically
-        for n_alt_copies in range(cn + 1):
-            genotype = "/".join(["1" if i < n_alt_copies else "0" for i in range(cn)])
-            expected_alt_fraction = n_alt_copies / cn if cn > 0 else 0.0
-            expected_alt_fraction = min(
-                max(expected_alt_fraction, epsilon), 1.0 - epsilon
-            )
-            genotype_probs[genotype] = expected_alt_fraction
+    fractions = expected_alt_fractions(cn=cn, error_rate=error_rate)
 
     if n_total_reads == 0:
         # No observations: report an uninformative (uniform) posterior rather
@@ -1695,37 +1914,16 @@ def genotype_likelihood(
             f"genotype_likelihood: no reads observed (CN={cn}); returning a uniform, "
             "uninformative posterior."
         )
-        return dict.fromkeys(genotype_probs, 1.0 / len(genotype_probs))
+        return dict.fromkeys(fractions, 1.0 / len(fractions))
 
-    # Compute binomial probabilities for each genotype
-    likelihoods = {
-        genotype: binom.pmf(n_alt_reads, n_total_reads, p)
-        for genotype, p in genotype_probs.items()
-    }
-
-    # Normalize to get posterior probabilities
-    total_likelihood = sum(likelihoods.values())
-
-    if total_likelihood <= 0.0:
-        log.warning(
-            f"Total likelihood is zero or negative for n_alt_reads={n_alt_reads}, "
-            f"n_total_reads={n_total_reads}, CN={cn}. Returning uniform probabilities."
+    return posteriors_from_log_likelihoods(
+        genotype_log_likelihoods(
+            n_alt_reads=n_alt_reads,
+            n_total_reads=n_total_reads,
+            cn=cn,
+            error_rate=error_rate,
         )
-        # Return uniform distribution over all genotypes
-        uniform_prob = 1.0 / len(genotype_probs)
-        return dict.fromkeys(genotype_probs.keys(), uniform_prob)
-
-    probabilities = {
-        genotype: float(likelihood / total_likelihood)
-        for genotype, likelihood in likelihoods.items()
-    }
-
-    # Replace any NaN values with 0.0
-    for genotype, probability in probabilities.items():
-        if np.isnan(probability):
-            probabilities[genotype] = 0.0
-
-    return probabilities
+    )
 
 
 def _parse_consensusID_parts(
@@ -1964,6 +2162,7 @@ def write_svCalls_to_vcf(
     output: Path,
     symbolic_threshold: int,
     legacy_force_wildtype: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> None:
     # Determine FASTA output path
     if str(output).endswith(".vcf.gz"):
@@ -1988,6 +2187,7 @@ def write_svCalls_to_vcf(
     with open(tmp_result_unsorted.name, "w") as f:
         # write header
         header = generate_header(
+            legacy_force_wildtype=legacy_force_wildtype,
             reference=Path(reference),
             samplenames=samplenames,
             fasta_path=fasta_path,
@@ -2004,6 +2204,7 @@ def write_svCalls_to_vcf(
                 refdict=refdict,
                 symbolic_threshold=symbolic_threshold,
                 legacy_force_wildtype=legacy_force_wildtype,
+                error_rate=error_rate,
             )
             if line is not None:
                 print(line, file=f)
@@ -2164,8 +2365,24 @@ def multisample_sv_calling(
     min_alt_reads: int = 3,
     genotype_breakpoint_margin: int | None = None,
     legacy_force_wildtype: bool = False,
+    error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
+    if not 0.0 < error_rate < 0.5:
+        raise ValueError(
+            f"--genotype-error-rate must lie strictly between 0 and 0.5, got "
+            f"{error_rate}. It is the alternate fraction expected at a "
+            f"homozygous-reference locus; at 0.5 the reference and heterozygous "
+            f"hypotheses become identical and the model cannot separate them."
+        )
+    if error_rate != DEFAULT_GENOTYPE_ERROR_RATE:
+        log.warning(
+            "--genotype-error-rate=%s moves the allele-fraction boundaries between "
+            "genotypes away from their defaults; genotypes are not comparable with "
+            "a run at the default of %s.",
+            error_rate,
+            DEFAULT_GENOTYPE_ERROR_RATE,
+        )
     # The genotyping window's tolerance for breakpoint-placement disagreement.
     # It is the same notion as `--near`, so it follows `--near` unless the user
     # separates them deliberately.
@@ -2326,6 +2543,7 @@ def multisample_sv_calling(
             min_alt_reads=min_alt_reads,
             breakpoint_margin=breakpoint_margin,
             legacy_force_wildtype=legacy_force_wildtype,
+            error_rate=error_rate,
         )
     ]
 
@@ -2369,6 +2587,7 @@ def multisample_sv_calling(
         refdict=ref_bases_dict,
         symbolic_threshold=symbolic_threshold,
         legacy_force_wildtype=legacy_force_wildtype,
+        error_rate=error_rate,
     )
 
 
@@ -2417,6 +2636,7 @@ def run(args) -> None:
         min_alt_reads=args.min_alt_reads,
         genotype_breakpoint_margin=args.genotype_breakpoint_margin,
         legacy_force_wildtype=args.legacy_force_wildtype_genotypes,
+        error_rate=args.genotype_error_rate,
     )
 
 
@@ -2567,6 +2787,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "Avoids false HOM calls when a small number of ref reads are present.",
         action="store_true",
         default=False,
+    )
+    parser.add_argument(
+        "--genotype-error-rate",
+        help="Alternate-allele fraction expected at a homozygous-reference locus, "
+        "and (as 1 - e) the fraction expected at a homozygous-alternate one "
+        f"(default: {DEFAULT_GENOTYPE_ERROR_RATE}). This is not only a read error "
+        "rate: because the genotype is the most likely of a set of binomial "
+        "hypotheses evaluated at fixed expected fractions, this one number also "
+        "fixes the allele-fraction boundaries between genotypes. At the default "
+        "0.05 a locus is called 0/0 below AF 0.218, 0/1 between 0.218 and 0.782, "
+        "and 1/1 above 0.782, at every depth; raising it moves both boundaries "
+        "inward, trading homozygote confidence against heterozygote confidence. "
+        "Genotypes from runs with different values are not comparable.",
+        type=float,
+        default=DEFAULT_GENOTYPE_ERROR_RATE,
     )
     parser.add_argument(
         "--legacy-force-wildtype-genotypes",

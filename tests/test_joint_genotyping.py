@@ -20,6 +20,7 @@ carrying ``GenotypeMeasurement``s.
 """
 
 import math
+from pathlib import Path
 
 import pytest
 from intervaltree import IntervalTree
@@ -28,19 +29,26 @@ from xxhash import xxh64
 from svirlpool.localassembly import SVpatterns, SVprimitives
 from svirlpool.svcalling import genotyping
 from svirlpool.svcalling.multisample_sv_calling import (
+    DEFAULT_GENOTYPE_ERROR_RATE,
+    GQ_CEILING,
+    LEGACY_GQ_CEILING,
     Genotype,
     SVcalls_from_SVcomposite,
     create_dummy_covtrees_from_reference,
     create_wild_type_genotype,
+    expected_alt_fractions,
     generate_header,
     genotype_likelihood,
+    genotype_log_likelihoods,
     genotype_of_sample,
+    genotype_quality_from_phred,
+    multisample_sv_calling,
+    phred_scaled_likelihoods,
 )
 from svirlpool.svcalling.SVcomposite import SVcomposite
 
 SAMPLE = "sample1"
 CHR = "chr1"
-GQ_CEILING = 60
 
 # ---------------------------------------------------------------------------
 # Helper factories — real objects, no mocks
@@ -179,6 +187,7 @@ class TestNoCoverageIsNotAReferenceCall:
         gt = _genotype_of([], ["altread"], covtrees=_covtree_empty())
         assert gt.gt_likelihood is None
         assert gt.to_format_field("GT:GQ:TC:DR:DV:GP") == "./.:0:0:0:0:."
+        assert gt.to_format_field() == "./.:0:0:0:0:.:."
 
     def test_chromosome_absent_from_covtree_is_a_no_call(self):
         """Call site 1: the chromosome is missing from the sample's coverage tree."""
@@ -431,21 +440,28 @@ class TestLegacyControlReproducesThePreFixOutput:
         assert gt.ref_reads == depth
         assert gt.var_reads == 0
 
-    def test_legacy_flag_does_not_change_this_alt_supported_call(self):
-        """DV=5/TC=10 scores 33, below the ceiling, so capping is a no-op here.
+    def test_legacy_flag_changes_only_the_quality_of_an_alt_supported_call(self):
+        """DV=5/TC=10: the call and the counts agree, the quality does not.
 
-        Not a general property of alternate-supported calls: N16 gave the
-        control the pre-fix *uncapped* quality on that path too, so the two
-        agree only where the pre-fix value was already <= GQ_CEILING.  See
-        ``TestLegacyControlReproducesTheUncappedQuality`` for the cases where
-        they diverge.
+        The pre-fix quality is the phred of ``1 - P(best)``, which counts *all*
+        the runner-ups; the repair reports the likelihood ratio against the
+        single next-best genotype.  For a clean heterozygote the two runner-ups
+        are symmetric, so the ratio is exactly twice the tail and the repair
+        reads 10*log10(2) = 3 dB higher.  That offset is the whole difference at
+        this depth -- neither value is capped here.
         """
         alt = _reads(5, prefix="alt")
         ref = _reads(5, prefix="ref")
         fixed = _genotype_of(alt + ref, alt)
         legacy = _genotype_of(alt + ref, alt, legacy_force_wildtype=True)
-        assert fixed.genotype_quality == 33
-        assert fixed == legacy
+        assert fixed.genotype == legacy.genotype == "0/1"
+        assert legacy.genotype_quality == 33
+        assert fixed.genotype_quality == 36
+        for field in ("total_coverage", "ref_reads", "var_reads"):
+            assert getattr(fixed, field) == getattr(legacy, field), field
+        # The control keeps the pre-fix scalar GP and reports no vectors at all.
+        assert legacy.phred_likelihoods is None and legacy.posteriors is None
+        assert fixed.phred_likelihoods is not None
 
     def test_legacy_genotype_likelihood_returns_the_old_certainty(self):
         assert genotype_likelihood(
@@ -510,7 +526,7 @@ class TestDummyCoverageCannotProduceAConfidentCall:
             [], ["altread"], covtrees=dummy_covtrees, legacy_force_wildtype=True
         )
         assert gt.genotype == "0/0"
-        assert gt.genotype_quality == GQ_CEILING
+        assert gt.genotype_quality == LEGACY_GQ_CEILING
 
 
 # ===========================================================================
@@ -552,7 +568,7 @@ class TestJointCallAcrossSamples:
         fields = line.split("\t")
         gt_sample1, gt_sample2 = fields[-2], fields[-1]
         assert gt_sample1.startswith("0/1:") or gt_sample1.startswith("1/1:")
-        assert gt_sample2 == "./.:0:0:0:0:."
+        assert gt_sample2 == "./.:0:0:0:0:.:."
 
     def test_covered_second_sample_is_a_justified_wild_type_in_the_vcf(self):
         alt = _reads(6, prefix="alt")
@@ -572,7 +588,7 @@ class TestJointCallAcrossSamples:
         )
         assert line is not None
         gt_sample2 = line.split("\t")[-1]
-        gt, gq, tc, dr, dv, _gp = gt_sample2.split(":")
+        gt, gq, tc, dr, dv, _pl, _gp = gt_sample2.split(":")
         assert gt == "0/0"
         assert int(tc) == 11
         assert int(dr) == 11
@@ -605,7 +621,7 @@ class TestJointCallAcrossSamples:
             symbolic_threshold=100_000,
         )
         assert line is not None
-        gt, _gq, tc, dr, dv, _gp = line.split("\t")[-1].split(":")
+        gt, _gq, tc, dr, dv, _pl, _gp = line.split("\t")[-1].split(":")
         assert (gt, int(tc), int(dr), int(dv)) == ("0/0", 2, 2, 0)
 
         # ... and the control still reproduces the pre-fix (interval-counted) depth
@@ -934,7 +950,7 @@ class TestMarginLeavesTheF9PathsIntact:
             [], ["altread"], covtrees=_covtree_empty(), legacy_force_wildtype=True
         )
         assert gt.genotype == "0/0"
-        assert gt.genotype_quality == GQ_CEILING
+        assert gt.genotype_quality == LEGACY_GQ_CEILING
         assert gt.total_coverage == 0
 
 
@@ -1103,13 +1119,22 @@ class TestAlternateCallQualityIsCapped:
         gt = _alt_supported(n_total=n_total, n_alt=n_total)
         assert 0 <= gt.genotype_quality <= GQ_CEILING
 
-    def test_the_two_observed_regressions_are_capped(self):
-        """The two GQs seen on real data, both above the declared ceiling."""
-        assert _alt_supported(n_total=50, n_alt=23).genotype_quality == GQ_CEILING
+    def test_the_two_observed_regressions_are_bounded(self):
+        """The two GQs seen on real data, both once above the declared ceiling.
+
+        chr11:11,246,978 (DV=23/TC=50) scored 154 pre-fix -- deep into the range
+        where ``1 - P`` was float64 quantisation noise -- and is now capped.
+        muc1 1:248938 (DV=2/TC=32) scored 63; the likelihood ratio puts it at
+        64, comfortably inside the ceiling, so it is reported rather than
+        clipped.  Neither may exceed the ceiling again.
+        """
+        chr11 = _alt_supported(n_total=50, n_alt=23)
+        assert chr11.genotype_quality == GQ_CEILING
         muc1 = _alt_supported(n_total=32, n_alt=2)
         assert muc1.genotype == "0/0"  # the alt exit, despite the argmax
         assert muc1.var_reads == 2
-        assert muc1.genotype_quality == GQ_CEILING
+        assert muc1.genotype_quality == 64
+        assert muc1.genotype_quality < GQ_CEILING
 
     def test_both_exits_share_one_scale(self):
         """Reference and alternate calls must be comparable, not two scales."""
@@ -1214,21 +1239,40 @@ class TestLegacyControlReproducesTheUncappedQuality:
     def test_only_the_quality_differs_between_control_and_repair(
         self, n_total, n_alt, prefix_gq
     ):
-        """Field for field: GQ is the only thing the repair moves, and only down."""
+        """Field for field: GQ is the only thing the repair moves.
+
+        It does not only move down.  Capping pulls the runaway values in, but
+        below the ceiling the likelihood ratio sits a few dB *above* the pre-fix
+        tail probability, because the tail counted every runner-up genotype and
+        the ratio counts one.  What must hold is that the result is bounded and
+        that nothing else about the record changes.
+        """
         fixed = _alt_supported(n_total=n_total, n_alt=n_alt)
         legacy = _alt_supported(
             n_total=n_total, n_alt=n_alt, legacy_force_wildtype=True
         )
-        for field in (
-            "genotype",
-            "gt_likelihood",
-            "total_coverage",
-            "ref_reads",
-            "var_reads",
-        ):
+        for field in ("genotype", "total_coverage", "ref_reads", "var_reads"):
             assert getattr(fixed, field) == getattr(legacy, field), field
-        assert fixed.genotype_quality == min(prefix_gq, GQ_CEILING)
-        assert fixed.genotype_quality <= legacy.genotype_quality
+        # The posterior itself agrees to float precision; the control computes it
+        # by dividing raw pmf values and the repair by log-sum-exp, which differ
+        # in the last place or two.
+        assert fixed.gt_likelihood == pytest.approx(legacy.gt_likelihood, rel=1e-9)
+
+        assert 0 <= fixed.genotype_quality <= GQ_CEILING
+        if legacy.gt_likelihood is not None and legacy.gt_likelihood >= 1.0:
+            # The pre-fix posterior saturated to exactly 1.0, so its quality is
+            # the literal 60 of the else-branch: an artefact of float64, not a
+            # measurement.  The repair, computing in log space, is at its
+            # ceiling instead -- which is the whole point of the change.
+            assert prefix_gq == LEGACY_GQ_CEILING
+            assert fixed.genotype_quality == GQ_CEILING
+        elif prefix_gq > GQ_CEILING:
+            assert fixed.genotype_quality == GQ_CEILING
+        else:
+            # Below the ceiling the two differ only by how many runner-up
+            # genotypes are counted: the tail counts all of them, the likelihood
+            # ratio counts one, which is at most a few dB.
+            assert abs(fixed.genotype_quality - prefix_gq) <= 5
 
 
 class TestGenotypeQualityHeaderDescribesOneScale:
@@ -1253,3 +1297,240 @@ class TestGenotypeQualityHeaderDescribesOneScale:
         header = self._gq_header(tmp_path)
         assert str(GQ_CEILING) in header
         assert "no-call" in header
+
+
+# ===========================================================================
+# 10. ONE SCALE, COMPUTED IN LOG SPACE, WITH THE MODEL'S PARAMETER EXPOSED
+#
+# Three connected changes:
+#
+#   * the model is evaluated as log-likelihoods, so neither the likelihoods nor
+#     the posterior formed from them can saturate.  The pre-fix code divided raw
+#     `binom.pmf` values and then took `-10 log10(1 - p)`; `1 - p` reaches the
+#     float64 floor at about 50x, and the quality became quantisation noise
+#     roughly 20x before that;
+#   * the record carries the per-genotype vectors the VCF specification asks
+#     for -- PL (phred-scaled likelihoods, min 0, uncapped) and GP (posteriors,
+#     Number=G) -- instead of a single scalar posterior.  GQ is capped so it
+#     stays a conventional headline number; PL is where the evidence strength
+#     that outlives the cap actually lives;
+#   * the error rate that sets the model's allele-fraction boundaries is a
+#     parameter rather than a literal buried in the function.  Its default is
+#     unchanged and deliberately unfitted.
+# ===========================================================================
+
+
+class TestExpectedAltFractionsReplacesTheHandWrittenTables:
+    """One clamped formula, reproducing the four hand-written tables exactly."""
+
+    @pytest.mark.parametrize(
+        ("cn", "expected"),
+        [
+            (1, {"0": 0.05, "1": 0.95}),
+            (2, {"0/0": 0.05, "0/1": 0.5, "1/1": 0.95}),
+            (3, {"0/0/0": 0.05, "0/0/1": 1 / 3, "0/1/1": 2 / 3, "1/1/1": 0.95}),
+            (
+                4,
+                {
+                    "0/0/0/0": 0.05,
+                    "0/0/0/1": 0.25,
+                    "0/0/1/1": 0.50,
+                    "0/1/1/1": 0.75,
+                    "1/1/1/1": 0.95,
+                },
+            ),
+        ],
+    )
+    def test_reproduces_the_pre_fix_table(self, cn, expected):
+        fractions = expected_alt_fractions(cn)
+        assert set(fractions) == set(expected)
+        for genotype, value in expected.items():
+            assert fractions[genotype] == pytest.approx(value)
+
+    def test_genotype_strings_are_canonical_above_cn_four(self):
+        """Alleles ascending. The pre-fix CN>4 branch built them the other way."""
+        assert list(expected_alt_fractions(5)) == [
+            "0/0/0/0/0",
+            "0/0/0/0/1",
+            "0/0/0/1/1",
+            "0/0/1/1/1",
+            "0/1/1/1/1",
+            "1/1/1/1/1",
+        ]
+
+    def test_the_error_rate_clamps_only_the_extremes(self):
+        fractions = expected_alt_fractions(2, error_rate=0.2)
+        assert fractions == {"0/0": 0.2, "0/1": 0.5, "1/1": 0.8}
+
+
+class TestQualityNoLongerSaturatesInsideTheOperatingRange:
+    """The failure the log-space computation removes."""
+
+    def _het_quality(self, n: int) -> int:
+        return genotype_quality_from_phred(
+            phred_scaled_likelihoods(genotype_log_likelihoods(n // 2, n, 2))
+        )
+
+    def test_quality_is_non_decreasing_over_a_wide_depth_sweep(self):
+        qualities = [self._het_quality(n) for n in range(2, 201, 2)]
+        assert qualities == sorted(qualities)
+
+    def test_quality_keeps_rising_past_the_old_ceiling_of_sixty(self):
+        """Pre-fix a clean het hit the old cap of 60 at about 18x and stopped."""
+        assert self._het_quality(18) > 60
+        assert self._het_quality(18) < self._het_quality(24)
+
+    def test_phred_likelihoods_are_uncapped_and_grow_with_depth(self):
+        """PL is the field that still separates two calls after GQ is capped."""
+        deep = phred_scaled_likelihoods(genotype_log_likelihoods(100, 200, 2))
+        shallow = phred_scaled_likelihoods(genotype_log_likelihoods(30, 60, 2))
+        assert (
+            genotype_quality_from_phred(deep)
+            == genotype_quality_from_phred(shallow)
+            == GQ_CEILING
+        )
+        assert deep["0/0"] > shallow["0/0"] > GQ_CEILING
+
+    def test_the_posterior_saturates_where_the_likelihoods_do_not(self):
+        """Why PL exists: the posterior cannot express this and PL can.
+
+        At 200x a clean heterozygote's posterior is exactly 1.0 in float64, so
+        every quality derived from ``1 - p`` is indistinguishable from every
+        other.  The likelihood ratio is 721 dB and still climbing linearly.
+        """
+        assert (
+            genotype_likelihood(n_alt_reads=100, n_total_reads=200, cn=2)["0/1"] == 1.0
+        )
+        deep = phred_scaled_likelihoods(genotype_log_likelihoods(100, 200, 2))["0/0"]
+        deeper = phred_scaled_likelihoods(genotype_log_likelihoods(200, 400, 2))["0/0"]
+        assert deep > 700
+        assert deeper > deep
+
+
+class TestPerGenotypeVectorsAreEmitted:
+    def test_phred_likelihoods_are_normalised_to_the_best_genotype(self):
+        gt = _alt_supported(n_total=20, n_alt=10)
+        assert gt.phred_likelihoods is not None
+        assert min(gt.phred_likelihoods.values()) == 0
+        assert gt.phred_likelihoods[gt.genotype] == 0
+
+    def test_quality_is_the_gap_to_the_runner_up(self):
+        gt = _alt_supported(n_total=14, n_alt=7)
+        runner_up = sorted(gt.phred_likelihoods.values())[1]
+        assert gt.genotype_quality == min(runner_up, GQ_CEILING)
+
+    def test_posteriors_are_a_distribution(self):
+        gt = _alt_supported(n_total=20, n_alt=10)
+        assert gt.posteriors is not None
+        assert sum(gt.posteriors.values()) == pytest.approx(1.0)
+        assert gt.gt_likelihood == pytest.approx(gt.posteriors[gt.genotype])
+
+    def test_reference_calls_carry_the_vectors_too(self):
+        gt = _genotype_of(_reads(14), ["unrelated_alt_read"])
+        assert gt.genotype == "0/0"
+        assert gt.phred_likelihoods is not None and gt.posteriors is not None
+        assert gt.phred_likelihoods["0/0"] == 0
+
+    def test_format_field_renders_both_vectors_in_canonical_order(self):
+        gt = _alt_supported(n_total=20, n_alt=10)
+        fields = gt.to_format_field().split(":")
+        assert len(fields) == 7
+        pl = [int(v) for v in fields[5].split(",")]
+        gp = [float(v) for v in fields[6].split(",")]
+        assert pl == [gt.phred_likelihoods[g] for g in ("0/0", "0/1", "1/1")]
+        assert gp == pytest.approx(
+            [gt.posteriors[g] for g in ("0/0", "0/1", "1/1")], rel=1e-5
+        )
+
+    def test_a_no_call_renders_both_vectors_as_missing(self):
+        gt = _genotype_of([], ["altread"], covtrees=_covtree_empty())
+        assert gt.to_format_field() == "./.:0:0:0:0:.:."
+
+    def test_single_evidence_reports_no_vectors(self):
+        """No model was evaluated, so there are no likelihoods to report."""
+        gt = _alt_supported(n_total=10, n_alt=5, single_evidence_gt=True)
+        assert gt.phred_likelihoods is None and gt.posteriors is None
+        assert gt.to_format_field().endswith(":.:1.0")
+
+
+class TestHeaderDeclaresTheVectors:
+    def _header(self, tmp_path, **kwargs) -> list[str]:
+        (ref := tmp_path / "ref.fa").write_text(">chr1\nACGT\n")
+        (tmp_path / "ref.fa.fai").write_text(f"{CHR}\t248956422\t6\t60\t61\n")
+        return generate_header(reference=ref, samplenames=[SAMPLE], **kwargs)
+
+    def test_pl_and_gp_are_declared_number_g(self, tmp_path):
+        header = "\n".join(self._header(tmp_path))
+        assert "##FORMAT=<ID=PL,Number=G,Type=Integer" in header
+        assert "##FORMAT=<ID=GP,Number=G,Type=Float" in header
+
+    def test_the_legacy_control_keeps_the_scalar_gp_and_emits_no_pl(self, tmp_path):
+        header = "\n".join(self._header(tmp_path, legacy_force_wildtype=True))
+        assert "##FORMAT=<ID=GP,Number=1,Type=Float" in header
+        assert "ID=PL," not in header
+
+
+class TestGenotypeErrorRateIsAParameter:
+    """Exposed, documented, defaulted -- and deliberately not fitted to data."""
+
+    def test_the_default_is_unchanged(self):
+        assert DEFAULT_GENOTYPE_ERROR_RATE == 0.05
+
+    @pytest.mark.parametrize(
+        ("allele_fraction", "expected"),
+        [(0.20, "0/0"), (0.22, "0/1"), (0.50, "0/1"), (0.77, "0/1"), (0.79, "1/1")],
+    )
+    def test_the_default_boundaries_are_unchanged(self, allele_fraction, expected):
+        """0/0 below AF 0.218, 1/1 above 0.782, at every depth."""
+        n_total = 100
+        phred = phred_scaled_likelihoods(
+            genotype_log_likelihoods(round(allele_fraction * n_total), n_total, 2)
+        )
+        assert min(phred, key=lambda g: phred[g]) == expected
+
+    def test_raising_the_error_rate_moves_the_homozygous_boundary_inward(self):
+        """AF 0.75 is heterozygous at e=0.05 and homozygous at e=0.14."""
+        counts = (75, 100)
+        at_default = phred_scaled_likelihoods(
+            genotype_log_likelihoods(*counts, cn=2, error_rate=0.05)
+        )
+        at_raised = phred_scaled_likelihoods(
+            genotype_log_likelihoods(*counts, cn=2, error_rate=0.14)
+        )
+        assert min(at_default, key=lambda g: at_default[g]) == "0/1"
+        assert min(at_raised, key=lambda g: at_raised[g]) == "1/1"
+
+    def test_the_parameter_reaches_the_genotyper(self):
+        alt = _reads(15, prefix="alt")
+        ref = _reads(5, prefix="ref")
+        at_default = _genotype_of(alt + ref, alt, error_rate=0.05)
+        at_raised = _genotype_of(alt + ref, alt, error_rate=0.25)
+        assert at_default.genotype == "0/1"
+        assert at_raised.genotype == "1/1"
+
+    @pytest.mark.parametrize("error_rate", [0.0, -0.1, 0.5, 0.9, 1.0])
+    def test_an_error_rate_outside_the_open_unit_half_is_refused(self, error_rate):
+        with pytest.raises(ValueError, match="genotype-error-rate"):
+            multisample_sv_calling(
+                input=[],
+                output=Path("unused.vcf"),
+                reference=Path("unused.fa"),
+                threads=1,
+                max_cohens_d=2.0,
+                near=150,
+                min_kmer_overlap=0.7,
+                sv_types=["INS"],
+                min_sv_size=50,
+                symbolic_threshold=100_000,
+                apriori_size_difference_fraction_tolerance=0.06,
+                find_leftmost_reference_position=False,
+                error_rate=error_rate,
+            )
+
+    def test_the_legacy_control_ignores_the_parameter(self):
+        """The control reproduces a pre-fix run, which had the rate hard-coded."""
+        alt = _reads(15, prefix="alt")
+        ref = _reads(5, prefix="ref")
+        assert _genotype_of(
+            alt + ref, alt, error_rate=0.25, legacy_force_wildtype=True
+        ) == _genotype_of(alt + ref, alt, error_rate=0.05, legacy_force_wildtype=True)
