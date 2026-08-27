@@ -10,13 +10,22 @@ inversions -- and the tests below deliberately exercise all three with the same
 inputs, because the gate was once triplicated by copy-paste and drifted.
 """
 
+import json
 import pickle
 import random
+from gzip import open as gzopen
+from pathlib import Path
 
+import cattrs
 import numpy as np
 import pytest
 
-from svirlpool.localassembly import SVpatterns, SVprimitives
+from svirlpool.localassembly import SVpatterns, SVprimitives, consensus_class
+from svirlpool.localassembly.consensus import parse_ReadAlignmentSignals_from_alignment
+from svirlpool.signalprocessing.alignments_to_rafs import (
+    get_start_end,
+    parse_SVsignals_from_alignment,
+)
 from svirlpool.svcalling import genotyping, svcomposite_merging
 from svirlpool.svcalling.SVcomposite import SVcomposite
 from svirlpool.svcalling.svcomposite_merging import (
@@ -26,6 +35,7 @@ from svirlpool.svcalling.svcomposite_merging import (
     sizetolerance_from_SVcomposite,
 )
 from svirlpool.svcalling.svcomposite_utils import cohens_d
+from svirlpool.util.datatypes import Alignment
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -2004,3 +2014,169 @@ class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
             # the fractional arm admits 12 bp on its own.
             assert _size_gate(kind, 200, 212, tolerance=tolerance)
             assert _size_gate(kind, 1000, 1012, tolerance=tolerance)
+
+
+# ===========================================================================
+# SIZE-POPULATION SIGN CONVENTION (F8)
+# ===========================================================================
+
+
+def _load_simulated_alignments(name: str) -> list[Alignment]:
+    """Load the simulated single-indel alignments used as fixtures."""
+    path = Path(__file__).parent / "data" / "consensus_class" / name
+    with gzopen(path, "rt") as f:
+        data = json.load(f)
+    return cattrs.structure(data["alignments"], list[Alignment])
+
+
+def _consensus_with_read_signals(
+    alignments: list[Alignment], consensusID: str = "1.0"
+) -> consensus_class.Consensus:
+    """Build a Consensus carrying the cut-read alignment signals of ``alignments``.
+
+    This is the production path: ``consensus.make_consensus`` aligns the cut
+    reads back to the consensus sequence and stores
+    ``parse_ReadAlignmentSignals_from_alignment`` for each of them.
+    """
+    return consensus_class.Consensus(
+        ID=consensusID,
+        crIDs=[1],
+        original_regions=[("chr1", 0, 1000)],
+        consensus_sequence="A" * 1000,
+        cut_read_alignment_signals=[
+            parse_ReadAlignmentSignals_from_alignment(
+                samplename="sample1",
+                alignment=aln.to_pysam(),
+                min_signal_size=10,
+                min_bnd_size=50,
+            )
+            for aln in alignments
+        ],
+        intervals_cutread_alignments=[
+            (
+                aln.to_pysam().reference_start,
+                aln.to_pysam().reference_end,
+                str(aln.to_pysam().query_name),
+                aln.to_pysam().is_forward,
+            )
+            for aln in alignments
+        ],
+    )
+
+
+class TestSizePopulationSignConvention:
+    """Pin the *actual* sign convention of ``SVcomposite.get_size_populations``.
+
+    ``get_size_populations``'s docstring used to claim "Size is neg. for del and
+    pos. for ins.". It is not: deletion sizes are magnitudes from the moment
+    they are parsed (``size=int(abs(delr - dell))`` in
+    ``alignments_to_rafs.parse_SVsignals_from_alignment``) and nothing in the
+    chain to ``get_size_populations`` ever re-signs them. These tests pin that
+    so the docstring cannot silently drift back.
+    """
+
+    def test_indel_signals_are_unsigned_magnitudes_at_the_source(self):
+        """A 20 bp deletion and a 20 bp insertion both parse to ``size == +20``."""
+        sizes_by_type: dict[int, list[int]] = {}
+        for name in (
+            "simulated.with_deletion.json.gz",
+            "simulated.with_insertion.json.gz",
+        ):
+            for aln in _load_simulated_alignments(name):
+                pysam_aln = aln.to_pysam()
+                ref_start, ref_end, read_start, read_end = get_start_end(pysam_aln)
+                for signal in parse_SVsignals_from_alignment(
+                    alignment=pysam_aln,
+                    ref_start=ref_start,
+                    ref_end=ref_end,
+                    read_start=read_start,
+                    read_end=read_end,
+                    min_signal_size=10,
+                    min_bnd_size=50,
+                ):
+                    sizes_by_type.setdefault(signal.sv_type, []).append(signal.size)
+
+        assert 0 in sizes_by_type and 1 in sizes_by_type, sizes_by_type
+        # sv_type 1 == deletion: the size is +20, NOT -20
+        assert [20] == sizes_by_type[1]
+        # sv_type 0 == insertion
+        assert [20] == sizes_by_type[0]
+        # only the separate sv_type field distinguishes them
+        assert sizes_by_type[0] == sizes_by_type[1]
+
+    def test_consensus_distortions_carry_the_magnitude_unchanged(self):
+        """``Consensus.get_consensus_distortions`` copies the unsigned size."""
+        consensus = _consensus_with_read_signals(
+            _load_simulated_alignments("simulated.with_deletion.json.gz")
+        )
+        distortions = consensus.get_consensus_distortions()
+        assert 1 == len(distortions)
+        assert 1 == distortions[0].type  # deletion
+        assert 20 == distortions[0].size  # magnitude, not -20
+
+    def test_get_size_populations_is_unsigned_for_a_deletion(self):
+        """The end-to-end pin: a deletion distortion reaches the population as +20."""
+        alignments = _load_simulated_alignments("simulated.with_deletion.json.gz")
+        readname = str(alignments[0].to_pysam().query_name)
+        consensus = _consensus_with_read_signals(alignments)
+
+        pattern = SVpatterns.SVpatternDeletion(
+            SVprimitives=[
+                _make_svprimitive_del(ref_start=1000, ref_end=1500, reads=[readname])
+            ]
+        )
+        pattern.size_distortions = SVpatterns.distortions_by_svPattern(
+            svPattern=pattern,
+            consensus=consensus,
+            distance_scale=5000.0,
+            falloff=1.0,
+        )
+        assert {readname: 20.0} == pattern.size_distortions
+
+        pattern.set_sequence("A" * 500)
+        composite = SVcomposite.from_SVpattern(pattern)
+        population = composite.get_size_populations()
+
+        assert [20] == population, (
+            "a deletion's size distortion must reach the population as a positive "
+            "magnitude; the old docstring claimed it would be negative"
+        )
+        assert all(size >= 0 for size in population)
+
+    def test_insertion_and_deletion_populations_are_indistinguishable(self):
+        """The consequence for the noise model, made explicit.
+
+        Because the sign is dropped, a locus whose background noise is all
+        deletions produces exactly the same size population as one whose noise
+        is all insertions of the same magnitude. Balanced ins/del noise reads as
+        noisy rather than as quiet. This is intentional under the current
+        design; the older signed intent survives only in the commented-out
+        ``build_size_population_by_svPattern`` in ``SVpatterns.py``.
+        """
+        populations = {}
+        for label, fixture in (
+            ("deletion", "simulated.with_deletion.json.gz"),
+            ("insertion", "simulated.with_insertion.json.gz"),
+        ):
+            alignments = _load_simulated_alignments(fixture)
+            readname = str(alignments[0].to_pysam().query_name)
+            consensus = _consensus_with_read_signals(alignments)
+            pattern = SVpatterns.SVpatternDeletion(
+                SVprimitives=[
+                    _make_svprimitive_del(
+                        ref_start=1000, ref_end=1500, reads=[readname]
+                    )
+                ]
+            )
+            pattern.size_distortions = SVpatterns.distortions_by_svPattern(
+                svPattern=pattern,
+                consensus=consensus,
+                distance_scale=5000.0,
+                falloff=1.0,
+            )
+            pattern.set_sequence("A" * 500)
+            populations[label] = SVcomposite.from_SVpattern(
+                pattern
+            ).get_size_populations()
+
+        assert populations["deletion"] == populations["insertion"] == [20]

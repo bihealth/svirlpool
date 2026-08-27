@@ -115,18 +115,43 @@ class SVcomposite:
         return int(round(weighted_mean_size))
 
     def get_size_populations(self) -> list[float]:
-        """Returns a list of sizes of distortion signals. Size is neg. for del and pos. for ins.
+        """Returns the per-read size-distortion magnitudes of every SVpattern in
+        this composite, flattened into a single list.
 
-        The values are weighted means of the background size-distortion signals
-        supporting each read (`distortions_by_svPattern`), so they are genuinely
-        fractional. They are returned unrounded: the sole consumer is Cohen's *d*
-        in the vertical-merge size gate, which measures a difference of means in
-        units of the *within-group spread*, and that spread is often smaller than
-        one base pair. Truncating to whole base pairs shrinks it, inflates |d| and
-        biases the gate toward rejection -- and where every value falls in [0, 1)
-        it collapses the population to a constant vector, at which point no effect
-        size exists at all. This getter used to wrap every value in `int()`, which
-        was invisible only for as long as every value was exactly 0.0.
+        Each SVpattern's size_distortions dict (built by
+        SVpatterns.distortions_by_svPattern) maps a supporting read name to the
+        distance-weighted mean size of nearby indel signals on that read's
+        alignment. SVpatterns whose size_distortions is None contribute no values
+        at all (they are skipped, not treated as zero); a supporting read with no
+        nearby indel signal *is* present, with the value 0.0.
+
+        **Sign convention (F8).** Contrary to the docstring this method carried
+        until v0.3, the values are *not* negative for deletions and positive for
+        insertions: they are unsigned, always >= 0, whatever the underlying
+        signals were. ``alignments_to_rafs.parse_SVsignals_from_alignment``
+        builds deletions with ``size=int(abs(delr - dell))`` and insertions with
+        ``size=int(abs(rinsr - rinsl))``, so the two are indistinguishable by
+        value; only ``SVsignal.sv_type`` (0 = insertion, 1 = deletion) tells them
+        apart, and that field is dropped by the aggregation.
+
+        Consequence for the noise model: a locus whose background noise is
+        balanced insertions and deletions reads as *noisy*, not as quiet, since
+        the two cannot cancel. That is the behaviour of the current design, not
+        an accident of this method; the older signed intent survives only in the
+        commented-out ``build_size_population_by_svPattern`` in
+        ``localassembly/SVpatterns.py``. Changing it is a design decision about
+        the noise model, not a documentation fix.
+
+        **Returned unrounded (F2).** The weighted means are genuinely fractional
+        and are returned as floats. The sole consumer is Cohen's *d* in the
+        vertical-merge size gate, which measures a difference of means in units
+        of the *within-group spread*, and that spread is often smaller than one
+        base pair. Truncating to whole base pairs shrinks it, inflates |d| and
+        biases the gate toward rejection -- and where every value falls in
+        [0, 1) it collapses the population to a constant vector, at which point
+        no effect size exists at all. This getter used to wrap every value in
+        ``int()``, which was invisible only for as long as every value was
+        exactly 0.0.
         """
         return [
             float(size)
