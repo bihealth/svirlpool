@@ -1939,6 +1939,69 @@ def _parse_consensusID_parts(
         return None
 
 
+#: Ceiling on the genotype quality of a heuristically overridden call.  The
+#: multi-assembly override is evidence *about the locus*, not a measurement of the
+#: reads, so the resulting call does not earn an unbounded quality.
+MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING = 30
+
+
+def _apply_multi_assembly_override(
+    gt: "Genotype", excluded: str, new_genotype: str
+) -> None:
+    """Rewrite a genotype's quality fields after a multi-assembly override.
+
+    The override is *prior* information: two distinct consensus assemblies at one
+    candidate region rule the locus out as homozygous.  A prior does not change how
+    likely the observed read counts are under each hypothesis, so ``PL`` is left
+    untouched on purpose -- a consumer can still see the raw evidence and re-derive
+    under a prior of their own, which is what any caller with a non-flat prior emits.
+
+    ``GP`` is the posterior, of which ``GT`` is by definition the argmax, so it *must*
+    be renormalised over the genotypes the override leaves admissible.  Before this,
+    a corrected record read ``GT=0/1`` beside a ``GP`` whose argmax was ``1/1`` at
+    p=0.9996 -- a self-contradiction inside one sample column.  The excluded genotype
+    keeps its slot at 0.0 so the vector stays ``Number=G``.
+
+    ``GQ`` becomes the phred gap from the called genotype to the next admissible one,
+    floored at 0 and capped, because the override itself is heuristic.
+
+    Where the model was never evaluated -- the legacy force-call,
+    ``--single-evidence-gt``, or a no-call -- both vectors are ``None``; the pre-fix
+    clamp is then preserved byte-for-byte so the control arm cannot drift.
+    """
+    if not gt.posteriors:
+        gt.genotype_quality = min(
+            gt.genotype_quality, MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING
+        )
+        return
+
+    remaining_total = sum(p for g, p in gt.posteriors.items() if g != excluded)
+    if remaining_total > 0:
+        gt.posteriors = {
+            g: (0.0 if g == excluded else p / remaining_total)
+            for g, p in gt.posteriors.items()
+        }
+    else:
+        # Every admissible genotype underflowed.  A flat posterior over them is the
+        # honest reading, and it still sums to 1.
+        n_admissible = max(1, len(gt.posteriors) - 1)
+        gt.posteriors = {
+            g: (0.0 if g == excluded else 1.0 / n_admissible) for g in gt.posteriors
+        }
+    gt.gt_likelihood = gt.posteriors.get(new_genotype)
+
+    gq = gt.genotype_quality
+    if gt.phred_likelihoods and new_genotype in gt.phred_likelihoods:
+        others = [
+            pl
+            for g, pl in gt.phred_likelihoods.items()
+            if g not in (excluded, new_genotype)
+        ]
+        if others:
+            gq = max(0, min(others) - gt.phred_likelihoods[new_genotype])
+    gt.genotype_quality = min(gq, MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING)
+
+
 def correct_genotypes_for_multi_assembly_loci(
     svCalls: list[SVcall],
 ) -> list[SVcall]:
@@ -2002,9 +2065,7 @@ def correct_genotypes_for_multi_assembly_loci(
                     gt.total_coverage,
                 )
                 gt.genotype = "0/1"
-                # Recompute GQ: we are confident this is het, but reflect that the
-                # override is heuristic by assigning a moderate quality.
-                gt.genotype_quality = min(gt.genotype_quality, 30)
+                _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
                 n_corrections += 1
 
     if n_corrections > 0:

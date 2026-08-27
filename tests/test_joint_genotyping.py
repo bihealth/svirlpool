@@ -32,8 +32,10 @@ from svirlpool.svcalling.multisample_sv_calling import (
     DEFAULT_GENOTYPE_ERROR_RATE,
     GQ_CEILING,
     LEGACY_GQ_CEILING,
+    MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING,
     Genotype,
     SVcalls_from_SVcomposite,
+    _apply_multi_assembly_override,
     create_dummy_covtrees_from_reference,
     create_wild_type_genotype,
     expected_alt_fractions,
@@ -1534,3 +1536,118 @@ class TestGenotypeErrorRateIsAParameter:
         assert _genotype_of(
             alt + ref, alt, error_rate=0.25, legacy_force_wildtype=True
         ) == _genotype_of(alt + ref, alt, error_rate=0.05, legacy_force_wildtype=True)
+
+
+# ===========================================================================
+# 11. THE MULTI-ASSEMBLY OVERRIDE MUST NOT LEAVE THE SAMPLE COLUMN
+#     CONTRADICTING ITSELF
+#
+# Two distinct consensus assemblies at one candidate region rule the locus out
+# as homozygous, so `correct_genotypes_for_multi_assembly_loci` rewrites
+# `GT` from 1/1 to 0/1.  It used to rewrite nothing else, so the record kept
+# the posterior of the genotype it had just discarded:
+#
+#     GT:GQ:TC:DR:DV:PL:GP
+#     0/1:30:26:3:23:256,34,0:2.65925e-26,0.000387703,0.999612
+#
+# GP is the posterior of which GT is by definition the argmax, and it read 1/1
+# at p=0.9996 beside GT=0/1.
+#
+# PL is deliberately NOT rewritten: it is a likelihood, the override is a
+# prior, and a prior does not change how likely the read counts are under any
+# hypothesis.  Leaving PL alone is what lets a consumer re-derive the call
+# under a prior of their own.
+# ===========================================================================
+
+
+def _overridable_genotype(**kwargs) -> Genotype:
+    """A 1/1 call carrying the vectors of the real muc1 1:248259 record."""
+    defaults = {
+        "samplename": SAMPLE,
+        "genotype": "1/1",
+        "gt_likelihood": 0.999612,
+        "genotype_quality": 34,
+        "total_coverage": 26,
+        "ref_reads": 3,
+        "var_reads": 23,
+        "phred_likelihoods": {"0/0": 256, "0/1": 34, "1/1": 0},
+        "posteriors": {"0/0": 2.65925e-26, "0/1": 0.000387703, "1/1": 0.999612},
+    }
+    defaults.update(kwargs)
+    return Genotype(**defaults)
+
+
+class TestMultiAssemblyOverrideKeepsTheRecordConsistent:
+    def test_the_posterior_no_longer_contradicts_the_genotype(self):
+        """CHARACTERISATION -> FIX: GP's argmax must become the called genotype."""
+        gt = _overridable_genotype()
+        # Pre-fix state, restated so the defect stays documented:
+        assert max(gt.posteriors, key=gt.posteriors.get) == "1/1"
+
+        gt.genotype = "0/1"
+        _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+
+        assert max(gt.posteriors, key=gt.posteriors.get) == gt.genotype == "0/1"
+
+    def test_the_posterior_still_sums_to_one_and_keeps_every_slot(self):
+        """GP is Number=G: the excluded genotype keeps its slot, at zero."""
+        gt = _overridable_genotype()
+        gt.genotype = "0/1"
+        _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+
+        assert set(gt.posteriors) == {"0/0", "0/1", "1/1"}
+        assert gt.posteriors["1/1"] == 0.0
+        assert math.isclose(sum(gt.posteriors.values()), 1.0, rel_tol=1e-12)
+        assert gt.gt_likelihood == gt.posteriors["0/1"]
+
+    def test_the_likelihoods_are_deliberately_untouched(self):
+        """PL is evidence, not belief; a prior must not rewrite it."""
+        gt = _overridable_genotype()
+        before = dict(gt.phred_likelihoods)
+        gt.genotype = "0/1"
+        _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+        assert gt.phred_likelihoods == before
+
+    def test_quality_comes_from_the_gap_to_the_next_admissible_genotype(self):
+        gt = _overridable_genotype()
+        gt.genotype = "0/1"
+        _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+        # 0/0 is the only other admissible genotype: 256 - 34 = 222, then capped.
+        assert gt.genotype_quality == MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING
+
+    def test_quality_is_zero_when_the_forced_genotype_is_not_the_better_one(self):
+        """The override can force a genotype the reads do not prefer; say so."""
+        gt = _overridable_genotype(
+            phred_likelihoods={"0/0": 0, "0/1": 40, "1/1": 5},
+            posteriors={"0/0": 0.9, "0/1": 0.01, "1/1": 0.09},
+        )
+        gt.genotype = "0/1"
+        _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+        assert gt.genotype_quality == 0
+
+    def test_a_degenerate_posterior_is_flattened_rather_than_left_unnormalised(self):
+        """Both admissible genotypes underflowed; GP must still sum to 1."""
+        gt = _overridable_genotype(
+            posteriors={"0/0": 0.0, "0/1": 0.0, "1/1": 1.0},
+        )
+        gt.genotype = "0/1"
+        _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+        assert math.isclose(sum(gt.posteriors.values()), 1.0, rel_tol=1e-12)
+        assert gt.posteriors["1/1"] == 0.0
+        assert gt.posteriors["0/1"] == 0.5
+
+    def test_without_vectors_the_pre_fix_clamp_is_preserved_exactly(self):
+        """The legacy control, --single-evidence-gt and no-calls carry no vectors.
+
+        They must keep byte-for-byte the old `min(gq, 30)` behaviour, or the
+        control arm stops reproducing `main`.
+        """
+        for before, after in ((60, 30), (30, 30), (12, 12)):
+            gt = _overridable_genotype(
+                genotype_quality=before, phred_likelihoods=None, posteriors=None
+            )
+            gt.genotype = "0/1"
+            _apply_multi_assembly_override(gt, excluded="1/1", new_genotype="0/1")
+            assert gt.genotype_quality == after
+            assert gt.posteriors is None
+            assert gt.phred_likelihoods is None
