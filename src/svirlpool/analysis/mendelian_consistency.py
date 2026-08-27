@@ -39,6 +39,29 @@
 # - incomplete: One parent missing, but could be consistent
 # - missing: Child genotype missing or both parents missing
 # - uncertain: Complex CN patterns requiring manual review
+# - non_informative: every trio member was observed and none carries an alt
+# - no_call: at least one trio member was not observed at all (./.)
+#
+# no_call vs. non_informative
+# ---------------------------
+# These are different claims and are kept apart deliberately.  "Nobody in the
+# trio carries this variant" is an observation; "somebody in the trio was not
+# observed" is the absence of one.  Folding the second into the first -- which
+# is what treating `./.` as `0/0` does -- scores a technical dropout as a
+# correctly inherited genotype whenever it lands in the child, and as a
+# Mendelian violation whenever it lands in a parent of a carrier child.
+#
+# Consequently:
+#
+# - a trio containing any no-call is reported as `no_call` and is excluded from
+#   the consistent/inconsistent denominator, so the headline consistency figure
+#   means "among trios in which all three genotypes were observed, how many obey
+#   Mendelian inheritance";
+# - the no-call rate is reported alongside it (`no_call` / all evaluated trios)
+#   so the headline cannot be improved by calling nothing;
+# - the pre-v0.3 reading, in which `./.` was counted as an observed homozygous
+#   reference, stays reachable via `--legacy-missing-as-reference` so that
+#   previously published numbers can be reproduced exactly.
 
 import argparse
 import json
@@ -64,41 +87,78 @@ def parse_variant(variant):
 
 
 # %%
-def parse_genotype(gt_string: str) -> tuple[int, int, int]:
+# Allele separators recognised in a GT field.  "|" marks a phased genotype and
+# is as much a separator as "/"; reading "0|1" as a single allele made every
+# phased heterozygote look like a hemizygous alt.
+_ALLELE_SEPARATORS = ("/", "|")
+
+
+def _split_alleles(gt_string: str) -> list[str]:
+    """Split a GT field into its alleles on either separator."""
+    normalised = gt_string.replace("|", "/")
+    return normalised.split("/")
+
+
+def parse_genotype(
+    gt_string: str | None, missing_as_reference: bool = False
+) -> tuple[int, int, int]:
     """
-    Parse genotype string to count alleles.
+    Parse a genotype string into observed allele counts.
 
-    Treats missing genotypes (./.) as homozygous reference (0/0).
+    Returns: (n_ref_alleles, n_alt_alleles, ploidy)
 
-    Returns: (n_ref_alleles, n_alt_alleles, total_copies)
+    For an observed genotype ``n_ref + n_alt == ploidy``.  A **no-call** is
+    reported as ``(0, 0, ploidy)``: no reference alleles were observed and no
+    alternate alleles were observed either.  That state is unreachable for an
+    observed genotype, so :func:`is_no_call` can recognise it without a fourth
+    tuple element, and a no-call cannot be mistaken for a homozygous reference
+    call the way ``(ploidy, 0, ploidy)`` was.
+
+    A genotype in which *any* allele is missing (``0/.``) is a no-call: half an
+    observation cannot support a Mendelian determination.  ``None`` -- which is
+    what vcfpy decodes a bare ``.`` GT field into -- and the empty string are
+    no-calls too.
+
+    Args:
+        gt_string: the raw GT field, or None when the field is absent.
+        missing_as_reference: reproduce the pre-v0.3 reading, in which a missing
+            genotype was counted as an observed homozygous reference.  Only for
+            reproducing previously published numbers; see
+            ``--legacy-missing-as-reference``.
 
     Examples:
         "0" → (1, 0, 1)         # hemizygous ref
         "1" → (0, 1, 1)         # hemizygous alt
         "0/0" → (2, 0, 2)       # homozygous ref
         "0/1" → (1, 1, 2)       # heterozygous
+        "0|1" → (1, 1, 2)       # phased heterozygous
         "1/1" → (0, 2, 2)       # homozygous alt
+        "0/0/0" → (3, 0, 3)     # triploid ref (copy number 3)
         "0/0/1" → (2, 1, 3)     # triploid with 1 alt
-        "0/1/1" → (1, 2, 3)     # triploid with 2 alts
         "0/1/1/1" → (1, 3, 4)   # tetraploid with 3 alts
-        "./." → (2, 0, 2)       # missing, treated as homozygous ref
-        "." → (1, 0, 1)         # missing hemizygous, treated as ref
+        "1/2" → (0, 2, 2)       # any non-zero allele index counts as alt
+        "./." → (0, 0, 2)       # no-call, diploid
+        "." / None → (0, 0, 1)  # no-call, hemizygous
+        "0/." → (0, 0, 2)       # partial no-call
     """
-    # Handle missing genotypes by treating them as reference
-    if "." in gt_string:
-        # Count the number of alleles (by counting slashes + 1, or 1 if no slash)
-        if "/" in gt_string:
-            n_alleles = gt_string.count("/") + 1
-        else:
-            n_alleles = 1
-        # Treat missing as all reference alleles
-        return (n_alleles, 0, n_alleles)
+    if gt_string is None or gt_string == "":
+        # vcfpy decodes an absent GT field as None.  Nothing was observed.
+        return (0, 0, 1) if missing_as_reference is False else (1, 0, 1)
 
-    # Handle both hemizygous (no slash) and multi-allelic (with slash)
-    if "/" in gt_string:
-        alleles = gt_string.split("/")
-    else:
-        alleles = [gt_string]
+    if "." in gt_string:
+        n_alleles = 1
+        for separator in _ALLELE_SEPARATORS:
+            if separator in gt_string:
+                n_alleles = len(_split_alleles(gt_string))
+                break
+        if missing_as_reference:
+            # Pre-v0.3 behaviour: a missing genotype was counted as an observed
+            # homozygous reference call.
+            return (n_alleles, 0, n_alleles)
+        # No information: neither reference nor alternate alleles were observed.
+        return (0, 0, n_alleles)
+
+    alleles = _split_alleles(gt_string)
 
     # Count reference (0) and alt (non-0) alleles
     n_ref = alleles.count("0")
@@ -107,6 +167,16 @@ def parse_genotype(gt_string: str) -> tuple[int, int, int]:
     total = len(alleles)
 
     return (n_ref, n_alt, total)
+
+
+def is_no_call(parsed_genotype: tuple[int, int, int]) -> bool:
+    """True when :func:`parse_genotype` reported "nothing was observed".
+
+    An observed genotype always accounts for every copy -- ``n_ref + n_alt ==
+    ploidy`` -- so zero of both is only ever produced by a missing genotype.
+    """
+    n_ref, n_alt, _ = parsed_genotype
+    return n_ref == 0 and n_alt == 0
 
 
 # %%
@@ -233,7 +303,8 @@ class GTInheritanceStatus(Enum):
     incomplete = 2
     inconsistent = 3
     uncertain = 4  # For complex CN cases that need manual review
-    non_informative = 5  # No one in trio has a variant (all 0 or missing)
+    non_informative = 5  # Every trio member observed, none carries an alt
+    no_call = 6  # At least one trio member was not observed at all (./.)
 
 
 # %%
@@ -243,12 +314,14 @@ def is_trio_informative(
     mother: tuple[int, int, int],
 ) -> bool:
     """
-    Check if a trio has at least one member with an alternate allele.
+    Check if a trio has at least one member with an *observed* alternate allele.
 
-    Returns False if all members are homozygous reference (n_alt = 0).
+    Returns False if no member carries an alt allele (n_alt = 0 for all three).
 
-    This filters out non-informative variants where the entire trio
-    is either ./. or 0/0 or any combination of missing/reference.
+    A no-call carries no observed alt allele either, so it cannot make a trio
+    informative.  Callers must therefore test for a no-call *before* calling
+    this, or a dropout will be filed as "nobody carries the variant"; see
+    :func:`is_variant_inconsistent`.
 
     Args:
         child: Parsed child genotype (n_ref, n_alt, cn)
@@ -270,7 +343,9 @@ def is_trio_informative(
 
 # %%
 def is_variant_inconsistent(
-    variant: vcfpy.Record, names_trio: list[str] | None = None
+    variant: vcfpy.Record,
+    names_trio: list[str] | None = None,
+    missing_as_reference: bool = False,
 ) -> GTInheritanceStatus:
     """
     Check Mendelian consistency for a variant across all copy numbers (CN 0-4+).
@@ -281,9 +356,19 @@ def is_variant_inconsistent(
     - Triploid (CN=3): e.g., "0/0/1", "0/1/1", "1/1/1"
     - Tetraploid (CN=4): e.g., "0/0/0/1", "0/0/1/1", etc.
 
+    A trio in which any member was not observed is reported as
+    ``GTInheritanceStatus.no_call``: the inheritance of an allele that was never
+    seen is not determinable, and calling it either way is a claim the data does
+    not support.  The check precedes the informativeness test, because a
+    dropout is not the same observation as "nobody in this trio carries it".
+
     Args:
         variant: VCF record
         names_trio: List of [child, father, mother] sample names
+        missing_as_reference: reproduce the pre-v0.3 reading in which ``./.``
+            counted as an observed homozygous reference, so that previously
+            published numbers can be reproduced.  ``no_call`` is never returned
+            under this flag.
 
     Returns:
         GTInheritanceStatus enum value
@@ -311,9 +396,15 @@ def is_variant_inconsistent(
         gt_mother = variant.calls[2].data["GT"]
 
     # Parse genotypes to allele counts
-    child = parse_genotype(gt_son)
-    father = parse_genotype(gt_father)
-    mother = parse_genotype(gt_mother)
+    child = parse_genotype(gt_son, missing_as_reference=missing_as_reference)
+    father = parse_genotype(gt_father, missing_as_reference=missing_as_reference)
+    mother = parse_genotype(gt_mother, missing_as_reference=missing_as_reference)
+
+    # A member that was not observed makes the trio undeterminable.  This is
+    # checked before informativeness: a no-call carries no alt allele, so it
+    # would otherwise be filed as "nobody in the trio carries the variant".
+    if any(is_no_call(person) for person in (child, father, mother)):
+        return GTInheritanceStatus.no_call
 
     # Check if trio is informative (at least one member has variant)
     if not is_trio_informative(child, father, mother):
@@ -451,7 +542,21 @@ def extract_variant_features(variant: vcfpy.Record) -> str:
     return f"{svlen},{svtype},{precision}"
 
 
+# Statuses that are not Mendelian verdicts and are therefore kept out of the
+# consistent/inconsistent denominator.  `no_call` joins the two pre-existing
+# members: the headline consistency figure means "among trios in which all
+# three genotypes were observed and at least one carries the variant, how many
+# obey Mendelian inheritance".
+_NOT_A_VERDICT: frozenset[GTInheritanceStatus] = frozenset({
+    GTInheritanceStatus.uncertain,
+    GTInheritanceStatus.non_informative,
+    GTInheritanceStatus.no_call,
+})
+
+
 def _empty_status_dict() -> dict[GTInheritanceStatus, int]:
+    # Explicit order: the historical row order of every emitted table, with
+    # no_call appended so existing outputs keep their shape.
     return {
         GTInheritanceStatus.consistent: 0,
         GTInheritanceStatus.inconsistent: 0,
@@ -459,7 +564,28 @@ def _empty_status_dict() -> dict[GTInheritanceStatus, int]:
         GTInheritanceStatus.incomplete: 0,
         GTInheritanceStatus.uncertain: 0,
         GTInheritanceStatus.non_informative: 0,
+        GTInheritanceStatus.no_call: 0,
     }
+
+
+def n_informative_trios(dict_stats: dict[GTInheritanceStatus, int]) -> int:
+    """Number of trios that received an actual Mendelian verdict."""
+    return sum(
+        count for status, count in dict_stats.items() if status not in _NOT_A_VERDICT
+    )
+
+
+def no_call_rate(dict_stats: dict[GTInheritanceStatus, int]) -> float:
+    """Fraction of *all* evaluated trios in which somebody was not observed.
+
+    Reported next to the consistency figure on purpose.  Excluding no-calls
+    from the consistency denominator is only honest if the size of that
+    exclusion is visible: otherwise the metric can be improved by calling less.
+    """
+    n_total = sum(dict_stats.values())
+    if n_total == 0:
+        return 0.0
+    return dict_stats.get(GTInheritanceStatus.no_call, 0) / n_total
 
 
 # Size stratification bins: (low_inclusive, high_exclusive, label)
@@ -523,6 +649,7 @@ def variants_consistency_stats(
     regions: dict[str, IntervalTree] | None = None,
     svtypes: set[str] | None = None,
     size_stratification: bool = True,
+    missing_as_reference: bool = False,
 ) -> tuple[
     dict[str, dict[GTInheritanceStatus, int]],
     dict[str, dict[str, dict[GTInheritanceStatus, int]]] | None,
@@ -540,6 +667,8 @@ def variants_consistency_stats(
         regions: Optional IntervalTree dict for region filtering
         svtypes: Optional set of SVTYPEs to include. If None, all SVTYPEs are included.
         size_stratification: If True, also return counts stratified by size bin (BNDs excluded).
+        missing_as_reference: reproduce the pre-v0.3 reading of ``./.``; see
+            ``--legacy-missing-as-reference``.
 
     Returns:
         Tuple of:
@@ -574,7 +703,11 @@ def variants_consistency_stats(
                     svlen = svlen[0]
                 if abs(int(svlen)) < min_size:
                     continue
-            status = is_variant_inconsistent(variant=variant, names_trio=names_trio)
+            status = is_variant_inconsistent(
+                variant=variant,
+                names_trio=names_trio,
+                missing_as_reference=missing_as_reference,
+            )
             dict_stats["all"][status] += 1
             if svtype not in dict_stats:
                 dict_stats[svtype] = _empty_status_dict()
@@ -611,23 +744,22 @@ def _status_dict_to_lines(
 ) -> str:
     """Format a single GTInheritanceStatus → count dict as indented lines."""
     n_total = sum(dict_stats.values())
-    n_informative = sum(
-        count
-        for status, count in dict_stats.items()
-        if status
-        not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
-    )
+    n_informative = n_informative_trios(dict_stats)
     lines = f"{indent}- total: {n_total:,}\n"
     for status in dict_stats:
         count = dict_stats[status]
-        if status in (
-            GTInheritanceStatus.uncertain,
-            GTInheritanceStatus.non_informative,
-        ):
+        if status is GTInheritanceStatus.no_call:
+            # Percentage of *all* evaluated trios, not of the verdict
+            # denominator, which no-calls are deliberately outside of.
+            pct = count / n_total if n_total > 0 else 0
+            lines += f"{indent}- {status.name}: {count:,}; {pct:.2%} of total\n"
+        elif status in _NOT_A_VERDICT:
             lines += f"{indent}- {status.name}: {count:,}\n"
         else:
             pct = count / n_informative if n_informative > 0 else 0
             lines += f"{indent}- {status.name}: {count:,}; {pct:.2%}\n"
+    lines += f"{indent}- informative (consistency denominator): {n_informative:,}\n"
+    lines += f"{indent}- no_call_rate: {no_call_rate(dict_stats):.2%}\n"
     return lines
 
 
@@ -682,44 +814,58 @@ def all_dict_stats_to_tsv(
     all_size_dict_stats: dict[str, dict[str, dict[str, dict[GTInheritanceStatus, int]]]]
     | None = None,
 ) -> None:
-    """Write stratified stats to a TSV with columns: sample, svtype, [size_bin,] status, count, percentage."""
+    """Write stratified stats to a TSV.
+
+    Columns: sample, svtype, [size_bin,] status, count, percentage, denominator.
+
+    ``denominator`` names what ``percentage`` is a fraction of, because the two
+    are not the same for every row:
+
+    - ``informative`` -- consistent / inconsistent / incomplete / missing, as a
+      fraction of the trios that received a Mendelian verdict;
+    - ``total`` -- ``no_call``, as a fraction of *all* evaluated trios, i.e. the
+      no-call rate;
+    - ``NA`` -- uncertain / non_informative, which are not rates.
+    """
+
+    def _percentage_and_denominator(
+        status: GTInheritanceStatus, count: int, n_informative: int, n_total: int
+    ) -> tuple[str, str]:
+        if status is GTInheritanceStatus.no_call:
+            return (str(count / n_total if n_total > 0 else 0), "total")
+        if status in _NOT_A_VERDICT:
+            return ("NA", "NA")
+        return (str(count / n_informative if n_informative > 0 else 0), "informative")
+
     with open(path_tsv, "w") as f:
         if all_size_dict_stats is not None:
-            print("sample\tsvtype\tsize_bin\tstatus\tcount\tpercentage", file=f)
+            print(
+                "sample\tsvtype\tsize_bin\tstatus\tcount\tpercentage\tdenominator",
+                file=f,
+            )
         else:
-            print("sample\tsvtype\tstatus\tcount\tpercentage", file=f)
+            print("sample\tsvtype\tstatus\tcount\tpercentage\tdenominator", file=f)
         for sample, svtype_stats in all_dict_stats.items():
             svtype_keys = ["all"] + sorted(k for k in svtype_stats if k != "all")
             for svtype in svtype_keys:
                 dict_stats = svtype_stats[svtype]
-                n_informative = sum(
-                    count
-                    for status, count in dict_stats.items()
-                    if status
-                    not in (
-                        GTInheritanceStatus.uncertain,
-                        GTInheritanceStatus.non_informative,
-                    )
-                )
+                n_informative = n_informative_trios(dict_stats)
+                n_total = sum(dict_stats.values())
                 for status in dict_stats:
                     count = dict_stats[status]
-                    if status in (
-                        GTInheritanceStatus.uncertain,
-                        GTInheritanceStatus.non_informative,
-                    ):
-                        percentage_str = "NA"
-                    else:
-                        percentage_str = str(
-                            count / n_informative if n_informative > 0 else 0
-                        )
+                    percentage_str, denominator = _percentage_and_denominator(
+                        status, count, n_informative, n_total
+                    )
                     if all_size_dict_stats is not None:
                         print(
-                            f"{sample}\t{svtype}\tall\t{status.name}\t{count}\t{percentage_str}",
+                            f"{sample}\t{svtype}\tall\t{status.name}\t{count}"
+                            f"\t{percentage_str}\t{denominator}",
                             file=f,
                         )
                     else:
                         print(
-                            f"{sample}\t{svtype}\t{status.name}\t{count}\t{percentage_str}",
+                            f"{sample}\t{svtype}\t{status.name}\t{count}"
+                            f"\t{percentage_str}\t{denominator}",
                             file=f,
                         )
                 # Size-stratified rows
@@ -728,28 +874,16 @@ def all_dict_stats_to_tsv(
                     if svtype in size_stats_sample:
                         for bin_label in SIZE_BIN_LABELS:
                             bin_stats = size_stats_sample[svtype][bin_label]
-                            n_inf = sum(
-                                c
-                                for s, c in bin_stats.items()
-                                if s
-                                not in (
-                                    GTInheritanceStatus.uncertain,
-                                    GTInheritanceStatus.non_informative,
-                                )
-                            )
+                            n_inf = n_informative_trios(bin_stats)
+                            n_bin_total = sum(bin_stats.values())
                             for status in bin_stats:
                                 count = bin_stats[status]
-                                pct_str = (
-                                    "NA"
-                                    if status
-                                    in (
-                                        GTInheritanceStatus.uncertain,
-                                        GTInheritanceStatus.non_informative,
-                                    )
-                                    else str(count / n_inf if n_inf > 0 else 0)
+                                pct_str, denominator = _percentage_and_denominator(
+                                    status, count, n_inf, n_bin_total
                                 )
                                 print(
-                                    f"{sample}\t{svtype}\t{bin_label}\t{status.name}\t{count}\t{pct_str}",
+                                    f"{sample}\t{svtype}\t{bin_label}\t{status.name}"
+                                    f"\t{count}\t{pct_str}\t{denominator}",
                                     file=f,
                                 )
 
@@ -835,6 +969,45 @@ def all_dict_stats_to_latex(
                         print(f"  & & & {bp_cells} \\\\", file=f)
 
 
+def _status_dict_to_json_entry(d: dict[GTInheritanceStatus, int]) -> dict:
+    """One JSON object per stratum: per-status counts plus the no-call rate.
+
+    Each status carries the ``denominator`` its ``percentage`` is taken over,
+    so a reader never has to guess whether a number is a share of the verdicts
+    or of every evaluated trio.
+    """
+    n_informative = n_informative_trios(d)
+    n_total = sum(d.values())
+    entry: dict = {}
+    for status, count in d.items():
+        if status is GTInheritanceStatus.no_call:
+            entry[status.name] = {
+                "count": count,
+                "percentage": count / n_total if n_total > 0 else 0,
+                "denominator": "total",
+            }
+        elif status in _NOT_A_VERDICT:
+            entry[status.name] = {
+                "count": count,
+                "percentage": None,
+                "denominator": None,
+            }
+        else:
+            entry[status.name] = {
+                "count": count,
+                "percentage": count / n_informative if n_informative > 0 else 0,
+                "denominator": "informative",
+            }
+    # Grouped under "summary" so the rest of the object stays a clean
+    # status -> {count, percentage, denominator} map.
+    entry["summary"] = {
+        "total": n_total,
+        "informative": n_informative,
+        "no_call_rate": no_call_rate(d),
+    }
+    return entry
+
+
 def all_dict_stats_to_json(
     all_dict_stats: dict[str, dict[str, dict[GTInheritanceStatus, int]]],
     path_json: PosixPath,
@@ -848,27 +1021,7 @@ def all_dict_stats_to_json(
         svtype_keys = _sort_svtype_keys(svtype_stats.keys())
         for svtype in svtype_keys:
             d = svtype_stats[svtype]
-            n_informative = sum(
-                c
-                for s, c in d.items()
-                if s
-                not in (
-                    GTInheritanceStatus.uncertain,
-                    GTInheritanceStatus.non_informative,
-                )
-            )
-            entry: dict = {}
-            for status, count in d.items():
-                if status in (
-                    GTInheritanceStatus.uncertain,
-                    GTInheritanceStatus.non_informative,
-                ):
-                    entry[status.name] = {"count": count, "percentage": None}
-                else:
-                    entry[status.name] = {
-                        "count": count,
-                        "percentage": count / n_informative if n_informative > 0 else 0,
-                    }
+            entry = _status_dict_to_json_entry(d)
             sample_obj[svtype] = entry
             # Size-stratified sub-entries
             if (
@@ -879,28 +1032,7 @@ def all_dict_stats_to_json(
                 size_entry: dict = {}
                 for bin_label in SIZE_BIN_LABELS:
                     bin_d = all_size_dict_stats[sample][svtype][bin_label]
-                    n_inf = sum(
-                        c
-                        for s, c in bin_d.items()
-                        if s
-                        not in (
-                            GTInheritanceStatus.uncertain,
-                            GTInheritanceStatus.non_informative,
-                        )
-                    )
-                    bin_obj: dict = {}
-                    for status, count in bin_d.items():
-                        if status in (
-                            GTInheritanceStatus.uncertain,
-                            GTInheritanceStatus.non_informative,
-                        ):
-                            bin_obj[status.name] = {"count": count, "percentage": None}
-                        else:
-                            bin_obj[status.name] = {
-                                "count": count,
-                                "percentage": count / n_inf if n_inf > 0 else 0,
-                            }
-                    size_entry[bin_label] = bin_obj
+                    size_entry[bin_label] = _status_dict_to_json_entry(bin_d)
                 sample_obj[f"{svtype}_by_size"] = size_entry
         out[sample] = sample_obj
     with open(path_json, "w") as f:
@@ -918,6 +1050,7 @@ _STACK_ORDER = [
     GTInheritanceStatus.missing,
     GTInheritanceStatus.uncertain,
     GTInheritanceStatus.non_informative,
+    GTInheritanceStatus.no_call,
 ]
 
 _STATUS_HATCH = {
@@ -927,6 +1060,7 @@ _STATUS_HATCH = {
     GTInheritanceStatus.missing: "|||",
     GTInheritanceStatus.uncertain: "xxx",
     GTInheritanceStatus.non_informative: "...",
+    GTInheritanceStatus.no_call: "\\\\\\",
 }
 
 _STATUS_LABEL = {
@@ -936,6 +1070,7 @@ _STATUS_LABEL = {
     GTInheritanceStatus.missing: "missing",
     GTInheritanceStatus.uncertain: "uncertain",
     GTInheritanceStatus.non_informative: "non-informative",
+    GTInheritanceStatus.no_call: "no-call",
 }
 
 _SVTYPE_MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
@@ -975,12 +1110,13 @@ def _darken_color(rgba, amount=0.3):
 
 
 def _consistency_rate(status_dict: dict[GTInheritanceStatus, int]) -> float:
+    """Consistency over fully observed, informative trios, as a percentage.
+
+    No-calls are outside the denominator; :func:`no_call_rate` reports how large
+    that exclusion is.
+    """
     n_cons = status_dict.get(GTInheritanceStatus.consistent, 0)
-    n_inf = sum(
-        c
-        for s, c in status_dict.items()
-        if s not in (GTInheritanceStatus.uncertain, GTInheritanceStatus.non_informative)
-    )
+    n_inf = n_informative_trios(status_dict)
     return n_cons / n_inf * 100 if n_inf > 0 else float("nan")
 
 
@@ -1278,6 +1414,7 @@ def annotate_vcf_with_mendelian_consistency(
     min_size: int = 0,
     regions: dict[str, IntervalTree] | None = None,
     svtypes: set[str] | None = None,
+    missing_as_reference: bool = False,
 ) -> None:
     """Annotate VCF file with Mendelian consistency information.
 
@@ -1286,6 +1423,8 @@ def annotate_vcf_with_mendelian_consistency(
         output_vcf: Path to output VCF file (can be .vcf or .vcf.gz)
         ped: Path to pedigree file
         passonly: If True, only annotate PASS variants
+        missing_as_reference: reproduce the pre-v0.3 reading of ``./.``; see
+            ``--legacy-missing-as-reference``.
     """
     log.info(f"Annotating VCF file {input_vcf} with Mendelian consistency")
 
@@ -1377,7 +1516,9 @@ def annotate_vcf_with_mendelian_consistency(
             trio_statuses = {}
             for child, father, mother in trios:
                 status = is_variant_inconsistent(
-                    variant=variant, names_trio=[child, father, mother]
+                    variant=variant,
+                    names_trio=[child, father, mother],
+                    missing_as_reference=missing_as_reference,
                 )
                 trio_statuses[child] = status.name
 
@@ -1444,7 +1585,21 @@ def mendelian_consistency(
     size_stratification: bool = True,
     fig: PosixPath | None = None,
     plot_color: str = "#1f77b4",
+    missing_as_reference: bool = False,
 ) -> None:
+    """Run the Mendelian consistency check over *input* and write the reports.
+
+    With *missing_as_reference* the pre-v0.3 reading of a no-call is restored so
+    that previously published numbers reproduce exactly; see
+    ``--legacy-missing-as-reference``.
+    """
+    if missing_as_reference:
+        log.warning(
+            "--legacy-missing-as-reference: missing genotypes (./.) are counted "
+            "as observed homozygous reference calls.  The consistency figure "
+            "produced under this flag is the pre-v0.3 one and does not "
+            "distinguish a technical dropout from an observed reference allele."
+        )
     regions_tree: dict[str, IntervalTree] | None = (
         load_regions_from_bed(regions) if regions is not None else None
     )
@@ -1461,6 +1616,7 @@ def mendelian_consistency(
             min_size=min_size,
             regions=regions_tree,
             svtypes=svtypes,
+            missing_as_reference=missing_as_reference,
         )
 
     variants: list[vcfpy.Record] = parse_variants(path_vcf=input, passonly=passonly)
@@ -1486,6 +1642,7 @@ def mendelian_consistency(
                 regions=regions_tree,
                 svtypes=svtypes,
                 size_stratification=size_stratification,
+                missing_as_reference=missing_as_reference,
             )
             all_dict_stats[sample] = dict_stats
             if all_size_dict_stats is not None and size_stats is not None:
@@ -1528,6 +1685,7 @@ def run(args, **kwargs):
         size_stratification=args.size_stratification,
         fig=args.fig,
         plot_color=args.plot_color,
+        missing_as_reference=args.missing_as_reference,
     )
     return
 
@@ -1635,6 +1793,20 @@ def get_parser():
             "<prefix>_stacked_combined.{svg,png}, "
             "<prefix>_stacked_per_svtype.{svg,png}, and "
             "<prefix>_size_scatter.{svg,png} (when size stratification is on)."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-missing-as-reference",
+        action="store_true",
+        dest="missing_as_reference",
+        default=False,
+        help=(
+            "Restore the pre-v0.3 reading of a missing genotype: count './.' as "
+            "an observed homozygous reference call instead of reporting it as a "
+            "'no_call'.  Only for reproducing numbers published before the "
+            "no-call outcome existed -- under this flag a technical dropout in "
+            "the child scores as a correct inheritance and a dropout in a parent "
+            "of a carrier child scores as a Mendelian violation."
         ),
     )
     parser.add_argument(
