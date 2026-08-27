@@ -431,11 +431,20 @@ class TestLegacyControlReproducesThePreFixOutput:
         assert gt.ref_reads == depth
         assert gt.var_reads == 0
 
-    def test_legacy_flag_does_not_change_alt_supported_calls(self):
+    def test_legacy_flag_does_not_change_this_alt_supported_call(self):
+        """DV=5/TC=10 scores 33, below the ceiling, so capping is a no-op here.
+
+        Not a general property of alternate-supported calls: N16 gave the
+        control the pre-fix *uncapped* quality on that path too, so the two
+        agree only where the pre-fix value was already <= GQ_CEILING.  See
+        ``TestLegacyControlReproducesTheUncappedQuality`` for the cases where
+        they diverge.
+        """
         alt = _reads(5, prefix="alt")
         ref = _reads(5, prefix="ref")
         fixed = _genotype_of(alt + ref, alt)
         legacy = _genotype_of(alt + ref, alt, legacy_force_wildtype=True)
+        assert fixed.genotype_quality == 33
         assert fixed == legacy
 
     def test_legacy_genotype_likelihood_returns_the_old_certainty(self):

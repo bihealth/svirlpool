@@ -352,10 +352,17 @@ def generate_svComposites_from_dbs(
 # %%
 
 
-# Ceiling for the phred-scaled genotype quality of a reference call.  The
-# binomial model of `genotype_likelihood` approaches certainty asymptotically,
-# so without a cap GQ would run away at high depth; 60 is the value the rest of
-# the caller already treats as "as good as it gets".
+# Ceiling for the phred-scaled genotype quality of *every* genotype this module
+# emits, reference and alternate alike.  The binomial model of
+# `genotype_likelihood` approaches certainty asymptotically, so without a cap GQ
+# would run away at high depth; 60 is the value the rest of the caller already
+# treats as "as good as it gets", and the value the VCF header declares.
+#
+# The cap is also what makes GQ *monotone* in the evidence.  A posterior that
+# saturates to exactly 1.0 in float64 carries no more information than the cap
+# can express, so it has to map to the cap; the uncapped expression instead sent
+# a moderately supported call to 141 and a strictly better supported one to 60,
+# inverting the ordering at the top of the range.
 GQ_CEILING: int = 60
 
 # Genotype string used when there is no evidence at all.  Diploid form, matching
@@ -421,6 +428,22 @@ def phred_from_probability(probability: float, cap: int = GQ_CEILING) -> int:
     if error <= 0.0:
         return cap
     return min(int(-10 * np.log10(error)), cap)
+
+
+def legacy_genotype_quality(probability: float) -> int:
+    """The pre-v0.3 phred expression: uncapped, with a literal 60 at saturation.
+
+    Kept verbatim, not as a special case of `phred_from_probability`, because
+    ``--legacy-force-wildtype-genotypes`` exists to reproduce a pre-fix run's
+    genotype fields *exactly*.  It is the expression this module used on the
+    alternate-supported path, defects included: unbounded above (GQ=154 was
+    observed at chr11:11,246,978 with DV=23/TC=50), and non-monotone, because a
+    posterior that saturates to exactly 1.0 in float64 drops to the literal 60
+    while a weaker one nearby scores far higher.
+    """
+    if probability < 1.0:
+        return int(-10 * np.log10(1.0 - probability))
+    return GQ_CEILING
 
 
 def reference_genotype_string(copy_number: int) -> str:
@@ -920,10 +943,16 @@ def genotype_of_sample(
         samplename=samplename,
         genotype=gt,
         gt_likelihood=gt_likelihoods[gt],
+        # One scale for both exits of this function.  The homozygous-reference
+        # exit above already phred-scales through `phred_from_probability`; an
+        # alternate-supported call has to be comparable with it, which means the
+        # same ceiling and the same monotonicity.  Under the legacy control the
+        # pre-fix expression is restored verbatim so the control arm reproduces
+        # a pre-fix run field for field.
         genotype_quality=(
-            int(-10 * np.log10(1.0 - gt_likelihoods[gt]))
-            if gt_likelihoods[gt] < 1.0
-            else 60
+            legacy_genotype_quality(gt_likelihoods[gt])
+            if legacy_force_wildtype
+            else phred_from_probability(gt_likelihoods[gt])
         ),
         total_coverage=len(all_reads),
         ref_reads=len(ref_reads),
@@ -1556,8 +1585,8 @@ def generate_header(
         'read coverage at this locus for this sample, i.e. no call, not reference">'
     )
     header.append(
-        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality (phred); '
-        'homozygous-reference calls are capped at 60; 0 for a no-call">'
+        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality of the '
+        'called genotype (phred), capped at 60; 0 for a no-call">'
     )
     header.append('##FORMAT=<ID=TC,Number=1,Type=Integer,Description="Total coverage">')
     header.append(
@@ -2541,15 +2570,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--legacy-force-wildtype-genotypes",
-        help="DEPRECATED CONTROL, kept for one release to reproduce pre-v0.3 output. "
-        "Restores the old behaviour of force-calling 0/0 with GQ=60 and GP=1.0 "
+        help="DEPRECATED CONTROL, kept for one release to reproduce pre-v0.3 "
+        "genotype fields exactly, for a controlled re-benchmark. Despite the name "
+        "it now restores every pre-fix genotype behaviour, not only the "
+        "force-called wild types: (1) force-calls 0/0 with GQ=60 and GP=1.0 "
         "whenever no alternate-supporting read is found, including at loci with no "
-        "read coverage at all. Without this flag such loci are emitted as no-calls "
-        "(./. with TC=0, GQ=0, GP=.) and covered reference loci get a depth-derived "
-        "GQ. It also restores the pre-fix coverage-query geometry (no breakpoint "
-        "margin for insertions, 100 bases for deletions), overriding "
-        "--genotype-breakpoint-margin. Use only to reproduce the exact genotype "
-        "fields of a pre-fix run for a controlled comparison.",
+        "read coverage at all (without the flag such loci are no-calls, ./. with "
+        "TC=0, GQ=0, GP=., and covered reference loci get a depth-derived GQ); "
+        "(2) restores the pre-fix coverage-query geometry (no breakpoint margin "
+        "for insertions, 100 bases for deletions), overriding "
+        "--genotype-breakpoint-margin; (3) restores the pre-fix uncapped, "
+        "non-monotone GQ on alternate-supported calls (which could exceed the 60 "
+        "the VCF header declares, and dropped back to 60 when the posterior "
+        "saturated). Use only to reproduce a pre-fix run for comparison; the "
+        "output is not a correct call set.",
         action="store_true",
         default=False,
     )
