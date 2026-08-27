@@ -32,6 +32,7 @@ from svirlpool.svcalling.multisample_sv_calling import (
     SVcalls_from_SVcomposite,
     create_dummy_covtrees_from_reference,
     create_wild_type_genotype,
+    generate_header,
     genotype_likelihood,
     genotype_of_sample,
 )
@@ -1012,3 +1013,234 @@ class TestLegacyControlRestoresThePreFixWindow:
             legacy_force_wildtype=True,
         )[0]
         assert legacy.genotypes[SAMPLE].var_reads == 0
+
+
+# ===========================================================================
+# 9. N16 — the alternate-supported genotype quality
+# ===========================================================================
+#
+# ``genotype_of_sample`` has two exits that carry a quality.  The
+# homozygous-reference exit routes through ``phred_from_probability`` and is
+# therefore bounded by ``GQ_CEILING`` and monotone in the evidence.  The
+# alternate-supported exit phred-scaled the posterior inline, uncapped, with a
+# literal ``60`` for the case where the posterior saturates to exactly ``1.0``
+# in float64.  That produced two defects on one scale:
+#
+#   * GQ ran past the ceiling the VCF header declares (``GQ=154`` at
+#     chr11:11,246,978 with DV=23/TC=50; ``GQ=63`` at muc1 1:248938 with
+#     DV=2/TC=32);
+#   * GQ was *non-monotone*: a moderately supported call scored 141 (DV=20,
+#     TC=40) while a maximally supported one scored the literal 60 (DV=30,
+#     TC=60).  Stronger evidence produced a lower quality, so any consumer
+#     filtering or ranking on GQ got the ordering backwards at the top of the
+#     range.
+#
+# These tests pin one scale — [0, GQ_CEILING], non-decreasing in support — for
+# both exits, and pin the pre-fix expression behind the legacy control.
+
+
+def _alt_supported(
+    *, n_total: int, n_alt: int, prefix_alt: str = "alt", **kwargs
+) -> Genotype:
+    """A genotype from the alternate-supported exit: ``n_alt`` of ``n_total``.
+
+    ``n_alt >= 1``, so ``alt_reads`` is non-empty and the wild-type exit is not
+    taken — even where the argmax genotype is still ``0/0`` (the muc1 1:248938
+    shape, DV=2 out of TC=32).
+    """
+    assert 1 <= n_alt <= n_total
+    alt = _reads(n_alt, prefix=prefix_alt)
+    ref = _reads(n_total - n_alt, prefix="ref")
+    return _genotype_of(alt + ref, alt, **kwargs)
+
+
+# (TC, DV, pre-fix GQ) — the uncapped expression's actual output, including the
+# two field observations and the saturating cases that collapsed to the literal.
+PREFIX_QUALITIES = [
+    (10, 5, 33),
+    (20, 10, 69),
+    (32, 2, 63),  # muc1 1:248938 — argmax is 0/0, but DV=2 takes the alt exit
+    (40, 20, 141),
+    (50, 23, 154),  # chr11:11,246,978
+    (50, 25, 60),  # posterior saturates -> the literal, below the 141 above
+    (60, 30, 60),  # likewise
+    (100, 50, 60),  # likewise
+    (10, 10, 27),
+    (20, 20, 55),
+    (30, 30, 83),
+    (50, 50, 139),
+    (100, 100, 60),  # likewise
+]
+
+
+class TestAlternateCallQualityIsCapped:
+    """The alternate-supported exit is bounded by the ceiling the header declares."""
+
+    @pytest.mark.parametrize(
+        ("n_total", "n_alt"), [(t, a) for t, a, _ in PREFIX_QUALITIES]
+    )
+    def test_gq_never_exceeds_the_ceiling(self, n_total, n_alt):
+        gt = _alt_supported(n_total=n_total, n_alt=n_alt)
+        assert gt.var_reads == n_alt
+        assert 0 <= gt.genotype_quality <= GQ_CEILING
+
+    @pytest.mark.parametrize("n_total", list(range(2, 61, 2)))
+    def test_heterozygous_sweep_stays_within_the_ceiling(self, n_total):
+        gt = _alt_supported(n_total=n_total, n_alt=n_total // 2)
+        assert 0 <= gt.genotype_quality <= GQ_CEILING
+
+    @pytest.mark.parametrize("n_total", list(range(1, 61)))
+    def test_homozygous_sweep_stays_within_the_ceiling(self, n_total):
+        gt = _alt_supported(n_total=n_total, n_alt=n_total)
+        assert 0 <= gt.genotype_quality <= GQ_CEILING
+
+    def test_the_two_observed_regressions_are_capped(self):
+        """The two GQs seen on real data, both above the declared ceiling."""
+        assert _alt_supported(n_total=50, n_alt=23).genotype_quality == GQ_CEILING
+        muc1 = _alt_supported(n_total=32, n_alt=2)
+        assert muc1.genotype == "0/0"  # the alt exit, despite the argmax
+        assert muc1.var_reads == 2
+        assert muc1.genotype_quality == GQ_CEILING
+
+    def test_both_exits_share_one_scale(self):
+        """Reference and alternate calls must be comparable, not two scales."""
+        reference = _genotype_of(_reads(40), ["unrelated_alt_read"])
+        alternate = _alt_supported(n_total=40, n_alt=20)
+        assert reference.var_reads == 0 and alternate.var_reads == 20
+        assert 0 <= reference.genotype_quality <= GQ_CEILING
+        assert 0 <= alternate.genotype_quality <= GQ_CEILING
+
+
+class TestAlternateCallQualityIsMonotone:
+    """More alternate support must never mean a lower quality."""
+
+    def test_saturating_call_does_not_score_below_a_moderate_one(self):
+        """The inversion the literal ``60`` branch produced, in its sharpest form.
+
+        DV=20/TC=40 and DV=30/TC=60 are the same allele fraction; the second has
+        half again as much evidence.  Pre-fix the first scored 141 and the
+        second 60.
+        """
+        moderate = _alt_supported(n_total=40, n_alt=20)
+        strong = _alt_supported(n_total=60, n_alt=30)
+        assert strong.genotype == moderate.genotype == "0/1"
+        assert strong.genotype_quality >= moderate.genotype_quality
+
+    def test_homozygous_saturating_call_does_not_score_below_a_moderate_one(self):
+        """The same inversion on the 1/1 branch: DV=TC=50 scored 139, DV=TC=100 scored 60."""
+        moderate = _alt_supported(n_total=50, n_alt=50)
+        strong = _alt_supported(n_total=100, n_alt=100)
+        assert strong.genotype == moderate.genotype == "1/1"
+        assert strong.genotype_quality >= moderate.genotype_quality
+
+    def test_gq_is_non_decreasing_across_a_heterozygous_depth_sweep(self):
+        qualities = [
+            _alt_supported(n_total=n, n_alt=n // 2).genotype_quality
+            for n in range(2, 121, 2)
+        ]
+        assert qualities == sorted(qualities), qualities
+        assert qualities[0] < qualities[-1]  # and it actually moves
+
+    def test_gq_is_non_decreasing_across_a_homozygous_depth_sweep(self):
+        qualities = [
+            _alt_supported(n_total=n, n_alt=n).genotype_quality for n in range(1, 121)
+        ]
+        assert qualities == sorted(qualities), qualities
+        assert qualities[0] < qualities[-1]
+
+    def test_gq_reaches_the_ceiling_only_with_real_support(self):
+        """The scale still discriminates: it is not a constant 60."""
+        assert _alt_supported(n_total=4, n_alt=2).genotype_quality < GQ_CEILING
+        assert _alt_supported(n_total=60, n_alt=30).genotype_quality == GQ_CEILING
+
+
+class TestSingleEvidenceGenotypeQuality:
+    """``--single-evidence-gt`` returns a fixed likelihood of exactly 1.0.
+
+    Both the pre-fix expression (``else 60``) and ``phred_from_probability``
+    (``probability >= 1.0 -> cap``) map that to 60, so this path is unchanged by
+    the repair and needs no legacy special-casing.
+    """
+
+    @pytest.mark.parametrize(
+        ("n_total", "n_alt"), [(10, 5), (10, 10), (50, 23), (60, 30)]
+    )
+    def test_single_evidence_quality_is_the_ceiling(self, n_total, n_alt):
+        gt = _alt_supported(n_total=n_total, n_alt=n_alt, single_evidence_gt=True)
+        assert gt.gt_likelihood == 1.0
+        assert gt.genotype_quality == GQ_CEILING
+
+    @pytest.mark.parametrize(("n_total", "n_alt"), [(10, 5), (10, 10), (50, 23)])
+    def test_legacy_control_does_not_move_the_single_evidence_path(
+        self, n_total, n_alt
+    ):
+        fixed = _alt_supported(n_total=n_total, n_alt=n_alt, single_evidence_gt=True)
+        legacy = _alt_supported(
+            n_total=n_total,
+            n_alt=n_alt,
+            single_evidence_gt=True,
+            legacy_force_wildtype=True,
+        )
+        assert fixed == legacy
+
+
+class TestLegacyControlReproducesTheUncappedQuality:
+    """``--legacy-force-wildtype-genotypes`` must reproduce the pre-fix GQ exactly.
+
+    The flag's contract is a controlled comparison against a pre-fix run, so it
+    has to restore the uncapped expression on the alternate-supported exit too,
+    not only the force-called wild types and the pre-fix query geometry.
+    """
+
+    @pytest.mark.parametrize(("n_total", "n_alt", "prefix_gq"), PREFIX_QUALITIES)
+    def test_legacy_control_restores_the_pre_fix_quality(
+        self, n_total, n_alt, prefix_gq
+    ):
+        legacy = _alt_supported(
+            n_total=n_total, n_alt=n_alt, legacy_force_wildtype=True
+        )
+        assert legacy.genotype_quality == prefix_gq
+
+    @pytest.mark.parametrize(("n_total", "n_alt", "prefix_gq"), PREFIX_QUALITIES)
+    def test_only_the_quality_differs_between_control_and_repair(
+        self, n_total, n_alt, prefix_gq
+    ):
+        """Field for field: GQ is the only thing the repair moves, and only down."""
+        fixed = _alt_supported(n_total=n_total, n_alt=n_alt)
+        legacy = _alt_supported(
+            n_total=n_total, n_alt=n_alt, legacy_force_wildtype=True
+        )
+        for field in (
+            "genotype",
+            "gt_likelihood",
+            "total_coverage",
+            "ref_reads",
+            "var_reads",
+        ):
+            assert getattr(fixed, field) == getattr(legacy, field), field
+        assert fixed.genotype_quality == min(prefix_gq, GQ_CEILING)
+        assert fixed.genotype_quality <= legacy.genotype_quality
+
+
+class TestGenotypeQualityHeaderDescribesOneScale:
+    """The header text has to describe the scale that is actually emitted."""
+
+    def _gq_header(self, tmp_path) -> str:
+        (ref := tmp_path / "ref.fa").write_text(">chr1\nACGT\n")
+        (tmp_path / "ref.fa.fai").write_text(f"{CHR}\t248956422\t6\t60\t61\n")
+        lines = [
+            line
+            for line in generate_header(reference=ref, samplenames=[SAMPLE])
+            if line.startswith("##FORMAT=<ID=GQ,")
+        ]
+        assert len(lines) == 1
+        return lines[0]
+
+    def test_header_does_not_restrict_the_cap_to_reference_calls(self, tmp_path):
+        header = self._gq_header(tmp_path)
+        assert "homozygous-reference calls are capped" not in header
+
+    def test_header_states_the_ceiling_and_the_no_call_value(self, tmp_path):
+        header = self._gq_header(tmp_path)
+        assert str(GQ_CEILING) in header
+        assert "no-call" in header
