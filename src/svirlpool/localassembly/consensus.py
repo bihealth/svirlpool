@@ -38,12 +38,15 @@ from sklearn.cluster import KMeans, SpectralClustering
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
-from . import consensus_class, consensus_lib
+from . import consensus_class, consensus_lib, poa_consensus
 from . import read_cache as read_cache_mod
 
 matplotlib.use("Agg")  # Use non-interactive backend
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
+
+# Consensus assembly backends selectable via --consensus-method.
+CONSENSUS_METHODS = ("lamassemble", "racon", "poa")
 
 
 def _cpu_has_avx2() -> bool:
@@ -1215,11 +1218,43 @@ def assemble_consensus(
     representative_read: str | None = None,
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
+    read_records: list[SeqRecord] | None = None,
+    poa_polish_rounds: int = poa_consensus.DEFAULT_POLISH_ROUNDS,
+    poa_window_size: int = poa_consensus.DEFAULT_WINDOW_SIZE,
+    poa_max_reads: int = poa_consensus.DEFAULT_MAX_POA_READS,
 ) -> str | None:
-    if method not in ("lamassemble", "racon"):
+    if method not in CONSENSUS_METHODS:
         raise ValueError(
-            f"Unknown consensus method '{method}'. Choose 'lamassemble' or 'racon'."
+            f"Unknown consensus method '{method}'. Choose one of "
+            f"{', '.join(repr(m) for m in CONSENSUS_METHODS)}."
         )
+
+    if method == "poa":
+        # abPOA + windowed-POA polishing run entirely on in-memory strings:
+        # no temporary reads/alignment files and no subprocesses.  Only the
+        # final consensus is written out, because final_consensus() aligns
+        # the cut reads back against it with minimap2.
+        if read_records is None:
+            read_records = list(SeqIO.parse(reads_fasta, "fasta"))
+        sequences = {rec.id: str(rec.seq) for rec in read_records}
+        stats = poa_consensus.PoaAssemblyStats()
+        consensus_sequence = poa_consensus.assemble_consensus_poa(
+            sequences=sequences,
+            name=name,
+            polish_rounds=poa_polish_rounds,
+            window_size=poa_window_size,
+            max_poa_reads=poa_max_reads,
+            stats=stats,
+        )
+        if consensus_sequence is None:
+            return None
+        if verbose:
+            log.info(f"POA consensus '{name}': {stats}")
+        with open(consensus_fasta_path, "w") as f:
+            SeqIO.write(
+                SeqRecord(Seq(consensus_sequence), id=name, description=""), f, "fasta"
+            )
+        return consensus_sequence
 
     with tempfile.TemporaryDirectory():
         if method == "racon":
@@ -1599,6 +1634,7 @@ def consensus_while_clustering(
                     representative_read=_representative,
                     tmp_dir_path=tmp_dir_path,
                     verbose=verbose,
+                    read_records=[pool[readname] for readname in chosen_reads],
                 )
 
                 if consensus_sequence is None:
@@ -1691,6 +1727,7 @@ def consensus_while_clustering(
                     representative_read=_representative,
                     tmp_dir_path=tmp_dir_path,
                     verbose=verbose,
+                    read_records=[pool[r] for r in _isolated_in_pool],
                 )
 
                 if consensus_sequence is not None:
@@ -1929,6 +1966,7 @@ def consensus_while_clustering_with_kmeans(
                     method=consensus_method,
                     representative_read=None,
                     verbose=verbose,
+                    read_records=[pool[readname] for readname in chosen_reads],
                 )
 
                 if consensus_sequence is None:
@@ -2003,6 +2041,7 @@ def consensus_while_clustering_with_kmeans(
                     method=consensus_method,
                     representative_read=None,
                     verbose=verbose,
+                    read_records=[pool[readname] for readname in rescue_reads],
                 )
 
                 if consensus_sequence is not None:
@@ -3468,9 +3507,13 @@ def get_consensus_parser(
     parser.add_argument(
         "--consensus-method",
         type=str,
-        choices=["lamassemble", "racon"],
+        choices=list(CONSENSUS_METHODS),
         default="lamassemble",
-        help="Method used for consensus assembly: 'lamassemble' (default) or 'racon'.",
+        help=(
+            "Method used for consensus assembly: 'lamassemble' (default), 'racon', "
+            "or 'poa' (abPOA draft plus in-memory windowed-POA polishing; needs no "
+            "matrix file and writes no temporary files)."
+        ),
     )
     parser.add_argument(
         "-t", "--threads", type=int, default=1, help="Number of threads to use."

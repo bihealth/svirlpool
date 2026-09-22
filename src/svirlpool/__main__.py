@@ -91,10 +91,14 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--consensus-method",
-        help="Method for consensus assembly: 'lamassemble' (default) or 'racon'.",
+        help=(
+            "Method for consensus assembly: 'lamassemble' (default), 'racon', or "
+            "'poa' (abPOA draft plus in-memory windowed-POA polishing; needs no "
+            "matrix file and writes no temporary files)."
+        ),
         required=False,
         type=str,
-        choices=["lamassemble", "racon"],
+        choices=["lamassemble", "racon", "poa"],
         default="lamassemble",
     )
     parser_run_wf.add_argument(
