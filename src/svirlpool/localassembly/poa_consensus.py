@@ -37,6 +37,8 @@ DEFAULT_MIN_OVERHANG = 50
 DEFAULT_MIN_EXTENSION_OVERLAP = 500
 DEFAULT_MIN_EXTENSION_IDENTITY = 0.70
 DEFAULT_END_TOLERANCE = 500
+# Reads used when ranking layout candidates against each other.
+DEFAULT_LAYOUT_SCORE_READS = 16
 
 _COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
@@ -240,12 +242,34 @@ def _primary_hit(aligner: mp.Aligner, seq: str):
     return next((h for h in aligner.map(seq) if h.is_primary), None)
 
 
-def layout_score(consensus: str, sequences: dict[str, str]) -> float:
-    """How many read bases the consensus explains, over all reads.
+def _score_sample(
+    sequences: dict[str, str], max_reads: int = DEFAULT_LAYOUT_SCORE_READS
+) -> list[str]:
+    """A deterministic, evenly spaced subset of the reads, for scoring only.
+
+    Every layout decision is a *ranking* between candidates, and a ranking
+    does not need every read: scoring against a sample the same way for each
+    candidate ranks them identically while mapping a fraction of the reads.
+    The sample is taken by name order so the same cluster always yields the
+    same consensus.
+    """
+    names = sorted(sequences)
+    if max_reads <= 0 or len(names) <= max_reads:
+        return [sequences[n] for n in names]
+    step = len(names) / max_reads
+    return [sequences[names[int(i * step)]] for i in range(max_reads)]
+
+
+def layout_score(consensus: str, sequences: dict[str, str] | list[str]) -> float:
+    """How many read bases the consensus explains.
 
     This is the objective every layout decision is judged against.  A longer
     consensus only helps if the extra sequence lets more read bases align;
     a chimeric join makes reads align in pieces and the score falls.
+
+    Pass a list (from :func:`_score_sample`) to score against a subset -- the
+    scale of the number then differs, but candidates stay comparable as long
+    as the same subset is used for all of them.
     """
     if len(consensus) == 0:
         return 0.0
@@ -255,28 +279,28 @@ def layout_score(consensus: str, sequences: dict[str, str]) -> float:
         return 0.0
     if not aligner:
         return 0.0
+    reads = sequences.values() if isinstance(sequences, dict) else sequences
     total = 0
-    for seq in sequences.values():
+    for seq in reads:
         hit = _primary_hit(aligner, seq)
         if hit is not None:
             total += hit.q_en - hit.q_st
     return float(total)
 
 
-def select_backbone(sequences: dict[str, str], n_candidates: int = 5) -> str:
+def select_backbone(sequences: dict[str, str], n_candidates: int = 4) -> str:
     """Pick the read that explains the most read bases, not simply the longest.
 
     The longest read of a cluster is often the one carrying an artefact -- an
     untrimmed adapter, a chimeric join, an over-expanded repeat array -- and
     seeding the layout with it propagates that artefact into the consensus.
-    Scoring the few longest candidates against the whole cluster costs one
-    minimap2 index each and picks the read the cluster actually agrees with.
     """
     ordered = sorted(sequences.values(), key=len, reverse=True)
     candidates = ordered[: max(1, n_candidates)]
     if len(candidates) == 1:
         return candidates[0]
-    return max(candidates, key=lambda c: layout_score(c, sequences))
+    sample = _score_sample(sequences)
+    return max(candidates, key=lambda c: layout_score(c, sample))
 
 
 def extend_backbone(
@@ -304,7 +328,8 @@ def extend_backbone(
     raise :func:`layout_score`.  The first round that does not is discarded
     and extension stops.
     """
-    best_score = layout_score(backbone, sequences)
+    sample = _score_sample(sequences)
+    best_score = layout_score(backbone, sample)
     for _ in range(max_rounds):
         try:
             aligner = mp.Aligner(seq=backbone, preset="map-ont", best_n=1)
@@ -341,7 +366,7 @@ def extend_backbone(
         else:
             break
 
-        score = layout_score(candidate, sequences)
+        score = layout_score(candidate, sample)
         if score <= best_score:
             # The join explained no extra read bases, so it was noise or a
             # repeat-phase slip.  Keep the shorter, coherent backbone.
@@ -545,7 +570,8 @@ def assemble_consensus_poa(
         log.warning(f"No backbone could be built for POA consensus '{name}'.")
         return None
 
-    backbone = max(candidates, key=lambda c: layout_score(c, oriented))
+    score_sample = _score_sample(oriented)
+    backbone = max(candidates, key=lambda c: layout_score(c, score_sample))
     if stats is not None:
         stats.draft_length = len(backbone)
         stats.backbone_from_poa = backbone is draft
