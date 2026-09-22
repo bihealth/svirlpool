@@ -74,6 +74,7 @@ filter_absolute=config["filter_absolute"]
 filter_normalized=config["filter_normalized"]
 min_cr_size=config["min_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
+cutoff_median_readcount_per_region=config.get("cutoff_median_readcount_per_region", 6.0)
 
 # consensus
 lamassemble_mat = config.get("lamassemble_mat", None)
@@ -96,7 +97,6 @@ log_level       = config.get("log_level", "INFO")
 merge_horizontally = config["cores_per_consensus"]
 
 # svs to vcf parameters
-min_alt_reads   = config["min_alt_reads"]
 #min_alt_fraction= config["min_alt_fraction"]
 single_evidence_gt = config.get("single_evidence_gt", False)
 
@@ -511,6 +511,7 @@ rule candidate_regions_signalstrength_to_crs:
         filter_absolute=filter_absolute,
         filter_normalized=filter_normalized,
         min_cr_size=min_cr_size,
+        cutoff_median_readcount_per_region=cutoff_median_readcount_per_region,
         bedgraph='QC/crs',
         buffer=cr_merge_buffer,
         dropped='crs.dropped.tsv.gz',
@@ -540,6 +541,7 @@ rule candidate_regions_signalstrength_to_crs:
         --filter-absolute {params.filter_absolute} \
         --filter-normalized {params.filter_normalized} \
         --min-cr-size {params.min_cr_size} \
+        --cutoff-median-readcount-per-region {params.cutoff_median_readcount_per_region} \
         --log-level {params.log_level} 2>&1 | tee -a {log}"""
 
 rule candidate_regions_QC_crs_to_bed:

@@ -149,6 +149,13 @@ def get_parser():
         default=0.06,
     )
     parser_run_wf.add_argument(
+        "--cutoff-median-readcount-per-region",
+        help="cutoff multiplier for median read count per candidate region. regions with excessive read counts are filtered out",
+        required=False,
+        type=float,
+        default=6.0,
+    )
+    parser_run_wf.add_argument(
         "--min-mapq",
         help="minimum mapping quality",
         required=False,
@@ -170,13 +177,6 @@ def get_parser():
         required=False,
         type=float,
         default=0.1,
-    )
-    parser_run_wf.add_argument(
-        "--min-alt-reads",
-        help="minimum alternative reads",
-        required=False,
-        type=int,
-        default=3,
     )
     parser_run_wf.add_argument(
         "--min-sv-size",
