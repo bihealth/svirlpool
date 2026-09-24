@@ -81,6 +81,10 @@ lamassemble_mat = config.get("lamassemble_mat", None)
 consensus_method = config.get("consensus_method", "lamassemble")
 max_padding_size = config.get("max_padding_size", 100000)
 max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
+# experimental: allele separation by read phasing (see localassembly/read_phasing.py)
+consensus_clustering_mode = config.get("consensus_clustering_mode", "legacy")
+phasing_flank = config.get("phasing_flank", 5000)
+phasing_fallback = config.get("phasing_fallback", "single")
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -667,6 +671,9 @@ rule consensus_consensus:
         consensus_method=consensus_method,
         max_padding_size=max_padding_size,
         max_consensus_copy_number=max_consensus_copy_number,
+        clustering_mode=consensus_clustering_mode,
+        phasing_flank=phasing_flank,
+        phasing_fallback=phasing_fallback,
     threads:
         get_consensus_threads
     conda:
@@ -701,6 +708,9 @@ rule consensus_consensus:
         -a {params.alignments} \
         --max-padding-size {params.max_padding_size} \
         --max-copy-number {params.max_consensus_copy_number} \
+        --clustering-mode {params.clustering_mode} \
+        --phasing-flank {params.phasing_flank} \
+        --phasing-fallback {params.phasing_fallback} \
         -o {output.container} \
         -t {threads} \
         --logfile {log.algorithm} \

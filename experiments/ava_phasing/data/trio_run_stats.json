@@ -1,0 +1,23 @@
+{
+ "containers": 2004,
+ "merged_windows": 844,
+ "merged_window_bp": 79941697,
+ "candidate_sites": 323315,
+ "median_dp_child_father_mother_at_candidates": [
+  19.0,
+  19.0,
+  19.0
+ ],
+ "site_filter_counts": {
+  "child_het": 96045,
+  "informative": 64876,
+  "both_het_uninformative": 15945,
+  "parent_ambiguous_af": 12861,
+  "multiallelic": 780,
+  "high_depth": 4,
+  "homopolymer_ge4": 10338,
+  "parent_low_dp": 810,
+  "mendel_inconsistent": 773
+ },
+ "sites_used": 54534
+}

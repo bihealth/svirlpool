@@ -233,6 +233,33 @@ def get_parser():
         default=4,
     )
     parser_run_wf.add_argument(
+        "--consensus-clustering-mode",
+        help="Experimental: how the reads of a candidate-region container are split into "
+        "alleles before assembly. 'legacy' (default): KMeans on summed indels, else spectral "
+        "clustering with k = local copy number. 'phased': phase the reads by the SNVs and SVs "
+        "in their all-vs-all alignments and build one consensus per allele found.",
+        required=False,
+        choices=("legacy", "phased"),
+        default="legacy",
+    )
+    parser_run_wf.add_argument(
+        "--phasing-flank",
+        help="Experimental: flank (bp) around the candidate regions to which reads are cut "
+        "for read phasing with --consensus-clustering-mode phased (default: 5000).",
+        required=False,
+        type=int,
+        default=5000,
+    )
+    parser_run_wf.add_argument(
+        "--phasing-fallback",
+        help="Experimental: with --consensus-clustering-mode phased, what to do when the "
+        "phasing finds fewer than two alleles: 'single' (default) one consensus from all "
+        "reads, 'legacy' the legacy clustering.",
+        required=False,
+        choices=("single", "legacy"),
+        default="single",
+    )
+    parser_run_wf.add_argument(
         "--rerun-triggers",
         help="Snakemake rerun triggers. Comma-separated list of triggers that cause a rule to be rerun. "
         "Allowed values: mtime, params, input, software-env, code. "

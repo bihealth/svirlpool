@@ -38,7 +38,7 @@ from sklearn.cluster import KMeans, SpectralClustering
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
-from . import consensus_class, consensus_lib
+from . import consensus_class, consensus_lib, read_phasing
 from . import read_cache as read_cache_mod
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -423,6 +423,7 @@ def get_read_alignment_intervals_in_cr(
     crs: list[datatypes.CandidateRegion],
     buffer_clipped_length: int,
     dict_alignments: dict[int, list[pysam.AlignedSegment]],
+    flank: int | None = None,
 ) -> dict[str, list[tuple[int, int, str, int, int]]]:
     """
     Extract read alignment intervals in candidate regions.
@@ -446,8 +447,10 @@ def get_read_alignment_intervals_in_cr(
     # Reads are cut to the CR extent widened by CR_CUT_FLANK: a CR that lies
     # inside a tandem repeat otherwise yields pure-repeat read pieces with no
     # unique anchor, which lamassemble cannot link to each other.
+    if flank is None:
+        flank = CR_CUT_FLANK
     cr_extents = {
-        cr.crID: (max(0, cr.referenceStart - CR_CUT_FLANK), cr.referenceEnd + CR_CUT_FLANK)
+        cr.crID: (max(0, cr.referenceStart - flank), cr.referenceEnd + flank)
         for cr in crs
     }
     # get the maximum insertion size of all original alignments in the candidate regions
@@ -2063,6 +2066,172 @@ def consensus_while_clustering_with_kmeans(
     return result
 
 
+def consensus_from_clusters(
+    samplename: str,
+    clusters: dict[int, list[str]],
+    pool: dict[str, SeqRecord],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    lamassemble_mat: Path | str | None,
+    consensus_method: str,
+    meta: dict[int, dict[str, str | int | float]],
+    threads: int = 1,
+    tmp_dir_path: Path | str | None = None,
+    timeout: int = 120,
+    verbose: bool = False,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Assemble one consensus per given read cluster.
+
+    ``meta[cluster_id]`` is stored as the consensus' ``clustering_meta_data``.
+    Reads of a cluster whose assembly fails are left unused (they are re-added
+    to the other consensuses by alignment later).
+    """
+    crIDs = [cr.crID for cr in candidate_regions.values()]
+    original_regions = [
+        (cr.chr, cr.referenceStart, cr.referenceEnd)
+        for cr in candidate_regions.values()
+    ]
+    result: dict[str, consensus_class.Consensus] = {}
+    try:
+        with tempfile.TemporaryDirectory(dir=tmp_dir_path) as tmp_dir:
+            for cluster_id, readnames in sorted(clusters.items()):
+                chosen = [rn for rn in readnames if rn in pool]
+                if len(chosen) == 0:
+                    continue
+                consensus_fasta = Path(tmp_dir) / f"consensus.phased.{cluster_id}.fasta"
+                reads_fasta = Path(tmp_dir) / f"reads.phased.{cluster_id}.fasta"
+                with open(reads_fasta, "w") as f:
+                    SeqIO.write([pool[rn] for rn in chosen], f, "fasta")
+                consensus_name = f"{min(crIDs)}.{cluster_id}"
+                consensus_sequence = assemble_consensus(
+                    lamassemble_mat=lamassemble_mat,
+                    name=consensus_name,
+                    reads_fasta=reads_fasta,
+                    consensus_fasta_path=consensus_fasta,
+                    threads=threads,
+                    timeout=timeout,
+                    method=consensus_method,
+                    representative_read=None,
+                    verbose=verbose,
+                )
+                if consensus_sequence is None:
+                    log.warning(
+                        f"consensus assembly failed for phased cluster {cluster_id} "
+                        f"with {len(chosen)} reads. Skipping this cluster."
+                    )
+                    continue
+                consensus = final_consensus(
+                    samplename=samplename,
+                    min_indel_size=8,
+                    min_bnd_size=100,
+                    reads_fasta=reads_fasta,
+                    consensus_fasta_path=consensus_fasta,
+                    consensus_sequence=consensus_sequence,
+                    ID=consensus_name,
+                    crIDs=crIDs,
+                    original_regions=original_regions,
+                    threads=threads,
+                    verbose=verbose,
+                    tmp_dir_path=Path(tmp_dir),
+                )
+                if consensus is None:
+                    log.warning(
+                        f"final consensus generation failed for phased cluster "
+                        f"{cluster_id} with {len(chosen)} reads. Skipping this cluster."
+                    )
+                    continue
+                # a fresh dict: the attrs default is shared between instances
+                consensus.clustering_meta_data = dict(meta.get(cluster_id, {}))
+                result[consensus_name] = consensus
+    except Exception as e:
+        log.warning(f"consensus_from_clusters failed with exception: {e}. Returning None.")
+        return None
+    return result or None
+
+
+def consensus_while_phasing(
+    samplename: str,
+    alns: dict[int, list[pysam.AlignedSegment]],
+    read_records: dict[str, SeqRecord],
+    cutreads: dict[str, SeqRecord],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    buffer_clipped_length: int,
+    lamassemble_mat: Path | str | None,
+    consensus_method: str,
+    phasing_flank: int,
+    phasing_fallback: str,
+    threads: int = 1,
+    tmp_dir_path: Path | str | None = None,
+    timeout: int = 120,
+    verbose: bool = False,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Experimental: one consensus per haplotype found by read phasing.
+
+    The reads are phased on their pieces cut to the candidate regions +-
+    ``phasing_flank`` (see ``read_phasing``); the number of consensuses is the
+    number of alleles the phasing finds, not the local copy number.  Each
+    consensus is still assembled from the reads cut to the candidate regions.
+    When the phasing finds fewer than two alleles, ``phasing_fallback``
+    decides: "single" assembles one consensus from all reads, "legacy" returns
+    None so that the caller runs the legacy clustering.
+    """
+    intervals = get_read_alignment_intervals_in_cr(
+        crs=list(candidate_regions.values()),
+        dict_alignments=alns,
+        buffer_clipped_length=buffer_clipped_length,
+        flank=phasing_flank,
+    )
+    phasing_reads = trim_reads(
+        dict_alignments=alns,
+        intervals=get_max_extents_of_read_alignments_on_cr(intervals),
+        read_records=read_records,
+    )
+    phasing_reads = {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}
+    phasing = read_phasing.phase_reads(
+        reads=phasing_reads,
+        threads=threads,
+        timeout=timeout,
+        tmp_dir_path=tmp_dir_path,
+    )
+    base_meta: dict[str, str | int | float] = {
+        "method": "phased",
+        "phasing_status": phasing.status,
+        "n_alleles": phasing.n_alleles,
+        "n_snv_sites": phasing.n_snv_sites,
+        "n_sv_sites": phasing.n_sv_sites,
+        "n_low_quality": len(phasing.low_quality),
+        "n_unassigned": len(phasing.unassigned),
+    }
+    if phasing.status == "phased":
+        clusters = phasing.clusters()
+    elif phasing_fallback == "single":
+        low_quality = set(phasing.low_quality)
+        clusters = {0: sorted(rn for rn in cutreads if rn not in low_quality)}
+        base_meta["method"] = "phased_single"
+    else:
+        log.info(
+            f"read phasing found {phasing.n_alleles} allele(s) "
+            f"(status {phasing.status}); falling back to the legacy clustering."
+        )
+        return None
+    meta = {
+        cid: base_meta | {"haplotype": cid, "n_reads_phased": len(rns)}
+        for cid, rns in clusters.items()
+    }
+    return consensus_from_clusters(
+        samplename=samplename,
+        clusters=clusters,
+        pool=cutreads,
+        candidate_regions=candidate_regions,
+        lamassemble_mat=lamassemble_mat,
+        consensus_method=consensus_method,
+        meta=meta,
+        threads=threads,
+        tmp_dir_path=tmp_dir_path,
+        timeout=timeout,
+        verbose=verbose,
+    )
+
+
 def add_unaligned_reads_to_consensuses_inplace(
     samplename: str,
     consensus_objects: dict[str, consensus_class.Consensus],
@@ -2897,6 +3066,9 @@ def process_consensus_container(
     max_intra_distance: float = -1.0,
     cn_override: int | None = None,
     max_copy_number_threshold: int = 4,
+    clustering_mode: str = "legacy",
+    phasing_flank: int = 5000,
+    phasing_fallback: str = "single",
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -2987,21 +3159,39 @@ def process_consensus_container(
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
 
-    res = consensus_while_clustering_with_kmeans(
-        samplename=samplename,
-        dict_summed_indels=dict_summed_indels,
-        lamassemble_mat=lamassemble_mat,
-        pool=cutreads,
-        candidate_regions=crs_dict,
-        max_k=max_copy_number,
-        variance_threshold=29.0,
-        distance_threshold=29.0,
-        threads=threads,
-        tmp_dir_path=tmp_dir_path,
-        timeout=timeout,
-        verbose=verbose,
-        consensus_method=consensus_method,
-    )
+    if clustering_mode == "phased":
+        res = consensus_while_phasing(
+            samplename=samplename,
+            alns=alns,
+            read_records=read_records,
+            cutreads=cutreads,
+            candidate_regions=crs_dict,
+            buffer_clipped_length=buffer_clipped_length,
+            lamassemble_mat=lamassemble_mat,
+            consensus_method=consensus_method,
+            phasing_flank=phasing_flank,
+            phasing_fallback=phasing_fallback,
+            threads=threads,
+            tmp_dir_path=tmp_dir_path,
+            timeout=timeout,
+            verbose=verbose,
+        )
+    if not res:
+        res = consensus_while_clustering_with_kmeans(
+            samplename=samplename,
+            dict_summed_indels=dict_summed_indels,
+            lamassemble_mat=lamassemble_mat,
+            pool=cutreads,
+            candidate_regions=crs_dict,
+            max_k=max_copy_number,
+            variance_threshold=29.0,
+            distance_threshold=29.0,
+            threads=threads,
+            tmp_dir_path=tmp_dir_path,
+            timeout=timeout,
+            verbose=verbose,
+            consensus_method=consensus_method,
+        )
     if not res:
         res = consensus_while_clustering(
             samplename=samplename,
@@ -3206,6 +3396,9 @@ def crs_containers_to_consensus(
     cn_override: int | None = None,
     max_padding_size: int = 30000,
     max_copy_number_threshold: int = 4,
+    clustering_mode: str = "legacy",
+    phasing_flank: int = 5000,
+    phasing_fallback: str = "single",
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3303,6 +3496,9 @@ def crs_containers_to_consensus(
                     consensus_method=consensus_method,
                     max_padding_size=max_padding_size,
                     max_copy_number_threshold=max_copy_number_threshold,
+                    clustering_mode=clustering_mode,
+                    phasing_flank=phasing_flank,
+                    phasing_fallback=phasing_fallback,
                 )
 
                 # Validate consensuses immediately so the offending container
@@ -3421,6 +3617,9 @@ def run_consensus_script(args, **kwargs):
         consensus_method=args.consensus_method,
         max_padding_size=args.max_padding_size,
         max_copy_number_threshold=args.max_copy_number,
+        clustering_mode=args.clustering_mode,
+        phasing_flank=args.phasing_flank,
+        phasing_fallback=args.phasing_fallback,
     )
 
 
@@ -3532,6 +3731,31 @@ def get_consensus_parser(
         "too complex, producing no consensus (and therefore no SV calls) for that region. "
         "Raise (e.g. 6-8) to recover SVs in higher-copy/complex tandem-repeat regions at the "
         "cost of runtime and potential noise.",
+    )
+    parser.add_argument(
+        "--clustering-mode",
+        choices=("legacy", "phased"),
+        default="legacy",
+        help="Experimental: how the reads of a container are split into alleles. 'legacy' "
+        "(default): KMeans on summed indels, else spectral clustering of the all-vs-all SV "
+        "signals with k = local copy number. 'phased': phase the reads by the SNVs and SVs in "
+        "their all-vs-all alignments (reads cut to the region +- --phasing-flank) and build "
+        "one consensus per allele found; the copy number is not used for the allele count.",
+    )
+    parser.add_argument(
+        "--phasing-flank",
+        type=int,
+        default=5000,
+        help="Experimental: flank (bp) around the candidate regions to which reads are cut "
+        "for --clustering-mode phased (default: 5000).",
+    )
+    parser.add_argument(
+        "--phasing-fallback",
+        choices=("single", "legacy"),
+        default="single",
+        help="Experimental: with --clustering-mode phased, what to do when the phasing finds "
+        "fewer than two alleles: 'single' (default) one consensus from all reads, 'legacy' "
+        "the legacy clustering.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",
