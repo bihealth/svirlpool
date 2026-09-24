@@ -761,6 +761,13 @@ def align_reads_to_record(
 # cmd_lamassembly = "lamassemble --name {consensus_dict['ID']} --all -P {threads} -f fa -s 0 {strlamassemble_mat)} {tmp_reads.name}" # shoul dbe written to the opened tmp consensus file
 
 
+#: lamassemble/LAST's -m: max initial matches per query position. LAST's default
+#: of 5 drops every seed in a short tandem repeat, where each k-mer matches many
+#: times, so the reads cannot be linked and lamassemble silently emits an empty
+#: consensus ("using 1 out of 14 sequences").
+LAMASSEMBLE_MAX_INITIAL_MATCHES = 50
+
+
 def make_consensus_with_lamassemble(
     lamassemble_mat: Path,
     reads_file: Path,
@@ -774,7 +781,7 @@ def make_consensus_with_lamassemble(
     # try to run lamassemble. if it fails or the output is empty, return None.
     # lamassemble writes its output to the command line, so the output should be caught from there.
     # cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
-    cmd_lamassemble = f"lamassemble --name {consensus_name} -P {threads} -f fa -s 2 -g 67 {str(lamassemble_mat)} {str(reads_file)}"
+    cmd_lamassemble = f"lamassemble --name {consensus_name} -P {threads} -f fa -s 2 -g 67 -m {LAMASSEMBLE_MAX_INITIAL_MATCHES} {str(lamassemble_mat)} {str(reads_file)}"
     log.info(
         f"Running lamassemble with command:\n{cmd_lamassemble}\nwith timeout of {timeout} seconds"
     )
