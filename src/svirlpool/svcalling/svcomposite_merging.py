@@ -316,6 +316,53 @@ def _similar_size(
     )
 
 
+#: Experimental, set once from the CLI before any worker process is forked.
+#: When on, vertical merging treats the consensus assemblies of one sample and
+#: candidate region as the haplotypes they are: two patterns of the SAME assembly
+#: are distinct events and never merge; two patterns of SIBLING assemblies (same
+#: sample, same crID, different consensus) are two haplotypes' alleles and merge
+#: only if their sizes agree within SIBLING_SIZE_TOLERANCE, with no complexity
+#: allowance and no population arm.
+HAPLOTYPE_AWARE_MERGE: bool = False
+SIBLING_SIZE_TOLERANCE: float = 0.1
+
+
+def _assembly_relation(a: SVcomposite, b: SVcomposite) -> str:
+    """'same_assembly', 'sibling_assembly' or 'independent'."""
+    cons_a = {(p.samplename, p.consensusID) for p in a.svPatterns}
+    cons_b = {(p.samplename, p.consensusID) for p in b.svPatterns}
+    if cons_a & cons_b:
+        return "same_assembly"
+    crs_a = {(s, c.split(".")[0]) for s, c in cons_a}
+    crs_b = {(s, c.split(".")[0]) for s, c in cons_b}
+    if crs_a & crs_b:
+        return "sibling_assembly"
+    return "independent"
+
+
+def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
+    """Decide the pair outright under HAPLOTYPE_AWARE_MERGE, or return None."""
+    if not HAPLOTYPE_AWARE_MERGE:
+        return None
+    relation = _assembly_relation(a, b)
+    if relation == "same_assembly":
+        log.debug(
+            f"VERTICAL_MERGE|{svtype}|REJECT_SAME_ASSEMBLY	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}"
+        )
+        return False
+    if relation == "sibling_assembly":
+        size_a, size_b = abs(a.get_size()), abs(b.get_size())
+        ok = abs(size_a - size_b) <= SIBLING_SIZE_TOLERANCE * max(size_a, size_b)
+        log.debug(
+            f"VERTICAL_MERGE|{svtype}|{'ACCEPT' if ok else 'REJECT_SIBLING_SIZE'}	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
+            f"size_a={size_a}	size_b={size_b}	sibling_tolerance={SIBLING_SIZE_TOLERANCE}"
+        )
+        if not ok:
+            return False
+        # sizes agree: the remaining checks (proximity, k-mers) still apply
+    return None
+
+
 def can_merge_svComposites_insertions(
     a: SVcomposite,
     b: SVcomposite,
@@ -353,6 +400,11 @@ def can_merge_svComposites_insertions(
                 raise ValueError(
                     "can_merge_svComposites_insertions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge."
                 )
+
+    _gate = _haplotype_gate(a, b, "INS")
+    if _gate is False:
+        return False
+    _sibling = HAPLOTYPE_AWARE_MERGE and _assembly_relation(a, b) == "sibling_assembly"
 
     are_near: bool = a.overlaps_any(
         b, tolerance_radius=max(near, max(a.get_size(), b.get_size()))
@@ -408,6 +460,8 @@ def can_merge_svComposites_insertions(
             f"K-mer similarity: {similarity:.3f}, threshold: {min_kmer_overlap}, similar_kmers: {similar_insertion_kmers}"
         )
 
+    if _sibling:
+        similar_size = True  # decided by _haplotype_gate
     if not similar_size:
         log.debug(
             f"VERTICAL_MERGE|INS|REJECT_SIZE	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
@@ -472,6 +526,11 @@ def can_merge_svComposites_deletions(
                     f"can_merge_svComposites_deletions: SVprimitive must have a genotypeMeasurement with supporting_reads_start to merge svPrimitive: {svPrimitive}\nsvPattern: {svPattern}"
                 )
 
+    _gate = _haplotype_gate(a, b, "DEL")
+    if _gate is False:
+        return False
+    _sibling = HAPLOTYPE_AWARE_MERGE and _assembly_relation(a, b) == "sibling_assembly"
+
     are_near: bool = a.overlaps_any(
         b, tolerance_radius=near
     )  # eiter spatially close or share at least one repeatID
@@ -523,6 +582,8 @@ def can_merge_svComposites_deletions(
             f"K-mer similarity: {similarity:.3f}, threshold: {min_kmer_overlap}, similar_kmers: {similar_deletion_kmers}"
         )
 
+    if _sibling:
+        similar_size = True  # decided by _haplotype_gate
     if not similar_size:
         log.debug(
             f"VERTICAL_MERGE|DEL|REJECT_SIZE	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"

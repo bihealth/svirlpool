@@ -1987,6 +1987,12 @@ def _parse_consensusID_parts(
 #: reads, so the resulting call does not earn an unbounded quality.
 MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING = 30
 
+#: Experimental, set from the CLI. "all": the original rule, any 1/1 call touching
+#: a multi-assembly crID becomes 0/1. "subset": only calls absent from at least
+#: one of the crID's assemblies -- a call carried by every assembly is evidence
+#: FOR homozygosity. "off": no override.
+MULTI_ASSEMBLY_OVERRIDE: str = "all"
+
 
 def _apply_multi_assembly_override(
     gt: "Genotype", excluded: str, new_genotype: str
@@ -2080,7 +2086,7 @@ def correct_genotypes_for_multi_assembly_loci(
     # Step 2: Identify (samplename, crID) pairs with multiple assemblies
     multi_assembly_keys = {key for key, subids in cr_subids.items() if len(subids) >= 2}
 
-    if not multi_assembly_keys:
+    if not multi_assembly_keys or MULTI_ASSEMBLY_OVERRIDE == "off":
         return svCalls
 
     # Step 3: For each affected SVcall + sample, override 1/1 → 0/1
@@ -2095,6 +2101,15 @@ def correct_genotypes_for_multi_assembly_loci(
             gt = svcall.genotypes.get(samplename)
             if gt is None:
                 continue
+            if MULTI_ASSEMBLY_OVERRIDE == "subset":
+                call_subids = {
+                    parts[2]
+                    for cid in svcall.consensusIDs
+                    if (parts := _parse_consensusID_parts(cid)) is not None
+                    and (parts[0], parts[1]) == key
+                }
+                if call_subids >= cr_subids[key]:
+                    continue
             if gt.genotype == "1/1":
                 log.info(
                     "GENOTYPE_CORRECTION|MULTI_ASSEMBLY|%s|crID=%d|subIDs=%s|%s: "
@@ -2698,6 +2713,14 @@ def multisample_sv_calling(
 
 
 def run(args) -> None:
+    # Experimental switches: module-level, set before any worker is forked.
+    global MULTI_ASSEMBLY_OVERRIDE
+    from . import svcomposite_merging as _merging
+
+    _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", False)
+    _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
+    MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "all")
+
     log_level = getattr(logging, args.log_level)
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     logfile = getattr(args, "logfile", None)
@@ -2891,6 +2914,24 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         choices=REPEAT_COLLAPSE_MODES,
         default="proximal",
         help="Which indels of one consensus that share a tandem-repeat ID are merged into one call: 'all' (any, INS with DEL, at any distance), 'same-type', 'adjacent' (same type and at most --repeat-collapse-max-gap bp apart on the consensus), 'proximal' (as 'adjacent', without requiring a shared repeatID), or 'none' (default: proximal). 'all' is the pre-v0.3 behaviour; on HG002 20x it cost ~3 points of truvari F1 by joining distinct alleles of one tandem repeat into a single call.",
+    )
+    parser.add_argument(
+        "--haplotype-aware-merge",
+        action="store_true",
+        default=False,
+        help="Experimental: never vertically merge two patterns of one consensus assembly, and merge patterns of two assemblies of the same sample and candidate region only if their sizes agree within --sibling-size-tolerance.",
+    )
+    parser.add_argument(
+        "--sibling-size-tolerance",
+        type=float,
+        default=0.1,
+        help="Experimental: size tolerance (fraction of the larger) for --haplotype-aware-merge (default: 0.1).",
+    )
+    parser.add_argument(
+        "--multi-assembly-override",
+        choices=("all", "subset", "off"),
+        default="all",
+        help="Experimental: which 1/1 calls at multi-assembly loci are forced to 0/1 (default: all).",
     )
     parser.add_argument(
         "--repeat-collapse-max-gap",
