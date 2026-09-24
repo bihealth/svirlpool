@@ -443,7 +443,13 @@ def get_read_alignment_intervals_in_cr(
                 f"aln {aln} is not a pysam.AlignedSegment"
             )
     dict_all_intervals: dict[str, list[tuple[int, int, str, int, int]]] = {}
-    cr_extents = {cr.crID: (cr.referenceStart, cr.referenceEnd) for cr in crs}
+    # Reads are cut to the CR extent widened by CR_CUT_FLANK: a CR that lies
+    # inside a tandem repeat otherwise yields pure-repeat read pieces with no
+    # unique anchor, which lamassemble cannot link to each other.
+    cr_extents = {
+        cr.crID: (max(0, cr.referenceStart - CR_CUT_FLANK), cr.referenceEnd + CR_CUT_FLANK)
+        for cr in crs
+    }
     # get the maximum insertion size of all original alignments in the candidate regions
     max_insertion_size = max(
         [sv.size for cr in crs for sv in cr.sv_signals if sv.sv_type == 0], default=0
@@ -766,6 +772,9 @@ def align_reads_to_record(
 #: times, so the reads cannot be linked and lamassemble silently emits an empty
 #: consensus ("using 1 out of 14 sequences").
 LAMASSEMBLE_MAX_INITIAL_MATCHES = 50
+
+#: Flank (bp) added on both sides of a candidate region when cutting reads.
+CR_CUT_FLANK = 200
 
 
 def make_consensus_with_lamassemble(
