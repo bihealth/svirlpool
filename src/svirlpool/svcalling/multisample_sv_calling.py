@@ -186,13 +186,41 @@ def binary_svpattern_index_mask(
 #     return covtrees
 
 
+REPEAT_COLLAPSE_MODES = ("all", "same-type", "adjacent", "proximal", "none")
+
+
 # the horizontal merge allows to merge inter with intra alignment SVpatterns
 # this really only concerns insertions and deletions, which can be split across multiple aligned fragments
 def svPatterns_to_horizontally_merged_svComposites(
     svPatterns: list[SVpatterns.SVpatternType],
     sv_types: set[type[SVpatterns.SVpatternType]],
-    collapse_repeats: bool = True,
+    collapse_repeats: bool | str = "proximal",
+    collapse_max_gap: int = 50,
 ) -> list[SVcomposite]:
+    """Merge the indels of one consensus that share a tandem-repeat ID.
+
+    ``collapse_repeats`` selects which pairs are unioned:
+
+    * ``"all"`` (``True``): any two indels sharing a repeatID, INS with DEL
+      included, transitively and at any distance on the consensus.
+    * ``"same-type"``: as ``"all"``, but INS only with INS and DEL only with DEL.
+    * ``"adjacent"``: same type, and at most ``collapse_max_gap`` bp apart on
+      the consensus -- the fragments of one event that the consensus-to-
+      reference alignment split, not distinct events in the same repeat.
+    * ``"proximal"``: as ``"adjacent"``, but without requiring a shared
+      repeatID. The alignment fragments an event in the same way outside the
+      TRF annotation, and a fragment below the minimum SV size is otherwise
+      lost from the call.
+    * ``"none"`` (``False``): no union.
+    """
+    if collapse_repeats is True:
+        collapse_repeats = "all"
+    elif collapse_repeats is False:
+        collapse_repeats = "none"
+    if collapse_repeats not in REPEAT_COLLAPSE_MODES:
+        raise ValueError(
+            f"collapse_repeats must be one of {REPEAT_COLLAPSE_MODES}, got {collapse_repeats!r}"
+        )
 
     result: list[SVcomposite] = []
     if len(svPatterns) == 0:
@@ -253,10 +281,21 @@ def svPatterns_to_horizontally_merged_svComposites(
         uf_group = UnionFind(range(len(group)))
 
         # this is the point where horizontal merge can be prevented by skipping the union step
-        if collapse_repeats:
+        if collapse_repeats != "none":
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
-                    if group[i].repeatIDs.intersection(group[j].repeatIDs):
+                    if collapse_repeats != "all" and type(group[i]) is not type(
+                        group[j]
+                    ):
+                        continue
+                    if (
+                        collapse_repeats in ("adjacent", "proximal")
+                        and group[j].read_start - group[i].read_end > collapse_max_gap
+                    ):
+                        continue
+                    if collapse_repeats == "proximal" or group[
+                        i
+                    ].repeatIDs.intersection(group[j].repeatIDs):
                         # TODO: Edge case, where indels in duplicated overlapping aligned fragments are concatenated horizontally
                         log.debug(
                             f"HORIZONTAL_MERGE|UNION_BY_REPEATID	crID={crID}	consensusID={_consensusID}	"
@@ -287,7 +326,8 @@ def generate_svComposites_from_dbs(
     input: list[str | Path],
     sv_types: set[type[SVpatterns.SVpatternType]],
     candidate_regions_filter: dict[str, set[int]] | None = None,
-    collapse_repeats: bool = True,
+    collapse_repeats: bool | str = "proximal",
+    collapse_max_gap: int = 50,
 ) -> list[SVcomposite]:
     log.debug("HORIZONTAL_MERGE|LOAD_DBS|n_dbs=%d", len(input))
     svComposites: list[SVcomposite] = []
@@ -329,7 +369,10 @@ def generate_svComposites_from_dbs(
 
         svComposites.extend(
             svPatterns_to_horizontally_merged_svComposites(
-                svPatterns, sv_types=sv_types, collapse_repeats=collapse_repeats
+                svPatterns,
+                sv_types=sv_types,
+                collapse_repeats=collapse_repeats,
+                collapse_max_gap=collapse_max_gap,
             )
         )
 
@@ -2421,7 +2464,8 @@ def multisample_sv_calling(
     tmp_dir_path: Path | str | None = None,
     candidate_regions_file: Path | str | None = None,
     skip_covtrees: bool = False,
-    collapse_repeats: bool = True,
+    collapse_repeats: bool | str = "proximal",
+    collapse_max_gap: int = 50,
     single_evidence_gt: bool = False,
     min_alt_reads: int = 3,
     genotype_breakpoint_margin: int | None = None,
@@ -2520,6 +2564,7 @@ def multisample_sv_calling(
         sv_types=sv_types_set,
         candidate_regions_filter=candidate_regions_filter,
         collapse_repeats=collapse_repeats,
+        collapse_max_gap=collapse_max_gap,
     )
     if verbose:
         svtype_counts: dict[str, int] = {}
@@ -2692,7 +2737,10 @@ def run(args) -> None:
         verbose=args.verbose,
         candidate_regions_file=args.candidate_regions_file,
         skip_covtrees=args.skip_covtrees,
-        collapse_repeats=not args.dont_collapse_repeats,
+        collapse_repeats=(
+            "none" if args.dont_collapse_repeats else args.repeat_collapse_mode
+        ),
+        collapse_max_gap=args.repeat_collapse_max_gap,
         single_evidence_gt=args.single_evidence_gt,
         min_alt_reads=args.min_alt_reads,
         genotype_breakpoint_margin=args.genotype_breakpoint_margin,
@@ -2834,9 +2882,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--dont-collapse-repeats",
-        help="Disable merging of indels with the same repeatIDs during horizontal merge.",
+        help="Disable merging of indels with the same repeatIDs during horizontal merge. Same as --repeat-collapse-mode none.",
         action="store_true",
         default=False,
+    )
+    parser.add_argument(
+        "--repeat-collapse-mode",
+        choices=REPEAT_COLLAPSE_MODES,
+        default="proximal",
+        help="Which indels of one consensus that share a tandem-repeat ID are merged into one call: 'all' (any, INS with DEL, at any distance), 'same-type', 'adjacent' (same type and at most --repeat-collapse-max-gap bp apart on the consensus), 'proximal' (as 'adjacent', without requiring a shared repeatID), or 'none' (default: proximal). 'all' is the pre-v0.3 behaviour; on HG002 20x it cost ~3 points of truvari F1 by joining distinct alleles of one tandem repeat into a single call.",
+    )
+    parser.add_argument(
+        "--repeat-collapse-max-gap",
+        type=int,
+        default=50,
+        help="Maximum distance on the consensus between two indels merged by --repeat-collapse-mode adjacent or proximal (default: 50).",
     )
     parser.add_argument(
         "--verbose", help="Enable verbose output.", action="store_true", default=False
