@@ -1,0 +1,28 @@
+# Extra variants for /home/mayv_c/development/svp_improvements, passed with
+#   bash run.sh --configfile <this file>
+# (merged into config/config.yaml; that file is not edited).
+variants:
+  flank200_subset:
+    manifest: /home/mayv_c/development/svirlpool-exp-flank/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: "--haplotype-aware-merge --multi-assembly-override subset"
+    db_from: flank200
+  ava_phase:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ava-phasing/pyproject.toml
+    pixi_env: dev
+    run_flags: "--consensus-clustering-mode phased"
+    call_flags: "--multi-assembly-override subset"
+  ava_phase_ovall:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ava-phasing/pyproject.toml
+    pixi_env: dev
+    run_flags: "--consensus-clustering-mode phased"
+    call_flags: ""
+    db_from: ava_phase
+  # v2: phasing flank 10 kb, low-quality cut 3x / +5 points (ac17af6)
+  ava_phase2:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ava-phasing/pyproject.toml
+    pixi_env: dev
+    run_flags: "--consensus-clustering-mode phased"
+    call_flags: "--multi-assembly-override subset"
+active_variants: [flank200, flank200_subset, ava_phase, ava_phase_ovall, ava_phase2]
