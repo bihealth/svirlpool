@@ -2717,7 +2717,7 @@ def run(args) -> None:
     global MULTI_ASSEMBLY_OVERRIDE
     from . import svcomposite_merging as _merging
 
-    _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", False)
+    _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
     MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "all")
 
@@ -2917,15 +2917,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--haplotype-aware-merge",
-        action="store_true",
-        default=False,
-        help="Experimental: never vertically merge two patterns of one consensus assembly, and merge patterns of two assemblies of the same sample and candidate region only if their sizes agree within --sibling-size-tolerance.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Never vertically merge two patterns of one consensus assembly, and merge patterns of two assemblies of the same sample and candidate region only if their sizes agree within --sibling-size-tolerance (default: on). --no-haplotype-aware-merge restores the previous merge, which on HG002 20x cost ~3 points of truvari F1.",
     )
     parser.add_argument(
         "--sibling-size-tolerance",
         type=float,
         default=0.1,
-        help="Experimental: size tolerance (fraction of the larger) for --haplotype-aware-merge (default: 0.1).",
+        help="Size tolerance (fraction of the larger) for --haplotype-aware-merge (default: 0.1).",
     )
     parser.add_argument(
         "--multi-assembly-override",

@@ -317,13 +317,13 @@ def _similar_size(
 
 
 #: Experimental, set once from the CLI before any worker process is forked.
-#: When on, vertical merging treats the consensus assemblies of one sample and
+#: When on (the default), vertical merging treats the consensus assemblies of one sample and
 #: candidate region as the haplotypes they are: two patterns of the SAME assembly
 #: are distinct events and never merge; two patterns of SIBLING assemblies (same
 #: sample, same crID, different consensus) are two haplotypes' alleles and merge
 #: only if their sizes agree within SIBLING_SIZE_TOLERANCE, with no complexity
 #: allowance and no population arm.
-HAPLOTYPE_AWARE_MERGE: bool = False
+HAPLOTYPE_AWARE_MERGE: bool = True
 SIBLING_SIZE_TOLERANCE: float = 0.1
 
 
