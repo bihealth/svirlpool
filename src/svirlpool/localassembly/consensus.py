@@ -3067,7 +3067,7 @@ def process_consensus_container(
     cn_override: int | None = None,
     max_copy_number_threshold: int = 4,
     clustering_mode: str = "legacy",
-    phasing_flank: int = 5000,
+    phasing_flank: int = 10000,
     phasing_fallback: str = "single",
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
@@ -3397,7 +3397,7 @@ def crs_containers_to_consensus(
     max_padding_size: int = 30000,
     max_copy_number_threshold: int = 4,
     clustering_mode: str = "legacy",
-    phasing_flank: int = 5000,
+    phasing_flank: int = 10000,
     phasing_fallback: str = "single",
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
@@ -3745,9 +3745,9 @@ def get_consensus_parser(
     parser.add_argument(
         "--phasing-flank",
         type=int,
-        default=5000,
+        default=10000,
         help="Experimental: flank (bp) around the candidate regions to which reads are cut "
-        "for --clustering-mode phased (default: 5000).",
+        "for --clustering-mode phased (default: 10000).",
     )
     parser.add_argument(
         "--phasing-fallback",

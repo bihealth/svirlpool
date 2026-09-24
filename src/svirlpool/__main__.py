@@ -245,10 +245,10 @@ def get_parser():
     parser_run_wf.add_argument(
         "--phasing-flank",
         help="Experimental: flank (bp) around the candidate regions to which reads are cut "
-        "for read phasing with --consensus-clustering-mode phased (default: 5000).",
+        "for read phasing with --consensus-clustering-mode phased (default: 10000).",
         required=False,
         type=int,
-        default=5000,
+        default=10000,
     )
     parser_run_wf.add_argument(
         "--phasing-fallback",

@@ -83,7 +83,7 @@ max_padding_size = config.get("max_padding_size", 100000)
 max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 # experimental: allele separation by read phasing (see localassembly/read_phasing.py)
 consensus_clustering_mode = config.get("consensus_clustering_mode", "legacy")
-phasing_flank = config.get("phasing_flank", 5000)
+phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
 
 # min mapq

@@ -73,8 +73,8 @@ class PhasingParams:
     sv_pad: int = 50
     min_clip: int = 100
     # reads
-    lowq_factor: float = 2.5
-    lowq_min_excess: float = 0.02
+    lowq_factor: float = 3.0
+    lowq_min_excess: float = 0.05
     # clustering
     error_rate: float = 0.1
     min_group: int = 3

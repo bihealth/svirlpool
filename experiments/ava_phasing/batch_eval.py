@@ -90,7 +90,8 @@ def run_one(args):
     labels = proto.correlation_cluster(W)
     if kw_get(kw, "refine", True):
         labels, meta = proto.refine_clusters(labels, names, r["sites"], W,
-                                             min_disc=kw_get(kw, "min_disc", 2))
+                                             min_disc=kw_get(kw, "min_disc", 2),
+                                             assign=kw_get(kw, "assign", True))
         labels = [l if l >= 0 else 10_000 + i for i, l in enumerate(labels)]
     sizes = sorted(Counter(labels).values(), reverse=True)
     min_group = kw_get(kw, "min_group", 3)
@@ -153,8 +154,8 @@ def main():
     for a in sys.argv[4:]:
         k, v = a.split("=")
         kw.append((k, eval(v)))
-    proto_kw = tuple((k, v) for k, v in kw if k not in ("min_group", "refine", "min_disc"))
-    eval_kw = tuple((k, v) for k, v in kw if k in ("min_group", "refine", "min_disc"))
+    proto_kw = tuple((k, v) for k, v in kw if k not in ("min_group", "refine", "min_disc", "assign"))
+    eval_kw = tuple((k, v) for k, v in kw if k in ("min_group", "refine", "min_disc", "assign"))
     rows = []
     with Pool(8) as pool:
         for row in pool.imap_unordered(run_one, [(c, flank, proto_kw, eval_kw) for c in crIDs]):

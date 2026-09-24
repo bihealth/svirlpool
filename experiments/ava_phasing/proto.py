@@ -466,7 +466,8 @@ def analyse(crID: int, flank: int, tmp: Path, **kw) -> dict:
     tmp.mkdir(parents=True, exist_ok=True)
     ava = run_ava(cut, tmp)
     pairs = [parse_pair(a, seqs) for a in ava]
-    lowq = low_quality_reads(pairs) if kw.pop("filter_lowq", True) else set()
+    lowq = (low_quality_reads(pairs, kw.pop("lowq_factor", 2.5), kw.pop("lowq_excess", 0.02))
+            if kw.pop("filter_lowq", True) else set())
     pairs = [p for p in pairs if p.q not in lowq and p.t not in lowq]
     recur = kw.pop("recur", 1)
     use_sv = kw.pop("use_sv", True)
@@ -511,7 +512,7 @@ def discriminating_sites(
 
 def refine_clusters(
     labels: list[int], names: list[str], sites: list[Site], W: np.ndarray,
-    min_group: int = 3, min_disc: int = 2, assign_margin: float = 0.0,
+    min_group: int = 3, min_disc: int = 2, assign_margin: float = 0.0, assign: bool = True,
 ) -> tuple[list[int], dict]:
     """Merge clusters that are not separated by >= min_disc discriminating
     variant positions; then assign reads of small clusters to the big cluster
@@ -541,7 +542,7 @@ def refine_clusters(
     for i, l in enumerate(lab):
         if l in big:
             continue
-        if not big:
+        if not big or not assign:
             out[i] = -1
             continue
         scores = [W[i, lab == b].sum() for b in big]
