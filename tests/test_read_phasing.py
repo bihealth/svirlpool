@@ -74,6 +74,58 @@ def test_identical_haplotypes_are_not_split(tmp_path):
     assert res.status in ("single", "no_information")
 
 
+def test_max_reads_phases_the_longest_and_leaves_the_rest(tmp_path):
+    rng = random.Random(5)
+    hap1, hap2 = _haplotypes(rng, n_snvs_every=500)
+    reads = _reads({"h1": hap1, "h2": hap2}, n_per_hap=10, rng=rng)
+    params = read_phasing.PhasingParams(max_reads=12)
+    res = read_phasing.phase_reads(reads, params=params, tmp_dir_path=tmp_path)
+    longest = sorted(reads, key=lambda n: (-len(reads[n].seq), n))[:12]
+    assert set(res.groups) <= set(longest)
+    assert set(reads) - set(longest) <= set(res.unassigned)
+    assert res.status == "phased"
+    for c in res.clusters().values():
+        assert len({rn.split("_")[0] for rn in c}) == 1
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_inverted_alignment_matches_the_read_bases(tmp_path, reverse):
+    """parse_pair_both: the inverted view (t on q) puts every difference at q's
+    forward coordinate with t's base, also for reverse-strand pairs."""
+    rng = random.Random(4)
+    hap = "".join(rng.choice("ACGT") for _ in range(8_000))
+    a = list(hap)
+    a[3000] = {"A": "C", "C": "G", "G": "T", "T": "A"}[a[3000]]
+    a = "".join(a[:5000] + a[5030:])  # SNV at 3000, 30 bp deletion at 5000
+    b = hap
+    if reverse:
+        b = b.translate(read_phasing._RC)[::-1]
+    reads = {
+        n: SeqRecord(Seq(s), id=n, name=n, description="")
+        for n, s in (("a", a), ("b", b))
+    }
+    seqs = {"a": a, "b": b}
+    alns = read_phasing.run_ava(
+        reads, tmp_path, read_phasing.PhasingParams(), threads=1, timeout=60
+    )
+    assert len(alns) == 1
+    fwd, inv = read_phasing.parse_pair_both(alns[0], seqs)
+    assert {fwd.t, inv.t} == {"a", "b"}
+    for view in (fwd, inv):
+        # "a" lacks 30 bp of "b"
+        net = sum(s for _, s in view.indels)
+        assert net == (30 if view.t == "a" else -30)
+        assert view.t_start == 0 and view.t_end == len(seqs[view.t])
+    # "a" as the target: the SNV sits at a's position 3000 with hap's base
+    view_a = fwd if fwd.t == "a" else inv
+    assert view_a.mism == {3000: hap[3000]}
+    # "b" as the target: at b's forward coordinate of hap position 3000
+    view_b = fwd if fwd.t == "b" else inv
+    pos_b = len(hap) - 1 - 3000 if reverse else 3000
+    base_b = a[3000].translate(read_phasing._RC) if reverse else a[3000]
+    assert view_b.mism == {pos_b: base_b}
+
+
 def test_too_few_reads_is_no_information(tmp_path):
     rng = random.Random(3)
     hap1, hap2 = _haplotypes(rng, n_snvs_every=500)

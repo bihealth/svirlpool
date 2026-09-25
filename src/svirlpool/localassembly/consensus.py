@@ -34,6 +34,7 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intervaltree import IntervalTree
 from sklearn.cluster import KMeans, SpectralClustering
+from threadpoolctl import threadpool_limits
 
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
@@ -1288,7 +1289,8 @@ def partition_reads_spectral(
         random_state=42,
     )
 
-    labels = clustering.fit_predict(similarity_matrix)
+    with threadpool_limits(limits=1):
+        labels = clustering.fit_predict(similarity_matrix)
     return {read: int(label) for read, label in zip(read_names, labels, strict=True)}
 
 
@@ -1834,7 +1836,10 @@ def consensus_while_clustering_with_kmeans(
             break
 
         kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
-        labels = kmeans.fit_predict(X)
+        # a few dozen points: OpenMP threads on every core cost far more CPU
+        # than they save (and oversubscribe parallel consensus jobs)
+        with threadpool_limits(limits=1):
+            labels = kmeans.fit_predict(X)
         centroids = kmeans.cluster_centers_
 
         # Compute max intra-cluster variance (Euclidean distance from points to centroid)
@@ -2148,6 +2153,31 @@ def consensus_from_clusters(
     return result or None
 
 
+def orient_reads_to_reference(
+    reads: dict[str, SeqRecord],
+    alns: dict[int, list[pysam.AlignedSegment]],
+) -> dict[str, SeqRecord]:
+    """Reads in the reference's forward orientation.
+
+    The strand of a read is that of its first alignment in the candidate
+    regions (the one ``trim_reads`` cuts it by). With all reads on one strand
+    every all-vs-all pair aligns forward, so alignment gaps in ambiguous
+    sequence (homopolymers) are placed consistently across the reads.
+    """
+    reverse: dict[str, bool] = {}
+    for crID in alns:
+        for aln in alns[crID]:
+            reverse.setdefault(aln.query_name, aln.is_reverse)
+    return {
+        rn: (
+            rec.reverse_complement(id=True, name=True, description=True)
+            if reverse.get(rn, False)
+            else rec
+        )
+        for rn, rec in reads.items()
+    }
+
+
 def consensus_while_phasing(
     samplename: str,
     alns: dict[int, list[pysam.AlignedSegment]],
@@ -2185,7 +2215,9 @@ def consensus_while_phasing(
         intervals=get_max_extents_of_read_alignments_on_cr(intervals),
         read_records=read_records,
     )
-    phasing_reads = {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}
+    phasing_reads = orient_reads_to_reference(
+        {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}, alns
+    )
     phasing = read_phasing.phase_reads(
         reads=phasing_reads,
         threads=threads,
