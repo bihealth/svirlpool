@@ -81,6 +81,8 @@ lamassemble_mat = config.get("lamassemble_mat", None)
 consensus_method = config.get("consensus_method", "lamassemble")
 max_padding_size = config.get("max_padding_size", 100000)
 max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
+# None = take each container's copy number from the copy-number track.
+cn_override = config.get("cn_override", None)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -667,6 +669,7 @@ rule consensus_consensus:
         consensus_method=consensus_method,
         max_padding_size=max_padding_size,
         max_consensus_copy_number=max_consensus_copy_number,
+        cn_override_arg=f"--cn-override {cn_override}" if cn_override is not None else "",
     threads:
         get_consensus_threads
     conda:
@@ -700,7 +703,7 @@ rule consensus_consensus:
         --batch-id {wildcards.batch_id} \
         -a {params.alignments} \
         --max-padding-size {params.max_padding_size} \
-        --max-copy-number {params.max_consensus_copy_number} \
+        --max-copy-number {params.max_consensus_copy_number} {params.cn_override_arg} \
         -o {output.container} \
         -t {threads} \
         --logfile {log.algorithm} \

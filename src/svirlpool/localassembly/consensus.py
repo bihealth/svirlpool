@@ -788,27 +788,25 @@ def make_consensus_with_lamassemble(
         try:
             consensus_sequence = next(SeqIO.parse(output, "fasta"))
             if len(consensus_sequence.seq) == 0:
-                if verbose:
-                    log.warning(
-                        f"lamassemble produced an empty consensus for {consensus_name}"
-                    )
+                log.warning(
+                    f"lamassemble produced an empty consensus for {consensus_name}"
+                )
                 return None
             result = str(consensus_sequence.seq)
         except StopIteration:
-            if verbose:
-                log.warning(
-                    f"lamassemble failed to produce a consensus for {consensus_name}"
-                )
-            return None
-    except subprocess.TimeoutExpired:
-        if verbose:
             log.warning(
-                f"lamassemble timed out for {consensus_name} after {timeout} seconds"
+                f"lamassemble failed to produce a consensus for {consensus_name}"
             )
+            return None
+    # Always logged: a wall-clock timeout on a loaded node otherwise drops the
+    # cluster, and with it often the whole container, without a trace.
+    except subprocess.TimeoutExpired:
+        log.warning(
+            f"lamassemble timed out for {consensus_name} after {timeout} seconds"
+        )
         return None
     except subprocess.CalledProcessError as e:
-        if verbose:
-            log.warning(f"lamassemble failed for {consensus_name} with error: {e}")
+        log.warning(f"lamassemble failed for {consensus_name} with error: {e}")
         return None
     return result
 
@@ -2903,7 +2901,9 @@ def process_consensus_container(
             ),
         )  # 2 minimum clusters - maybe this is really bad, idk.
         log.info(f"Maximum copy number for this container: {max_copy_number}")
-    if max_copy_number > max_copy_number_threshold:
+    # The threshold guards the ESTIMATED copy number. An explicit override is
+    # the caller fixing the number of clusters, so it is taken as given.
+    if cn_override is None and max_copy_number > max_copy_number_threshold:
         # don't process this container. Too complex.
         log.warning(
             f"Maximum copy number {max_copy_number} exceeds threshold of {max_copy_number_threshold}. Skipping consensus building for this container."

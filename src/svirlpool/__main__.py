@@ -226,11 +226,20 @@ def get_parser():
         help="Maximum estimated copy number of a candidate-region container for which a "
         "consensus is still attempted (default: 4). Containers exceeding this threshold are "
         "skipped as too complex and produce no consensus (and therefore no SV calls) for that "
-        "region. Raise (e.g. 6-8) to recover SVs in higher-copy / complex tandem-repeat regions "
-        "at the cost of runtime and potential noise.",
+        "region. The copy-number HMM has states 0-4 only, so values of 4 or more never skip "
+        "anything; only 2 or 3 do. Not applied when --cn-override is given.",
         required=False,
         type=int,
         default=4,
+    )
+    parser_run_wf.add_argument(
+        "--cn-override",
+        help="Use this fixed copy number as the maximum number of read clusters (alleles) of "
+        "every candidate-region container, instead of the copy-number track estimate "
+        "(default: unset, i.e. use the track).",
+        required=False,
+        type=int,
+        default=None,
     )
     parser_run_wf.add_argument(
         "--rerun-triggers",
