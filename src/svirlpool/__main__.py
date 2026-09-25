@@ -263,11 +263,11 @@ def get_parser():
         "--phasing-max-repeat-fraction",
         help="Experimental: with --consensus-clustering-mode phased, take the read-phasing "
         "arm only for containers in which at most this fraction of the SV signals lies in a "
-        "tandem repeat; other containers use the legacy clustering. 1.0 phases every "
-        "container (default: 0.5).",
+        "tandem repeat; other containers use the legacy clustering. 1.0 (default) phases "
+        "every container; 0.5 halves the cost but loses most of the F1 gain on HG002.",
         required=False,
         type=float,
-        default=0.5,
+        default=1.0,
     )
     parser_run_wf.add_argument(
         "--rerun-triggers",

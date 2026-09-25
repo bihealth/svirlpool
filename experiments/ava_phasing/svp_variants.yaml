@@ -25,4 +25,10 @@ variants:
     pixi_env: dev
     run_flags: "--consensus-clustering-mode phased"
     call_flags: "--multi-assembly-override subset"
-active_variants: [flank200, flank200_subset, ava_phase, ava_phase_ovall, ava_phase2]
+  # v3: as v2, phasing arm only where <= 50% of the SV signals are in TRF (a17bae7; worse, see README)
+  ava_phase3:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ava-phasing/pyproject.toml
+    pixi_env: dev
+    run_flags: "--consensus-clustering-mode phased --phasing-max-repeat-fraction 0.5"
+    call_flags: "--multi-assembly-override subset"
+active_variants: [flank200, flank200_subset, ava_phase, ava_phase_ovall, ava_phase2, ava_phase3]
