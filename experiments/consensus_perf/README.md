@@ -69,7 +69,8 @@ pair accuracy over the trio-labelled reads that the phasing assigns.
 |---|---|---|---|---|
 | before (d00f5ec) | 5044 s | 0.9737 | 0.944 | 0.827 |
 | oriented, both directions | 4529 s | 0.9736 | 0.942 | 0.828 |
-| **oriented, align once (new default)** | **2657 s** | **0.9734** | **0.939** | **0.826** |
+| oriented, align once, numpy | 2657 s | 0.9734 | 0.939 | 0.826 |
+| **+ max 50 reads (new default)** | **2692 s** | **0.9731** | **0.939** | **0.826** |
 | + `-k15 -w10` | 2239 s | 0.9714 | 0.938 | 0.827 |
 | + `-k19 -w10` | 1947 s | 0.9708 | 0.937 | 0.827 |
 
@@ -83,10 +84,45 @@ not the default.
 
 ## End to end
 
-E2E_PLACEHOLDER
+svp_improvements, `svp_variants.yaml` here; truvari refined F1; consensus =
+sum of the 30 batch wall times (snakemake benchmarks, one job per batch).
+
+| variant | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | consensus | longest batch |
+|---|---|---|---|---|---|---|
+| flank200_subset (legacy, d01a165 line) | 0.8552 | 0.9287 | 0.8585 | 0.9249 | 2046 s | 141 s |
+| perf_legacy (this branch, legacy) | 0.8552 | 0.9287 | 0.8585 | 0.9249 | 2067 s | 132 s |
+| ava_phase2 (phased, ac17af6) | 0.8619 | 0.9503 | 0.8685 | 0.9498 | 6744 s | 436 s |
+| perf_phased (this branch, phased) | 0.8558 | 0.9279 | 0.8606 | 0.9274 | **4617 s** | **290 s** |
+
+* Legacy: identical calls. The thread limit saves CPU, not wall time, for a
+  batch running alone.
+* Phased: the consensus stage is 32% faster (the phasing overhead over legacy
+  4700 s -> 2570 s). The rest is lamassemble (~1900 s) and the remaining
+  all-vs-all.
+* **The phased F1 drop is not a phasing loss.** 15 of the 19 extra V5
+  non-TRF FPs come from two containers whose all-vs-all hit the 20 s timeout
+  in ava_phase2 (so they fell back to one consensus) and now finish (`fp_containers.py`):
+  container 1303 (chr4:7.86 Mb, 13 over-split DELs; phased perfectly, trio
+  pair accuracy 1.0 on 23 reads, 1522 SNV sites) and 1741 (2). Over all
+  regions, containers that switched from timeout to phased account for +17
+  FPs net; the rest of the changes roughly balance (+14 / -9).
+  So part of ava_phase2's gain came from the **wall-clock timeout** sending
+  paralog-like containers to a single consensus. That depends on the
+  machine's speed. It also corrects the repeat-gate analysis in
+  `../ava_phasing/README.md`: container 1303's 13 FPs went away through the
+  timeout, not the phasing.
+* SNV-site density does not separate the containers that timed out (15-157
+  sites per read; 163 containers have > 40, 6 of them timed out), so there
+  is no deterministic stand-in for the timeout here. The FPs of 1303 come
+  from calling on two correct haplotype consensuses.
 
 ## Not done / next
 
+* The phased mode's outcome still depends on wall-clock timeouts (7
+  containers here). A rule that is deterministic (reads, alignment count)
+  would make results independent of the machine. Decide what 1303-like
+  containers (paralog-rich, phased correctly, over-split calls) should give.
+  That is a question for calling, not for runtime.
 * lamassemble is now the largest cost in both modes. Cutting it means a
   different consensus method (see `feature/poa-consensus`) or fewer/smaller
   assemblies. Small wins: lamassemble checks `mafft --version` on every call
@@ -104,4 +140,7 @@ E2E_PLACEHOLDER
 `phasing_eval.py` time + trio accuracy of `phase_reads` variants,
 `profile_phasing.py` CPU profile of the phasing Python with replayed
 alignments, `check_inversion*.py` inversion checks, `svp_variants.yaml` the
-svp_improvements variants `perf_legacy` / `perf_phased`, `py.sh` runner.
+svp_improvements variants `perf_legacy` / `perf_phased`, `e2e_table.py` F1 and
+consensus time per variant, `compare_consensus.py` / `fp_containers.py`
+consensus and FP differences between two variants per container, `py.sh`
+runner.

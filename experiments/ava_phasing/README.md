@@ -119,6 +119,12 @@ come from containers whose signals lie in repeats (e.g. 13 over-split DELs
 around chr4:7.86 Mb, container 1303). Truvari's stratum says where the call
 lands, not whether the container is repetitive.
 
+*Correction (`../consensus_perf/README.md`):* in ava_phase2 the all-vs-all of
+container 1303 hit the 20 s timeout, so the container got one consensus from
+the fallback. Its 13 FPs went away through the timeout, not through the
+phasing. With the faster phasing it completes (phased correctly), and they
+are back.
+
 ### Copy number
 
 Phasing counts alleles from the reads: 1711/2004 containers give 2 alleles,
@@ -131,7 +137,8 @@ depth is 4x (790, 80 reads) it finds 6 groups.
 
 * **Runtime**: consensus stage 3.2x CPU (2134 -> 6838 s), longest batch 141 ->
   436 s. Phasing is ~1.2 s per container; the tail is repeat containers where
-  AVA hits the 120 s timeout -- cap/subsample reads there.
+  AVA hits the 20 s timeout. Addressed on `perf/consensus-profiling`
+  (`../consensus_perf`): 6744 -> 4617 s.
 * **Genotype from the phasing**: with haplotype consensuses the GT is the
   number of haplotypes carrying a call; `clustering_meta_data` has what
   sv-calling needs to do that instead of read counting + override.
