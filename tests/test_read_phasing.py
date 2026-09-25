@@ -81,3 +81,63 @@ def test_too_few_reads_is_no_information(tmp_path):
     res = read_phasing.phase_reads(reads, tmp_dir_path=tmp_path)
     assert res.status == "no_information"
     assert res.groups == {}
+
+
+# --------------------------------------------------------------------------- #
+# repeat gate of the phasing arm (consensus.take_phasing_arm)
+# --------------------------------------------------------------------------- #
+def _cr(crID: int, repeat_ids: list[int]):
+    from svirlpool.util import datatypes
+
+    signals = [
+        datatypes.ExtendedSVsignal(
+            ref_start=100 + i,
+            ref_end=101 + i,
+            read_start=0,
+            read_end=1,
+            size=50,
+            sv_type=0,
+            chr="chr1",
+            chrID=0,
+            coverage=20,
+            readname=f"r{i}",
+            samplename="s",
+            forward=1,
+            repeatID=rid,
+        )
+        for i, rid in enumerate(repeat_ids)
+    ]
+    return datatypes.CandidateRegion(
+        crID=crID,
+        chr="chr1",
+        referenceID=0,
+        referenceStart=100,
+        referenceEnd=600,
+        sv_signals=signals,
+    )
+
+
+@pytest.mark.parametrize(
+    "repeat_ids, mode, max_frac, expected",
+    [
+        ([-1, -1, -1, -1], "phased", 0.5, True),  # outside repeats
+        ([7, 7, 7, -1], "phased", 0.5, False),  # mostly in a repeat
+        ([7, -1, -1, -1], "phased", 0.5, True),  # 0.25 <= 0.5
+        ([7, 7, -1, -1], "phased", 0.5, True),  # boundary: 0.5 is not > 0.5
+        ([7, 7, 7, 7], "phased", 1.0, True),  # 1.0 phases everything
+        ([-1, -1], "legacy", 0.5, False),  # legacy mode never phases
+        ([], "phased", 0.5, True),  # no signals: fraction 0
+    ],
+)
+def test_take_phasing_arm(repeat_ids, mode, max_frac, expected):
+    from svirlpool.localassembly import consensus
+
+    crs = {0: _cr(0, repeat_ids)}
+    assert consensus.take_phasing_arm(crs, mode, max_frac) is expected
+
+
+def test_repeat_signal_fraction_pools_all_crs():
+    from svirlpool.localassembly import consensus
+
+    crs = {0: _cr(0, [5, 5]), 1: _cr(1, [-1, -1, -1, -1, -1, -1])}
+    assert consensus.repeat_signal_fraction(crs) == pytest.approx(0.25)

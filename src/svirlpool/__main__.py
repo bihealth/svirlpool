@@ -260,6 +260,16 @@ def get_parser():
         default="single",
     )
     parser_run_wf.add_argument(
+        "--phasing-max-repeat-fraction",
+        help="Experimental: with --consensus-clustering-mode phased, take the read-phasing "
+        "arm only for containers in which at most this fraction of the SV signals lies in a "
+        "tandem repeat; other containers use the legacy clustering. 1.0 phases every "
+        "container (default: 0.5).",
+        required=False,
+        type=float,
+        default=0.5,
+    )
+    parser_run_wf.add_argument(
         "--rerun-triggers",
         help="Snakemake rerun triggers. Comma-separated list of triggers that cause a rule to be rerun. "
         "Allowed values: mtime, params, input, software-env, code. "
