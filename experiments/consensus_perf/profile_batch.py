@@ -164,7 +164,7 @@ def main():
         "path_alignments": Path(cfg["alignments"]),
         "threads": 1,
         "buffer_clipped_sequence": 500,
-        "timeout": 20,
+        "escalation": ((1, 20),),  # the batch as profiled: one level, no escalation
         "consensus_method": cfg["consensus_method"],
         "reference": Path(cfg["reference"]),
         "crIDs": crIDs,

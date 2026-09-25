@@ -116,13 +116,40 @@ sum of the 30 batch wall times (snakemake benchmarks, one job per batch).
   is no deterministic stand-in for the timeout here. The FPs of 1303 come
   from calling on two correct haplotype consensuses.
 
+## Timeout escalation
+
+The workflow meant to run timed-out loci again with more cores (threads
+`[1, 2, 4, 12]`, timeouts `[20, 60, 60, 120]` s per snakemake attempt), but
+it never did. The nested snakemake had no `--retries`. A tool timeout was
+caught inside the batch and never failed the job. `process_consensus_container`
+was called with `threads=1` hard-coded. And a retry would have rerun all
+100 containers of the batch.
+
+Now the escalation happens per container, inside the batch
+(`consensus --escalation`, `svirlpool run --consensus-escalation`, default
+`1:20,4:60,12:120` = THREADS:SECONDS). A container starts at the first
+level. If the phasing or spectral all-vs-all or lamassemble timed out
+(`tool_timeouts.record`), it is processed again at the next level. The last
+level is the hard ceiling: after it, the degraded result is kept. Threads
+are capped at the snakemake cores and the process's CPU affinity. Memory
+cannot be handed to a running process, so it stays at the job level: a
+failed batch job (e.g. OOM-killed) is retried by snakemake with double
+`mem_mb` (2 GB up to `--consensus-max-mem-mb`, 16 GB) and runtime.
+
+The 7 containers that timed out in perf_phased: 2 finished at 1 thread this
+time, 4 at 4 threads / 60 s (1275: 54 s), 1502 at 12 threads / 120 s; none
+stayed unresolved. The phased mode's result therefore no longer depends on
+the machine's speed, except for containers that exceed the last level.
+
 ## Not done / next
 
-* The phased mode's outcome still depends on wall-clock timeouts (7
-  containers here). A rule that is deterministic (reads, alignment count)
-  would make results independent of the machine. Decide what 1303-like
-  containers (paralog-rich, phased correctly, over-split calls) should give.
-  That is a question for calling, not for runtime.
+* With the escalation, 1303-like containers (paralog-rich, phased correctly,
+  over-split calls) are phased everywhere. Decide what they should give:
+  a question for calling, not for runtime.
+* On SLURM the batch job reserves one CPU, and the affinity cap keeps the
+  escalation to that CPU (only the timeout grows). Escalating cores there
+  needs the job to request them, or a follow-up job for the escalated
+  containers.
 * lamassemble is now the largest cost in both modes. Cutting it means a
   different consensus method (see `feature/poa-consensus`) or fewer/smaller
   assemblies. Small wins: lamassemble checks `mafft --version` on every call

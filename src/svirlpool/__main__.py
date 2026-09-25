@@ -101,11 +101,24 @@ def get_parser():
         "--threads", help="number of threads to use", required=True, type=int
     )
     parser_run_wf.add_argument(
-        "--cores-per-consensus",
-        help="number of cores per consensus clustering and assembly [2]",
+        "--consensus-escalation",
+        help="THREADS:SECONDS levels at which a candidate-region container is processed "
+        "in the consensus stage. Containers are processed at the first level; one in "
+        "which the all-vs-all alignment or the assembly timed out is processed again at "
+        "the next level, up to the last one (the hard ceiling; then its result is kept "
+        "degraded). Threads are capped at --threads. Add levels on large machines, e.g. "
+        "1:20,4:60,12:120,32:300 [1:20,4:60,12:120]",
+        required=False,
+        type=str,
+        default="1:20,4:60,12:120",
+    )
+    parser_run_wf.add_argument(
+        "--consensus-max-mem-mb",
+        help="memory ceiling (MB) of a consensus batch job. A failed job is retried with "
+        "double the memory, from 2048 MB up to this [16384]",
         required=False,
         type=int,
-        default=2,
+        default=16384,
     )
     parser_run_wf.add_argument(
         "--max-coverage-per-region",

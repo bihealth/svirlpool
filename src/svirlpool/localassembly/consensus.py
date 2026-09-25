@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import attrs
@@ -39,7 +40,7 @@ from threadpoolctl import threadpool_limits
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
-from . import consensus_class, consensus_lib, read_phasing
+from . import consensus_class, consensus_lib, read_phasing, tool_timeouts
 from . import read_cache as read_cache_mod
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -821,6 +822,7 @@ def make_consensus_with_lamassemble(
                 )
             return None
     except subprocess.TimeoutExpired:
+        tool_timeouts.record("lamassemble")
         if verbose:
             log.warning(
                 f"lamassemble timed out for {consensus_name} after {timeout} seconds"
@@ -1414,6 +1416,8 @@ def consensus_while_clustering(
                         f"AVA alignment failed on attempt {ava_attempt + 1}/{max_ava_attempts} "
                         f"with {len(ava_pool)} reads: {e}"
                     )
+                    if isinstance(e, (TimeoutError, subprocess.TimeoutExpired)):
+                        tool_timeouts.record("spectral all-vs-all")
                     continue
 
                 # 3) parse alignments using context manager
@@ -3406,6 +3410,48 @@ def _load_crIDs_from_batch_tsv(batch_tsv: Path, batch_id: int) -> list[int]:
     raise ValueError(f"Batch id {batch_id} not found in {batch_tsv}.")
 
 
+#: (threads, timeout in seconds) of the levels a container is processed at:
+#: most containers finish within seconds at the first level, a container in
+#: which a tool timed out goes up one level.
+DEFAULT_ESCALATION: tuple[tuple[int, int], ...] = ((1, 20), (4, 60), (12, 120))
+
+
+def parse_escalation(text: str) -> list[tuple[int, int]]:
+    """'1:20,4:60,12:120' -> [(1, 20), (4, 60), (12, 120)]"""
+    try:
+        levels = [
+            (int(t), int(sec))
+            for t, sec in (level.split(":") for level in text.split(","))
+        ]
+    except ValueError as e:
+        raise ValueError(
+            f"escalation '{text}' is not a list of THREADS:SECONDS levels"
+        ) from e
+    if any(t < 1 or sec < 1 for t, sec in levels):
+        raise ValueError(f"escalation '{text}': threads and seconds must be >= 1")
+    return levels
+
+
+def available_cpus() -> int:
+    """CPUs this process may run on (its affinity, e.g. a SLURM allocation)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not Linux
+        return os.cpu_count() or 1
+
+
+def container_attempts(
+    escalation: Sequence[tuple[int, int]], max_threads: int = 0
+) -> list[tuple[int, int]]:
+    """(threads, timeout) of each attempt at a container: the escalation
+    levels, their threads capped at `max_threads` (0: no cap) and at the CPUs
+    this process may use."""
+    cap = available_cpus()
+    if max_threads > 0:
+        cap = min(cap, max_threads)
+    return [(min(t, cap), sec) for t, sec in escalation]
+
+
 def crs_containers_to_consensus(
     samplename: str,
     input: Path,
@@ -3415,9 +3461,9 @@ def crs_containers_to_consensus(
     path_alignments: Path,
     threads: int,
     buffer_clipped_sequence: int,
-    timeout: int,
     consensus_method: str,
     reference: Path,
+    escalation: Sequence[tuple[int, int]] = DEFAULT_ESCALATION,
     crIDs: list[int] | None = None,
     tmp_dir_path: Path | str | None = None,
     figures_dir: Path | None = None,
@@ -3441,6 +3487,13 @@ def crs_containers_to_consensus(
     of JSON (a serialised :class:`consensus_class.CrsContainerResult`)
     that is written incrementally to ``output``; nothing accumulates in
     memory.
+
+    Each container is processed at the first level of `escalation`
+    (threads, timeout of each external tool call). If a tool timed out in it
+    (the phasing or spectral all-vs-all, lamassemble), it is processed again
+    at the next level, until one finishes or the last level, the hard
+    ceiling, is reached; then its degraded result is kept. `threads` caps the
+    threads of every level (0: the CPUs this process may use).
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -3456,8 +3509,15 @@ def crs_containers_to_consensus(
         raise NotADirectoryError(
             f"Output directory {output.parent} is not a directory."
         )
-    if threads <= 0:
-        raise ValueError("threads must be greater than 0.")
+    if threads < 0:
+        raise ValueError("threads must not be negative.")
+    if not escalation:
+        raise ValueError("escalation needs at least one level.")
+    attempts = container_attempts(escalation, threads)
+    log.info(
+        "escalation levels (threads, timeout s): "
+        + ", ".join(f"({t}, {sec})" for t, sec in attempts)
+    )
     if crIDs is not None:
         if not isinstance(crIDs, list):
             raise TypeError("crIDs must be a list of integers.")
@@ -3503,6 +3563,8 @@ def crs_containers_to_consensus(
     )
     cache = read_cache_mod.ReadSequenceCache(path_alignments=path_alignments)
     n_written = 0
+    n_escalated = 0  # containers processed again after a tool timeout
+    n_unresolved = 0  # of them, still timed out at the last level
     try:
         with open(output, "w") as out_f:
             for idx, (rep_crID, container) in enumerate(sorted_containers):
@@ -3510,28 +3572,52 @@ def crs_containers_to_consensus(
                     f"PROGRESS [{idx + 1}/{n_containers}] Processing container (representative crID {rep_crID})."
                 )
                 crs_dict = {cr.crID: cr for cr in container["crs"]}
-                consensuses, _unused = process_consensus_container(
-                    samplename=samplename,
-                    crs_dict=crs_dict,
-                    read_cache=cache,
-                    tmp_dir_path=tmp_dir_path,
-                    copy_number_tracks=copy_number_tracks,
-                    threads=1,
-                    buffer_clipped_length=buffer_clipped_sequence,
-                    lamassemble_mat=lamassemble_mat,
-                    timeout=timeout,
-                    figures_dir=figures_dir,
-                    verbose=verbose,
-                    densities_weight=densities_weight,
-                    max_intra_distance=max_intra_distance,
-                    cn_override=cn_override,
-                    consensus_method=consensus_method,
-                    max_padding_size=max_padding_size,
-                    max_copy_number_threshold=max_copy_number_threshold,
-                    clustering_mode=clustering_mode,
-                    phasing_flank=phasing_flank,
-                    phasing_fallback=phasing_fallback,
-                )
+                for attempt, (attempt_threads, attempt_timeout) in enumerate(
+                    attempts
+                ):
+                    with tool_timeouts.watch() as timed_out:
+                        consensuses, _unused = process_consensus_container(
+                            samplename=samplename,
+                            crs_dict=crs_dict,
+                            read_cache=cache,
+                            tmp_dir_path=tmp_dir_path,
+                            copy_number_tracks=copy_number_tracks,
+                            threads=attempt_threads,
+                            buffer_clipped_length=buffer_clipped_sequence,
+                            lamassemble_mat=lamassemble_mat,
+                            timeout=attempt_timeout,
+                            figures_dir=figures_dir,
+                            verbose=verbose,
+                            densities_weight=densities_weight,
+                            max_intra_distance=max_intra_distance,
+                            cn_override=cn_override,
+                            consensus_method=consensus_method,
+                            max_padding_size=max_padding_size,
+                            max_copy_number_threshold=max_copy_number_threshold,
+                            clustering_mode=clustering_mode,
+                            phasing_flank=phasing_flank,
+                            phasing_fallback=phasing_fallback,
+                        )
+                    if not timed_out:
+                        break
+                    tools = ", ".join(sorted(set(timed_out)))
+                    if attempt == 0:
+                        n_escalated += 1
+                    if attempt + 1 < len(attempts):
+                        next_threads, next_timeout = attempts[attempt + 1]
+                        log.warning(
+                            f"Container {rep_crID}: {tools} timed out "
+                            f"({attempt_threads} thread(s), {attempt_timeout} s); "
+                            f"escalating to {next_threads} thread(s), "
+                            f"{next_timeout} s."
+                        )
+                    else:
+                        n_unresolved += 1
+                        log.warning(
+                            f"Container {rep_crID}: {tools} timed out at the last "
+                            f"level ({attempt_threads} thread(s), {attempt_timeout} s); "
+                            "keeping its degraded result."
+                        )
 
                 # Validate consensuses immediately so the offending container
                 # is identified in the log if validation fails.
@@ -3609,6 +3695,10 @@ def crs_containers_to_consensus(
         f"{cache.cache_misses_reads} new reads loaded, "
         f"{cache.cache_hits_reads} reused from cache."
     )
+    log.info(
+        f"{n_escalated} container(s) escalated after a tool timeout; "
+        f"{n_unresolved} of them timed out at the last level too."
+    )
     log.info("done")
 
 
@@ -3638,7 +3728,7 @@ def run_consensus_script(args, **kwargs):
         threads=args.threads,
         crIDs=crIDs,
         buffer_clipped_sequence=args.buffer_clipped_sequence,
-        timeout=args.timeout,
+        escalation=parse_escalation(args.escalation),
         tmp_dir_path=args.tmp_dir_path,
         figures_dir=Path(args.figures_dir) if args.figures_dir else None,
         verbose=args.verbose,
@@ -3720,7 +3810,12 @@ def get_consensus_parser(
         help="Method used for consensus assembly: 'lamassemble' (default) or 'racon'.",
     )
     parser.add_argument(
-        "-t", "--threads", type=int, default=1, help="Number of threads to use."
+        "-t",
+        "--threads",
+        type=int,
+        default=0,
+        help="Hard ceiling on the threads of any --escalation level (default: 0, the "
+        "CPUs this process may use).",
     )
     parser.add_argument(
         "-c",
@@ -3797,10 +3892,12 @@ def get_consensus_parser(
         help="If parts of reads are clipped, then a maximum of this number of bases are kept to cut the read. This should never be larger than --min-cr-size in the 'svirlpool run' command.",
     )
     parser.add_argument(
-        "--timeout",
-        type=int,
-        default=240,
-        help="Timeout for all vs all alignment and consensus generation. Default is 240 (seconds)",
+        "--escalation",
+        default=",".join(f"{t}:{sec}" for t, sec in DEFAULT_ESCALATION),
+        help="THREADS:SECONDS levels a container is processed at: at the first level "
+        "first; if the all-vs-all alignment or the assembly timed out, again at the "
+        "next level, up to the last one (then the degraded result is kept). Threads "
+        "are capped at --threads. Default: %(default)s.",
     )
     parser.add_argument(
         "--tmp-dir-path",

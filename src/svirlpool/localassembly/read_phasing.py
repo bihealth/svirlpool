@@ -51,6 +51,8 @@ import pysam
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
+from . import tool_timeouts
+
 log = logging.getLogger(__name__)
 
 _RC = str.maketrans("ACGTNacgtn", "TGCANtgcan")
@@ -731,6 +733,8 @@ def phase_reads(
                 pairs = [parse_pair(a, arrs) for a in alns]
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         log.warning(f"read phasing: all-vs-all alignment failed: {e}")
+        if isinstance(e, subprocess.TimeoutExpired):
+            tool_timeouts.record("phasing all-vs-all")
         return PhasingResult(status="failed", unassigned=sorted(all_reads))
 
     lowq = low_quality_reads(pairs, params)

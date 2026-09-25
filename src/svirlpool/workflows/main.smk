@@ -97,16 +97,12 @@ cn_dispersion   = config.get("cn_dispersion", 0.1)  # Default to 0.1 if not prov
 # logging
 log_level       = config.get("log_level", "INFO")
 
-# consensus alignments to proto svs parameters
-merge_horizontally = config["cores_per_consensus"]
-
 # svs to vcf parameters
 #min_alt_fraction= config["min_alt_fraction"]
 single_evidence_gt = config.get("single_evidence_gt", False)
 
 # vcf to bed parameters
 min_sv_size     = config["min_sv_size"]
-cores_per_consensus = config["cores_per_consensus"]
 #avg_doc = config["coverage"]
 #doc_per_haplotype = avg_doc / 2.0
 
@@ -133,30 +129,27 @@ wildcard_constraints:
 ref_name = Path(reference).stem
 
 
-def get_crIDs(wildcards):
-    checkpoint_output = checkpoints.candidate_regions_crs_to_containers.get(**wildcards).output[0]
-    path_crIDs = 'crIDs.txt'
-    crIDs = [int(line.strip()) for line in open(path_crIDs)]
-    return [f"consensus/{str(int(crID / N_files_per_dir))}/consensus.{crID}.txt" for crID in crIDs]
-
-_CONSENSUS_THREADS  = [1, 2, 4, 12]
-_CONSENSUS_MEM_MB   = [512, 1024, 2048, 4096]
-_CONSENSUS_RUNTIME  = ["20s", "1m", "3m", "10m"]
-_CONSENSUS_TIMEOUTS = [20, 60, 60, 120]  # in seconds
-
-def get_consensus_threads(wildcards, attempt):
-    return _CONSENSUS_THREADS[min(attempt - 1, len(_CONSENSUS_THREADS) - 1)]
+# Consensus batches. Each container is processed at the first level of
+# consensus_escalation (THREADS:SECONDS of every all-vs-all alignment and
+# assembly); a container in which a tool timed out is processed again at the
+# next level, up to the last one (the hard ceiling), inside its batch. Threads
+# are capped at the cores given to snakemake. The job reserves one core:
+# escalations are rare and short, so they briefly oversubscribe instead of
+# keeping cores idle for the whole batch.
+# Memory cannot be handed to a running process, it is the job's reservation: a
+# job that fails (e.g. killed for memory or runtime) is retried by snakemake
+# with double the memory and runtime, up to consensus_max_mem_mb.
+consensus_escalation = config.get("consensus_escalation", "1:20,4:60,12:120")
+consensus_max_mem_mb = config.get("consensus_max_mem_mb", 16384)
+_CONSENSUS_MEM_MB = [2048]
+while _CONSENSUS_MEM_MB[-1] * 2 <= consensus_max_mem_mb:
+    _CONSENSUS_MEM_MB.append(_CONSENSUS_MEM_MB[-1] * 2)
 
 def get_consensus_mem_mb(wildcards, attempt):
     return _CONSENSUS_MEM_MB[min(attempt - 1, len(_CONSENSUS_MEM_MB) - 1)]
 
 def get_consensus_runtime(wildcards, attempt):
-    return _CONSENSUS_RUNTIME[min(attempt - 1, len(_CONSENSUS_RUNTIME) - 1)]
-
-def get_consensus_timeout(wildcards, attempt):
-    if attempt > len(_CONSENSUS_THREADS):
-        return 1
-    return _CONSENSUS_TIMEOUTS[min(attempt - 1, len(_CONSENSUS_TIMEOUTS) - 1)]
+    return 60 * 2 ** (attempt - 1)  # minutes
 
 # def get_coverage(wildcards):
 #     with open("coverage.txt", "r") as f:
@@ -674,15 +667,15 @@ rule consensus_consensus:
         clustering_mode=consensus_clustering_mode,
         phasing_flank=phasing_flank,
         phasing_fallback=phasing_fallback,
-    threads:
-        get_consensus_threads
+        max_threads=cores,
+        escalation=consensus_escalation,
+    threads: 1
+    retries: len(_CONSENSUS_MEM_MB) - 1
     conda:
         "envs/svirlpool.yml"
     resources:
         mem_mb=get_consensus_mem_mb,
         runtime=get_consensus_runtime,
-        _attempt=lambda wildcards, attempt: attempt,
-        timeout=get_consensus_timeout
     benchmark:
         "benchmarks/consensus/consensus.batch_{batch_id}.{batchdir}.txt"
     shell:
@@ -712,11 +705,11 @@ rule consensus_consensus:
         --phasing-flank {params.phasing_flank} \
         --phasing-fallback {params.phasing_fallback} \
         -o {output.container} \
-        -t {threads} \
+        -t {params.max_threads} \
+        --escalation {params.escalation} \
         --logfile {log.algorithm} \
         --diag-logfile {log.diag} \
-        --log-level {params.log_level} \
-        --timeout {resources.timeout} 2>&1 | tee -a {log.diag}"""
+        --log-level {params.log_level} 2>&1 | tee -a {log.diag}"""
         # --verbose"""
 
 
