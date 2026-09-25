@@ -141,6 +141,35 @@ time, 4 at 4 threads / 60 s (1275: 54 s), 1502 at 12 threads / 120 s; none
 stayed unresolved. The phased mode's result therefore no longer depends on
 the machine's speed, except for containers that exceed the last level.
 
+End to end (`esc_legacy` / `esc_phased` in `svp_variants.yaml`, commit
+2647461; `escalations.py`, `counts.py`):
+
+| variant | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | consensus | longest batch |
+|---|---|---|---|---|---|---|
+| perf_legacy | 0.8552 | 0.9287 | 0.8585 | 0.9249 | 2067 s | 132 s |
+| esc_legacy | 0.8544 | 0.9275 | 0.8584 | 0.9237 | 2826 s | 419 s |
+| perf_phased | 0.8558 | 0.9279 | 0.8606 | 0.9274 | 4617 s | 290 s |
+| esc_phased | 0.8536 | 0.9279 | 0.8577 | 0.9274 | 5322 s | 416 s |
+
+* Phased: 10 containers escalated, 8 finished at 4 threads, 2 at 12
+  (1275, 1502), none unresolved. Outside TRF the calls are identical. In TRF
+  the escalated containers now phase and are called on their haplotype
+  consensuses: V5 all FP 140 -> 149, TP 1426 -> 1424. The difference is almost
+  all container 1275 (chr3:195.48 Mb, 3 alleles, the MUC4 VNTR) and 218
+  (chr10:126.9 Mb): the same kind of over-split repeat calls as container
+  1303.
+* Legacy: 8 containers escalated (the spectral all-vs-all and
+  lamassemble timed out), 1059 is still unresolved at 12 threads / 120 s. It
+  costs more there: at every level the spectral all-vs-all retries itself up
+  to 4 times on subsampled reads, each with the level's timeout (568 and
+  1076: ~180 s, 1059: 206 s). V5 all FP +3.
+* Time: the escalated containers take 789 s (phased) and 897 s (legacy) of
+  the batch wall time. In perf_* they cost ~20 s each and fell back. Wall
+  times are from two variants running at once on 24 cores, so +-10%.
+* So the escalation buys machine independence, not accuracy: the loci it
+  resolves are repeat containers where the resolved result calls slightly
+  worse than the fallback did.
+
 ## Not done / next
 
 * With the escalation, 1303-like containers (paralog-rich, phased correctly,

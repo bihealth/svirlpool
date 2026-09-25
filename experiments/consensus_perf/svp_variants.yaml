@@ -13,4 +13,15 @@ variants:
     pixi_env: dev
     run_flags: "--consensus-clustering-mode phased"
     call_flags: "--multi-assembly-override subset"
-active_variants: [perf_legacy, perf_phased]
+  # with the in-batch timeout escalation (2647461)
+  esc_legacy:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/consensus-perf/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: "--haplotype-aware-merge --multi-assembly-override subset"
+  esc_phased:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/consensus-perf/pyproject.toml
+    pixi_env: dev
+    run_flags: "--consensus-clustering-mode phased"
+    call_flags: "--multi-assembly-override subset"
+active_variants: [esc_legacy, esc_phased]
