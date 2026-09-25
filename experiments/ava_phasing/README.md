@@ -101,27 +101,23 @@ svp_improvements README, "allele representation in repeats").
 Variants: `svp_variants.yaml` (`bash run.sh stage_benchmark --configfile
 <it>`), tables `results/e2e_summary.tsv`.
 
-### Repeat gate (`--phasing-max-repeat-fraction`)
+### Repeat gate -- tried and dropped
 
-Takes the phasing arm only for containers in which at most this fraction of
-the SV signals lies in a tandem repeat (`repeatID` from the TRF annotation);
-the rest use the legacy clustering. The fraction is bimodal (28% of
-containers 0, 69% >= 0.8), so any threshold in 0.2-0.8 selects about the same
-~30% of containers.
+A switch that took the phasing arm only for containers in which <= 50% of the
+SV signals lie in a tandem repeat (`repeatID` from the TRF annotation; commit
+a17bae7, removed again). Benchmarked as `ava_phase3`:
 
 | variant | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | consensus CPU |
 |---|---|---|---|---|---|
 | legacy + override subset | 0.8552 | 0.9287 | 0.8585 | 0.9249 | 2134 s |
 | phased everywhere (ava_phase2) | **0.8619** | **0.9503** | **0.8685** | **0.9498** | 6838 s |
-| phased where repeat fraction <= 0.5 (ava_phase3) | 0.8561 | 0.9312 | 0.8611 | 0.9297 | 3330 s |
+| phased where repeat fraction <= 0.5 | 0.8561 | 0.9312 | 0.8611 | 0.9297 | 3330 s |
 
-The gate gives back most of the gain, *also* in truvari's non-TRF stratum:
-of the 22 unrefined V5 non-TRF FPs that phasing removes, 20 come from
-containers whose signals lie in repeats (15 of them at repeat fraction 1.0,
-e.g. a cluster of 13 over-split DELs around chr4:7.86 Mb, container 1303).
-Truvari's stratum says where the *call* lands, not whether the container is
-repetitive. Default is therefore 1.0 (phase every container); 0.5 is the
-cheap setting.
+It halves the cost but gives back most of the gain, also in truvari's
+non-TRF stratum: 20 of the 22 unrefined V5 non-TRF FPs that phasing removes
+come from containers whose signals lie in repeats (e.g. 13 over-split DELs
+around chr4:7.86 Mb, container 1303). Truvari's stratum says where the call
+lands, not whether the container is repetitive.
 
 ### Copy number
 

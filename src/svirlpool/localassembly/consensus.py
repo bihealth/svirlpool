@@ -2148,42 +2148,6 @@ def consensus_from_clusters(
     return result or None
 
 
-def repeat_signal_fraction(candidate_regions: dict[int, datatypes.CandidateRegion]) -> float:
-    """Fraction of the SV signals of a container that lie in a tandem repeat
-    (``repeatID != -1``, assigned from the TRF annotation during signal
-    processing).  0.0 for a container without signals."""
-    signals = [s for cr in candidate_regions.values() for s in cr.sv_signals]
-    if not signals:
-        return 0.0
-    return sum(s.repeatID != -1 for s in signals) / len(signals)
-
-
-def take_phasing_arm(
-    candidate_regions: dict[int, datatypes.CandidateRegion],
-    clustering_mode: str,
-    phasing_max_repeat_fraction: float,
-) -> bool:
-    """Whether a container is clustered by read phasing.
-
-    Only with ``clustering_mode == "phased"``, and only if at most
-    ``phasing_max_repeat_fraction`` of its SV signals lie in tandem repeats
-    (1.0 phases every container).  Gating at 0.5 halves the cost of the
-    phased mode on HG002 20x but gives back most of its F1 gain, which comes
-    largely from repeat containers.
-    """
-    if clustering_mode != "phased":
-        return False
-    repeat_fraction = repeat_signal_fraction(candidate_regions)
-    if repeat_fraction > phasing_max_repeat_fraction:
-        log.info(
-            f"{repeat_fraction:.2f} of the container's SV signals lie in tandem "
-            f"repeats (> {phasing_max_repeat_fraction}); using the legacy clustering "
-            "instead of read phasing."
-        )
-        return False
-    return True
-
-
 def consensus_while_phasing(
     samplename: str,
     alns: dict[int, list[pysam.AlignedSegment]],
@@ -3105,7 +3069,6 @@ def process_consensus_container(
     clustering_mode: str = "legacy",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    phasing_max_repeat_fraction: float = 1.0,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3196,7 +3159,7 @@ def process_consensus_container(
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
 
-    if take_phasing_arm(crs_dict, clustering_mode, phasing_max_repeat_fraction):
+    if clustering_mode == "phased":
         res = consensus_while_phasing(
             samplename=samplename,
             alns=alns,
@@ -3436,7 +3399,6 @@ def crs_containers_to_consensus(
     clustering_mode: str = "legacy",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    phasing_max_repeat_fraction: float = 1.0,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3537,7 +3499,6 @@ def crs_containers_to_consensus(
                     clustering_mode=clustering_mode,
                     phasing_flank=phasing_flank,
                     phasing_fallback=phasing_fallback,
-                    phasing_max_repeat_fraction=phasing_max_repeat_fraction,
                 )
 
                 # Validate consensuses immediately so the offending container
@@ -3659,7 +3620,6 @@ def run_consensus_script(args, **kwargs):
         clustering_mode=args.clustering_mode,
         phasing_flank=args.phasing_flank,
         phasing_fallback=args.phasing_fallback,
-        phasing_max_repeat_fraction=args.phasing_max_repeat_fraction,
     )
 
 
@@ -3796,16 +3756,6 @@ def get_consensus_parser(
         help="Experimental: with --clustering-mode phased, what to do when the phasing finds "
         "fewer than two alleles: 'single' (default) one consensus from all reads, 'legacy' "
         "the legacy clustering.",
-    )
-    parser.add_argument(
-        "--phasing-max-repeat-fraction",
-        type=float,
-        default=1.0,
-        help="Experimental: with --clustering-mode phased, take the read-phasing arm only "
-        "for containers in which at most this fraction of the SV signals lies in a tandem "
-        "repeat (TRF annotation); other containers use the legacy clustering. 1.0 (default) "
-        "phases every container. On HG002 20x, 0.5 halves the consensus-stage CPU but loses "
-        "most of the F1 gain: phasing removes over-split false calls of repeat containers.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

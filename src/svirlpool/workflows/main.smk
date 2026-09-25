@@ -85,7 +85,6 @@ max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 consensus_clustering_mode = config.get("consensus_clustering_mode", "legacy")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
-phasing_max_repeat_fraction = config.get("phasing_max_repeat_fraction", 1.0)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -675,7 +674,6 @@ rule consensus_consensus:
         clustering_mode=consensus_clustering_mode,
         phasing_flank=phasing_flank,
         phasing_fallback=phasing_fallback,
-        phasing_max_repeat_fraction=phasing_max_repeat_fraction,
     threads:
         get_consensus_threads
     conda:
@@ -713,7 +711,6 @@ rule consensus_consensus:
         --clustering-mode {params.clustering_mode} \
         --phasing-flank {params.phasing_flank} \
         --phasing-fallback {params.phasing_fallback} \
-        --phasing-max-repeat-fraction {params.phasing_max_repeat_fraction} \
         -o {output.container} \
         -t {threads} \
         --logfile {log.algorithm} \
