@@ -206,6 +206,36 @@ first timeout (`tool_timeouts.Escalate`). It no longer finishes a degraded
 result first: the phasing fallback, or legacy's all-vs-all retries on
 subsampled reads.
 
+End to end (`esc2_*`, c1c3f4c):
+
+| variant | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | consensus | longest batch | escalated |
+|---|---|---|---|---|---|---|---|
+| ava_phase2 | 0.8619 | 0.9503 | 0.8685 | 0.9498 | 6744 s | 436 s | (17 timeouts) |
+| perf_phased | 0.8558 | 0.9279 | 0.8606 | 0.9274 | 4617 s | 290 s | (7 timeouts) |
+| esc_phased | 0.8536 | 0.9279 | 0.8577 | 0.9274 | 5322 s | 416 s | 10 |
+| **esc2_phased** | **0.8577** | **0.9301** | 0.8582 | **0.9296** | **3598 s** | **214 s** | **2** |
+| esc_legacy | 0.8544 | 0.9275 | 0.8584 | 0.9237 | 2826 s | 419 s | 8 |
+| esc2_legacy | 0.8547 | 0.9275 | 0.8584 | 0.9237 | 2640 s | 413 s | 7 |
+
+Phased mode now has no phasing timeouts at all. The two escalations are
+lamassemble (965, 1931), both resolved at 4 threads. Phased mode costs 1.74x
+legacy (ava_phase2: 3.3x), with every locus resolved at F1 at or above
+perf_phased (V5 FP 140 -> 144, FN 341 -> 327). Legacy mode keeps its
+spectral all-vs-all timeouts (`-U 25,35`, 1059 unresolved); the early abort
+saves ~190 s.
+
+With the spectral all-vs-all at `-U 15,20` too (`esc3_legacy`, f70cdbc):
+
+| variant | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | consensus | longest batch | escalated |
+|---|---|---|---|---|---|---|---|
+| perf_legacy | 0.8552 | 0.9287 | 0.8585 | 0.9249 | 2067 s | 132 s | (timeouts degraded) |
+| esc3_legacy | 0.8524 | 0.9287 | 0.8631 | 0.9249 | 2481 s | 354 s | 6, all resolved |
+
+Every locus is resolved, including 1059. Outside TRF the calls are
+unchanged. In TRF, V5 loses 0.3 points and T2TQ100 gains 0.5. 568, 1059 and
+1076 still need 12 threads (150-170 s each): the spectral path has costs
+beyond the seeds that were not looked into.
+
 ## Not done / next
 
 * With the escalation, 1303-like containers (paralog-rich, phased correctly,
