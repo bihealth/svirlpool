@@ -224,7 +224,7 @@ perf_phased (V5 FP 140 -> 144, FN 341 -> 327). Legacy mode keeps its
 spectral all-vs-all timeouts (`-U 25,35`, 1059 unresolved); the early abort
 saves ~190 s.
 
-With the spectral all-vs-all at `-U 15,20` too (`esc3_legacy`, f70cdbc):
+With the spectral all-vs-all at `-U 15,20` too (`esc3_legacy`, f70cdbc; reverted: legacy mode is to be removed, so it stays as it is):
 
 | variant | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | consensus | longest batch | escalated |
 |---|---|---|---|---|---|---|---|
