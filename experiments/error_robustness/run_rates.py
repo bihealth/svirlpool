@@ -1,9 +1,10 @@
 """Consensus stage on a subsample of containers at added read error rates.
 
-For every rate, runs ``consensus.crs_containers_to_consensus`` (phased mode,
-the work dir's config) on the same random subsample of containers, with
-``added_error_rate`` = rate: the reads cut for the phasing and for the
-assembly get that many additional random errors per base
+For every rate, runs ``consensus.crs_containers_to_consensus`` (the work
+dir's config; ``--mode`` overrides its clustering mode) on the same random
+subsample of containers, with ``added_error_rate`` = rate: the reads cut for
+the phasing and for the assembly get that many additional random errors per
+base
 (``consensus.add_read_errors``). Writes, per rate, ``<out>/rate_<r>/``:
 the consensus JSONL of every chunk and ``containers.tsv`` (per container:
 wall seconds, attempts, timed-out tools, number of consensuses).
@@ -43,8 +44,10 @@ def sample_crIDs(workdir: Path, fraction: float, seed: int) -> list[int]:
 
 
 def run_chunk(args) -> list[dict]:
-    workdir, out, crIDs, rate, threads = args
+    workdir, out, crIDs, rate, threads, mode = args
     cfg = json.load(open(workdir / "config.json"))
+    if mode:
+        cfg["consensus_clustering_mode"] = mode
     # the tools' stderr (lamassemble's "using X out of Y sequences") goes to
     # the chunk log, after a CONTAINER marker per attempt
     log_path = out.with_suffix(".log")
@@ -117,6 +120,9 @@ def main():
     p.add_argument("--procs", type=int, default=12)
     p.add_argument("--chunk", type=int, default=10)
     p.add_argument("--threads", type=int, default=12, help="escalation ceiling")
+    p.add_argument(
+        "--mode", choices=["phased", "legacy"], help="override the clustering mode"
+    )
     a = p.parse_args()
 
     crIDs = sample_crIDs(a.workdir, a.fraction, a.seed)
@@ -128,7 +134,7 @@ def main():
         d = a.out_dir / f"rate_{rate:.2f}"
         d.mkdir(exist_ok=True)
         jobs = [
-            (a.workdir, d / f"chunk_{i:03d}.jsonl", c, rate, a.threads)
+            (a.workdir, d / f"chunk_{i:03d}.jsonl", c, rate, a.threads, a.mode)
             for i, c in enumerate(chunks)
         ]
         t0 = time.perf_counter()

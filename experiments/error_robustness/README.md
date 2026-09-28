@@ -96,9 +96,42 @@ disagreements by site balance / support like the agreements; estimating
 `error_rate` of the pair weights from the observed read divergence instead of
 the fixed 0.1.
 
+## Legacy clustering on the same containers
+
+Same 200 containers, same work dir (`esc2_phased`), `run_rates.py --mode
+legacy` (KMeans on summed indels, spectral fallback, -U 25,35). Side by side
+(`compare.py`, `results/compare.tsv`; recovery = containers with every truth
+allele matched):
+
+| added | het phased | het legacy | cpx_het phased | cpx_het legacy | hom phased | hom legacy | alleles phased | alleles legacy | pair acc phased | pair acc legacy | CPU phased | CPU legacy |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0.00 | 0.909 | 0.753 | 0.590 | 0.359 | 0.921 | 0.905 | 0.882 | 0.778 | 0.941 | 0.728 | 280 | 144 |
+| 0.02 | 0.857 | 0.766 | 0.590 | 0.359 | 0.921 | 0.905 | 0.869 | 0.791 | 0.910 | 0.730 | 312 | 153 |
+| 0.04 | 0.818 | 0.766 | 0.538 | 0.308 | 0.921 | 0.905 | 0.837 | 0.784 | 0.815 | 0.722 | 316 | 156 |
+| 0.05 | 0.766 | 0.753 | 0.436 | 0.359 | 0.921 | 0.905 | 0.801 | 0.781 | 0.738 | 0.716 | 313 | 158 |
+| 0.06 | 0.584 | 0.753 | 0.359 | 0.333 | 0.905 | 0.905 | 0.696 | 0.788 | 0.665 | 0.714 | 324 | 159 |
+| 0.07 | 0.364 | 0.779 | 0.103 | 0.333 | 0.921 | 0.905 | 0.569 | 0.797 | 0.578 | 0.716 | 350 | 162 |
+| 0.08 | 0.169 | 0.766 | 0.026 | 0.333 | 0.905 | 0.889 | 0.477 | 0.784 | 0.536 | 0.713 | 366 | 168 |
+| 0.10 | 0.000 | 0.753 | 0.000 | 0.359 | 0.873 | 0.905 | 0.376 | 0.788 | 0.506 | 0.702 | 438 | 181 |
+
+Legacy splits 105 of 200 containers into >= 2 consensuses at every rate
+(phased: 179 -> 1); 92 % of its containers recover the same alleles at +10 %
+as at 0. Phased is ahead up to +5 % (the crossover in alleles recovered is
+between 5 and 6 %), legacy from +6 %.
+
+**Caveat, the comparison favours legacy:** legacy's allele decision (KMeans
+on the summed indels >= 12 bp per read) is computed from the read-vs-reference
+alignments of the BAM, which the simulation does not touch; only its
+consensus reads and its spectral fallback see the errors. Phased decides on
+the mutated reads. So legacy's flat curve shows that its decision never saw
+the errors, not that it would survive real noisier reads. A fair test
+realigns the mutated reads to the reference (or mutates the BAM) before the
+indel features are taken.
+
 ## Files
 
-`run_rates.py` consensus runs per rate, `eval_rates.py` evaluation,
+`run_rates.py` consensus runs per rate (`--mode` overrides the clustering
+mode), `eval_rates.py` evaluation, `compare.py` modes side by side,
 `breakdown.py` per category + phasing metadata, `phase_diag.py` phasing
 alone with filter variants on dumped read sets
 (`consensus_perf/dump_phasing_reads.py --orient`), `phase_steps.py` one
@@ -108,4 +141,5 @@ container step by step, `py.sh` runner, `results/`.
 bash py.sh run_rates.py <svirlpool workdir> <out> --procs 12   # ~7 min
 bash py.sh eval_rates.py <out> <out>/eval.tsv
 bash py.sh breakdown.py <out>
+bash py.sh compare.py phased=<out>/eval.tsv legacy=<out_legacy>/eval.tsv --out cmp.tsv
 ```
