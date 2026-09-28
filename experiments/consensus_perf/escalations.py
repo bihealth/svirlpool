@@ -21,7 +21,9 @@ for v in sys.argv[1:]:
             continue
         cur = t0 = None
         for line in open(fn):
-            m = re.search(r"representative crID (\d+)\)|Wrote \d+ container results", line)
+            m = re.search(
+                r"representative crID (\d+)\)|Wrote \d+ container results", line
+            )
             if m:
                 t = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S,%f")
                 if cur is not None:

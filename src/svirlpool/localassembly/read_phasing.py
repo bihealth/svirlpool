@@ -60,8 +60,13 @@ _RC = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
 @dataclass
 class PhasingParams:
-    # minimap2: the ava-ont preset without -X (all pairs in both directions)
-    minimap_params: str = "-k15 -w5 -e0 -m100 -r2k"
+    # minimap2: the ava-ont preset without -X (all pairs in both directions).
+    # -U15,20: minimizers occurring more than 20 times in the pooled reads are
+    # not seeds. In a tandem repeat every copy in every read matches, the
+    # anchors explode and chaining took up to minutes; masked, no container
+    # needs more than a few seconds, and the phasing is slightly more
+    # accurate (experiments/consensus_perf/README.md).
+    minimap_params: str = "-k15 -w5 -e0 -m100 -r2k -U15,20"
     # align every read pair once (--dual=no) and derive the other direction
     # by inverting the alignment: half the alignment work
     align_pairs_once: bool = True

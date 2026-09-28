@@ -3,7 +3,7 @@
 Reads the per-container read sets written by ``dump_phasing_reads.py``.
 
 usage: phasing_eval.py <reads_dir> <out.tsv> [--procs 12] [--crIDs FILE|a,b,c]
-                       [--compare BASE.tsv] [param=value ...]
+                       [--compare BASE.tsv] [--timeout 20] [param=value ...]
 
 ``param=value`` sets ``read_phasing.PhasingParams`` fields. Prints a summary:
 time, trio pair accuracy of the assigned reads, fraction of containers phased
@@ -57,10 +57,10 @@ def pair_accuracy(groups: dict[str, int], trio: dict[str, str]):
 
 
 def run_one(args):
-    path, params = args
+    path, params, timeout = args
     reads = {r.id: r for r in SeqIO.parse(path, "fasta")}
     t0 = time.perf_counter()
-    res = read_phasing.phase_reads(reads, params=params, timeout=20)
+    res = read_phasing.phase_reads(reads, params=params, timeout=timeout)
     return {
         "crID": int(path.stem),
         "n_reads": len(reads),
@@ -90,6 +90,7 @@ def main():
     p.add_argument("--procs", type=int, default=12)
     p.add_argument("--crIDs")
     p.add_argument("--compare", type=Path)
+    p.add_argument("--timeout", type=int, default=20)
     p.add_argument("params", nargs="*")
     a = p.parse_args()
     kw = {}
@@ -109,7 +110,7 @@ def main():
     files.sort(key=lambda f: -f.stat().st_size)
     t0 = time.perf_counter()
     with Pool(a.procs) as pool:
-        rows = list(pool.imap_unordered(run_one, [(f, params) for f in files]))
+        rows = list(pool.imap_unordered(run_one, [(f, params, a.timeout) for f in files]))
     wall = time.perf_counter() - t0
     rows.sort(key=lambda r: r["crID"])
     trio = load_trio()

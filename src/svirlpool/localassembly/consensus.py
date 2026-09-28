@@ -3490,9 +3490,10 @@ def crs_containers_to_consensus(
 
     Each container is processed at the first level of `escalation`
     (threads, timeout of each external tool call). If a tool timed out in it
-    (the phasing or spectral all-vs-all, lamassemble), it is processed again
-    at the next level, until one finishes or the last level, the hard
-    ceiling, is reached; then its degraded result is kept. `threads` caps the
+    (the phasing or spectral all-vs-all, lamassemble), it is abandoned right
+    away and processed again at the next level, until one finishes or the
+    last level, the hard ceiling, is reached; there the tools' own fallbacks
+    run and the degraded result is kept. `threads` caps the
     threads of every level (0: the CPUs this process may use).
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
@@ -3575,35 +3576,41 @@ def crs_containers_to_consensus(
                 for attempt, (attempt_threads, attempt_timeout) in enumerate(
                     attempts
                 ):
-                    with tool_timeouts.watch() as timed_out:
-                        consensuses, _unused = process_consensus_container(
-                            samplename=samplename,
-                            crs_dict=crs_dict,
-                            read_cache=cache,
-                            tmp_dir_path=tmp_dir_path,
-                            copy_number_tracks=copy_number_tracks,
-                            threads=attempt_threads,
-                            buffer_clipped_length=buffer_clipped_sequence,
-                            lamassemble_mat=lamassemble_mat,
-                            timeout=attempt_timeout,
-                            figures_dir=figures_dir,
-                            verbose=verbose,
-                            densities_weight=densities_weight,
-                            max_intra_distance=max_intra_distance,
-                            cn_override=cn_override,
-                            consensus_method=consensus_method,
-                            max_padding_size=max_padding_size,
-                            max_copy_number_threshold=max_copy_number_threshold,
-                            clustering_mode=clustering_mode,
-                            phasing_flank=phasing_flank,
-                            phasing_fallback=phasing_fallback,
-                        )
+                    # below the last level, a container is abandoned at its first
+                    # timeout instead of finishing a degraded result first
+                    last_level = attempt + 1 == len(attempts)
+                    try:
+                        with tool_timeouts.watch(escalate=not last_level) as timed_out:
+                            consensuses, _unused = process_consensus_container(
+                                samplename=samplename,
+                                crs_dict=crs_dict,
+                                read_cache=cache,
+                                tmp_dir_path=tmp_dir_path,
+                                copy_number_tracks=copy_number_tracks,
+                                threads=attempt_threads,
+                                buffer_clipped_length=buffer_clipped_sequence,
+                                lamassemble_mat=lamassemble_mat,
+                                timeout=attempt_timeout,
+                                figures_dir=figures_dir,
+                                verbose=verbose,
+                                densities_weight=densities_weight,
+                                max_intra_distance=max_intra_distance,
+                                cn_override=cn_override,
+                                consensus_method=consensus_method,
+                                max_padding_size=max_padding_size,
+                                max_copy_number_threshold=max_copy_number_threshold,
+                                clustering_mode=clustering_mode,
+                                phasing_flank=phasing_flank,
+                                phasing_fallback=phasing_fallback,
+                            )
+                    except tool_timeouts.Escalate:
+                        pass
                     if not timed_out:
                         break
                     tools = ", ".join(sorted(set(timed_out)))
                     if attempt == 0:
                         n_escalated += 1
-                    if attempt + 1 < len(attempts):
+                    if not last_level:
                         next_threads, next_timeout = attempts[attempt + 1]
                         log.warning(
                             f"Container {rep_crID}: {tools} timed out "

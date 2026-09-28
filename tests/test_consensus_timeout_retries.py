@@ -86,12 +86,14 @@ def _run_batch(tmp_path, monkeypatch, timing_out_attempts, escalation=None):
     monkeypatch.setattr(consensus.read_cache_mod, "ReadSequenceCache", _Cache)
     monkeypatch.setattr(consensus, "available_cpus", lambda: 24)
     calls = []
+    finished = []  # attempts that went on after their timeout (the fallbacks)
 
     def process(crs_dict, threads, timeout, **kwargs):
         crID = next(iter(crs_dict))
         calls.append((crID, threads, timeout))
         if crID == 1 and sum(c[0] == 1 for c in calls) <= timing_out_attempts:
             tool_timeouts.record("lamassemble")
+            finished.append((crID, threads, timeout))
         return {}, {}
 
     monkeypatch.setattr(consensus, "process_consensus_container", process)
@@ -112,6 +114,7 @@ def _run_batch(tmp_path, monkeypatch, timing_out_attempts, escalation=None):
         escalation=escalation or [(1, 20), (4, 60), (12, 120), (32, 300)],
     )
     lines = [json.loads(line) for line in out.read_text().splitlines()]
+    _run_batch.finished = finished
     return calls, lines
 
 
@@ -126,6 +129,18 @@ def test_escalation_stops_at_the_ceiling(tmp_path, monkeypatch):
     calls, lines = _run_batch(tmp_path, monkeypatch, timing_out_attempts=99)
     assert calls == [(1, 1, 20), (1, 4, 60), (1, 12, 120), (1, 16, 300), (2, 1, 20)]
     assert len(lines) == 2
+    # abandoned at the timeout below the last level, the fallbacks run only there
+    assert _run_batch.finished == [(1, 16, 300)]
+
+
+def test_escalate_passes_broad_exception_handlers():
+    with tool_timeouts.watch(escalate=True) as hits:
+        with pytest.raises(tool_timeouts.Escalate):
+            try:
+                tool_timeouts.record("lamassemble")
+            except Exception:  # the consensus code's fallbacks
+                pass
+    assert hits == ["lamassemble"]
 
 
 def test_single_level_does_not_escalate(tmp_path, monkeypatch):
