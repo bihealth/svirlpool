@@ -236,6 +236,42 @@ unchanged. In TRF, V5 loses 0.3 points and T2TQ100 gains 0.5. 568, 1059 and
 1076 still need 12 threads (150-170 s each): the spectral path has costs
 beyond the seeds that were not looked into.
 
+## Whole-genome extrapolation (crude)
+
+`wg_estimate.py`: esc2_legacy and esc2_phased (same code, c1c3f4c), HG002
+20x. The 22 blocks cover 151.7 Mb, 5% of hg38 and ~5% of the truth SVs, so
+per-region costs are scaled x20.4. Run CPU is from `/usr/bin/time` (user +
+sys, all tools).
+
+| | legacy | phased | phased / legacy |
+|---|---|---|---|
+| blocks: `svirlpool run` CPU | 3397 s | 4293 s | 1.26x |
+| blocks: consensus batches | 2640 s | 3598 s | 1.36x |
+| blocks: everything else (wall) | ~134 s | ~145 s | |
+| **whole genome: CPU** | **~19 h** | **~24 h** | 1.26x |
+| whole genome: consensus CPU | ~15 h | ~20 h | |
+| whole genome: consensus batches | ~610 | ~610 | |
+| **whole genome: wall, 16 cores** | **~1.5-2 h** | **~2-2.5 h** | |
+| whole genome: wall, 64 cores | ~1 h | ~1 h | |
+| peak memory | ~13 GB (one step) + ~1-1.5 GB per running batch | same | |
+
+* Wall = consensus CPU / cores, plus the non-consensus stages scaled as they
+  ran (~45-50 min if their parallelism does not grow with the genome; less
+  if it does). At 64 cores those stages dominate, so both modes take about
+  the same time.
+* The 12.5 GB peak is `consensus_align_to_initial_reference` (one job),
+  most likely minimap2's GRCh38 index, which would not scale; the batches
+  need <= 1.5 GB each.
+* Legacy here includes its escalations (the spectral all-vs-all timeouts). Without
+  them (perf_legacy: degraded, 2067 s) its consensus would be ~12 h, and
+  phased would cost 1.7x.
+* Likely low: the blocks are autosomal and hold ~5% of the SVs. The rest of
+  the genome also has centromere-adjacent sequence, segdups and chrX/Y,
+  where repeat containers (the expensive ones) are denser. Containers with
+  CN > 4 are skipped in both modes. Cost grows with coverage: the all-vs-all
+  grows with the square of the reads up to the 50-read cap, lamassemble
+  roughly linearly. Read at 20x as +-50%.
+
 ## Not done / next
 
 * With the escalation, 1303-like containers (paralog-rich, phased correctly,
