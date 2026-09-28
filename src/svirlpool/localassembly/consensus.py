@@ -3102,7 +3102,7 @@ def process_consensus_container(
     max_intra_distance: float = -1.0,
     cn_override: int | None = None,
     max_copy_number_threshold: int = 4,
-    clustering_mode: str = "legacy",
+    clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
 ) -> tuple[
@@ -3474,7 +3474,7 @@ def crs_containers_to_consensus(
     cn_override: int | None = None,
     max_padding_size: int = 30000,
     max_copy_number_threshold: int = 4,
-    clustering_mode: str = "legacy",
+    clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
 ) -> None:
@@ -3868,26 +3868,27 @@ def get_consensus_parser(
     )
     parser.add_argument(
         "--clustering-mode",
-        choices=("legacy", "phased"),
-        default="legacy",
-        help="Experimental: how the reads of a container are split into alleles. 'legacy' "
-        "(default): KMeans on summed indels, else spectral clustering of the all-vs-all SV "
-        "signals with k = local copy number. 'phased': phase the reads by the SNVs and SVs in "
-        "their all-vs-all alignments (reads cut to the region +- --phasing-flank) and build "
-        "one consensus per allele found; the copy number is not used for the allele count.",
+        choices=("phased", "legacy"),
+        default="phased",
+        help="How the reads of a container are split into alleles. 'phased' (default): "
+        "phase the reads by the SNVs and SVs in their all-vs-all alignments (reads cut to "
+        "the region +- --phasing-flank) and build one consensus per allele found; the copy "
+        "number is not used for the allele count. 'legacy' (deprecated, to be removed): "
+        "KMeans on summed indels, else spectral clustering of the all-vs-all SV signals with "
+        "k = local copy number.",
     )
     parser.add_argument(
         "--phasing-flank",
         type=int,
         default=10000,
-        help="Experimental: flank (bp) around the candidate regions to which reads are cut "
-        "for --clustering-mode phased (default: 10000).",
+        help="Flank (bp) around the candidate regions to which reads are cut for "
+        "--clustering-mode phased (default: 10000).",
     )
     parser.add_argument(
         "--phasing-fallback",
         choices=("single", "legacy"),
         default="single",
-        help="Experimental: with --clustering-mode phased, what to do when the phasing finds "
+        help="With --clustering-mode phased, what to do when the phasing finds "
         "fewer than two alleles: 'single' (default) one consensus from all reads, 'legacy' "
         "the legacy clustering.",
     )

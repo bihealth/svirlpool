@@ -247,17 +247,18 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--consensus-clustering-mode",
-        help="Experimental: how the reads of a candidate-region container are split into "
-        "alleles before assembly. 'legacy' (default): KMeans on summed indels, else spectral "
-        "clustering with k = local copy number. 'phased': phase the reads by the SNVs and SVs "
-        "in their all-vs-all alignments and build one consensus per allele found.",
+        help="How the reads of a candidate-region container are split into alleles before "
+        "assembly. 'phased' (default): phase the reads by the SNVs and SVs in their "
+        "all-vs-all alignments and build one consensus per allele found. 'legacy' "
+        "(deprecated, to be removed): KMeans on summed indels, else spectral clustering with "
+        "k = local copy number.",
         required=False,
-        choices=("legacy", "phased"),
-        default="legacy",
+        choices=("phased", "legacy"),
+        default="phased",
     )
     parser_run_wf.add_argument(
         "--phasing-flank",
-        help="Experimental: flank (bp) around the candidate regions to which reads are cut "
+        help="Flank (bp) around the candidate regions to which reads are cut "
         "for read phasing with --consensus-clustering-mode phased (default: 10000).",
         required=False,
         type=int,
@@ -265,7 +266,7 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--phasing-fallback",
-        help="Experimental: with --consensus-clustering-mode phased, what to do when the "
+        help="With --consensus-clustering-mode phased, what to do when the "
         "phasing finds fewer than two alleles: 'single' (default) one consensus from all "
         "reads, 'legacy' the legacy clustering.",
         required=False,

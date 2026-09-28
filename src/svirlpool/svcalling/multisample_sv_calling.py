@@ -1987,11 +1987,12 @@ def _parse_consensusID_parts(
 #: reads, so the resulting call does not earn an unbounded quality.
 MULTI_ASSEMBLY_OVERRIDE_GQ_CEILING = 30
 
-#: Experimental, set from the CLI. "all": the original rule, any 1/1 call touching
-#: a multi-assembly crID becomes 0/1. "subset": only calls absent from at least
-#: one of the crID's assemblies -- a call carried by every assembly is evidence
-#: FOR homozygosity. "off": no override.
-MULTI_ASSEMBLY_OVERRIDE: str = "all"
+#: Set from the CLI. "subset" (default): only 1/1 calls absent from at least one
+#: of the crID's assemblies become 0/1 -- a call carried by every assembly is
+#: evidence FOR homozygosity (with phased consensus clustering a hom SV is carried
+#: by both haplotype consensuses). "all": the original rule, any 1/1 call
+#: touching a multi-assembly crID becomes 0/1. "off": no override.
+MULTI_ASSEMBLY_OVERRIDE: str = "subset"
 
 
 def _apply_multi_assembly_override(
@@ -2063,7 +2064,10 @@ def correct_genotypes_for_multi_assembly_loci(
     diploid context, not homozygous (1/1).
 
     This function detects such cases by parsing the consensusIDs on each SVcall and
-    overrides any 1/1 genotype to 0/1 for the affected sample.
+    overrides a 1/1 genotype to 0/1 for the affected sample. With the default
+    ``MULTI_ASSEMBLY_OVERRIDE`` "subset", only calls missing from at least one of
+    the crID's assemblies are overridden: a call carried by every assembly (e.g. a
+    hom SV on both phased haplotype consensuses) stays 1/1.
     """
     # Step 1: For each SVcall, collect (samplename, crID) → set of subIDs
     #         Also build an index from (samplename, crID) → list of SVcall indices
@@ -2719,7 +2723,7 @@ def run(args) -> None:
 
     _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
-    MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "all")
+    MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "subset")
 
     log_level = getattr(logging, args.log_level)
     handlers: list[logging.Handler] = [logging.StreamHandler()]
@@ -2929,9 +2933,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--multi-assembly-override",
-        choices=("all", "subset", "off"),
-        default="all",
-        help="Experimental: which 1/1 calls at multi-assembly loci are forced to 0/1 (default: all).",
+        choices=("subset", "all", "off"),
+        default="subset",
+        help="Which 1/1 calls at multi-assembly loci are forced to 0/1: 'subset' (default) "
+        "those missing from at least one of the locus' assemblies, 'all' every one, 'off' none.",
     )
     parser.add_argument(
         "--repeat-collapse-max-gap",
