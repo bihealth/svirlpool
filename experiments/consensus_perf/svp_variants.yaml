@@ -24,4 +24,15 @@ variants:
     pixi_env: dev
     run_flags: "--consensus-clustering-mode phased"
     call_flags: "--multi-assembly-override subset"
-active_variants: [esc_legacy, esc_phased]
+  # + repeat seeds masked in the phasing all-vs-all, early abort (c1c3f4c)
+  esc2_legacy:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/consensus-perf/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: "--haplotype-aware-merge --multi-assembly-override subset"
+  esc2_phased:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/consensus-perf/pyproject.toml
+    pixi_env: dev
+    run_flags: "--consensus-clustering-mode phased"
+    call_flags: "--multi-assembly-override subset"
+active_variants: [esc2_legacy, esc2_phased]

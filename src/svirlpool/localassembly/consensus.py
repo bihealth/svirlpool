@@ -1403,7 +1403,7 @@ def consensus_while_clustering(
                         bamout=tmp_all_vs_all_sam.name,
                         reads=tmp_all_reads.name,
                         reference=tmp_all_reads.name,
-                        aln_args=" --sam-hit-only --secondary=yes -U 25,35 -H",
+                        aln_args=" --sam-hit-only --secondary=yes -U 15,20 -H",
                         tech="ava-ont",
                         threads=threads,
                     )

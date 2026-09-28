@@ -170,6 +170,42 @@ End to end (`esc_legacy` / `esc_phased` in `svp_variants.yaml`, commit
   resolves are repeat containers where the resolved result calls slightly
   worse than the fallback did.
 
+## Repeat seeds in the phasing all-vs-all
+
+Why the escalated containers were slow (`ava_modes.py`, `ava_params.py`):
+not the base-level alignment bandwidth (`-r500` is slower than `-r2k`), and
+not redundant secondary alignments. Aligning every pair separately
+(one minimap2 call per target read, `-N 0`) is slower still: 218 takes 58 s
+against 37 s, because the joint call skips about half the pairs (117 of 231).
+It is chaining. In a tandem repeat every copy of a minimizer in every read
+matches, and the anchors explode. Masking them fixes it: with `-U a,b`,
+minimap2 does not seed with minimizers occurring more than `b` times in the
+pooled reads. The bounds must differ; `-U x,x` falls back to the default.
+
+All 2004 containers, reads cut to CR +- 10 kb, 12 processes, 300 s timeout
+(`phasing_eval.py --timeout 300`), trio read labels as truth:
+
+| minimap2 seeds | phasing time (sum) | slowest | pair acc. | containers perfect |
+|---|---|---|---|---|
+| default (before) | 2959 s | 274 s | 0.9727 | 0.937 |
+| **`-U15,20` (new default)** | **1703 s** | **6.4 s** | **0.9753** | **0.945** |
+| `-U10,15` | 2262 s | 7.0 s | 0.9742 | 0.942 |
+| threshold 1.0 x reads | 1690 s | 12.5 s | 0.9735 | 0.940 |
+| threshold 0.75 x reads | 1618 s | 6.9 s | 0.9732 | 0.941 |
+| threshold 0.5 x reads | 3455 s | 8.4 s | 0.9664 | 0.925 |
+
+By read count: up to 40 reads `-U15,20` matches or beats the default. At
+40-50 reads (23 containers; phasing is capped at 50) the default reaches
+pair accuracy 0.74, `-U15,20` 0.90, in a seventh of the time. Thresholds that
+drop below about 10 (0.5 x reads in small containers) leave too few seeds;
+the result is worse and even slower. What matters is an absolute floor, not
+scaling with the read count.
+
+Also, below the last escalation level a container is now abandoned at its
+first timeout (`tool_timeouts.Escalate`). It no longer finishes a degraded
+result first: the phasing fallback, or legacy's all-vs-all retries on
+subsampled reads.
+
 ## Not done / next
 
 * With the escalation, 1303-like containers (paralog-rich, phased correctly,
