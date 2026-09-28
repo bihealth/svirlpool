@@ -85,6 +85,8 @@ max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
+# None = take each container's copy number from the copy-number track.
+cn_override = config.get("cn_override", None)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -664,6 +666,7 @@ rule consensus_consensus:
         consensus_method=consensus_method,
         max_padding_size=max_padding_size,
         max_consensus_copy_number=max_consensus_copy_number,
+        cn_override_arg=f"--cn-override {cn_override}" if cn_override is not None else "",
         clustering_mode=consensus_clustering_mode,
         phasing_flank=phasing_flank,
         phasing_fallback=phasing_fallback,
@@ -700,7 +703,7 @@ rule consensus_consensus:
         --batch-id {wildcards.batch_id} \
         -a {params.alignments} \
         --max-padding-size {params.max_padding_size} \
-        --max-copy-number {params.max_consensus_copy_number} \
+        --max-copy-number {params.max_consensus_copy_number} {params.cn_override_arg} \
         --clustering-mode {params.clustering_mode} \
         --phasing-flank {params.phasing_flank} \
         --phasing-fallback {params.phasing_fallback} \
