@@ -511,12 +511,16 @@ def trim_reads(
     dict_alignments: dict[int, list[pysam.AlignedSegment]],
     intervals: dict[str, tuple[int, int, str, int, str, int]],
     read_records: dict[str, SeqRecord],
+    added_error_rate: float = 0.0,
+    error_seed: int = 0,
 ) -> dict[str, SeqRecord]:
     """
     Trim reads based on alignment intervals.
 
     Returns a dict of the form {aug_readname:SeqRecord}.
     The description holds the cut positions on both read and reference.
+    ``added_error_rate`` > 0 adds random sequencing errors to the cut reads
+    (``add_read_errors``; robustness experiments only).
     """
     # dict_alignments is of the form: dict_alignments[cr.crID]=[pysam.AlignedSegment]
     # returns a list of read sequence records
@@ -587,8 +591,91 @@ def trim_reads(
                 )
                 # log.info(f"{read_aug_name} cut from {start} to {end} on ref: {ref_start} to {ref_end}")
                 record.description = f"crID={crID},start={start},end={end},ref_start_chr={chosen_ref_start[0]},ref_start={chosen_ref_start[1]},ref_end_chr={chosen_ref_end[0]},ref_end={chosen_ref_end[1]}"
+                if added_error_rate > 0:
+                    record = add_read_errors(
+                        record, start=start, rate=added_error_rate, seed=error_seed
+                    )
                 cut_reads[aln.query_name] = record
     return cut_reads
+
+
+# =============================================================================
+# SIMULATED SEQUENCING ERRORS (robustness experiments)
+# =============================================================================
+
+_ERROR_BLOCK = 4096
+_ACGT = np.frombuffer(b"ACGT", dtype=np.uint8)
+_BASE_CODE = np.full(256, 4, dtype=np.uint8)
+for _i, _b in enumerate(b"ACGT"):
+    _BASE_CODE[_b] = _i
+    _BASE_CODE[_b + 32] = _i  # lower case
+
+
+def _error_draws(
+    readname: str, start: int, end: int, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Random draws of read positions [start, end): u, error kind, base.
+
+    Drawn per block of the full read from (seed, read name, block), so any
+    two cuts of a read see the same draws where they overlap, and a higher
+    error rate adds errors to those of a lower one (error iff u < rate).
+    """
+    key = int(hashlib.md5(readname.encode()).hexdigest()[:8], 16)
+    b0, b1 = start // _ERROR_BLOCK, (end - 1) // _ERROR_BLOCK
+    us, kinds, bases = [], [], []
+    for b in range(b0, b1 + 1):
+        rng = np.random.default_rng([seed, key, b])
+        us.append(rng.random(_ERROR_BLOCK))
+        kinds.append(rng.integers(0, 3, _ERROR_BLOCK, dtype=np.uint8))
+        bases.append(rng.integers(0, 4, _ERROR_BLOCK, dtype=np.uint8))
+    lo = start - b0 * _ERROR_BLOCK
+    hi = lo + (end - start)
+    return (
+        np.concatenate(us)[lo:hi],
+        np.concatenate(kinds)[lo:hi],
+        np.concatenate(bases)[lo:hi],
+    )
+
+
+def add_read_errors(
+    record: SeqRecord, start: int, rate: float, seed: int = 0
+) -> SeqRecord:
+    """A copy of a cut read with additional random sequencing errors.
+
+    ``start`` is the cut's offset on the full read. Every base is an error
+    with probability ``rate``: a substitution, an insertion of a random base
+    before it, or a deletion, one third each.
+    """
+    n = len(record)
+    if n == 0 or rate <= 0:
+        return record
+    u, kind, rnd = _error_draws(record.id, start, start + n, seed)
+    err = u < rate
+    seq = np.frombuffer(str(record.seq).encode(), dtype=np.uint8).copy()
+    sub = err & (kind == 0)
+    ins = err & (kind == 1)
+    keep = ~(err & (kind == 2))
+    code = _BASE_CODE[seq[sub]]
+    # a different base than the original one (any base for non-ACGT)
+    seq[sub] = _ACGT[np.where(code < 4, (code + 1 + rnd[sub] % 3) % 4, rnd[sub])]
+    # per position: [inserted base, own base], emitted by [ins, keep]
+    pairs = np.stack([_ACGT[rnd], seq], axis=1).reshape(-1)
+    mask = np.stack([ins, keep], axis=1).reshape(-1)
+    new_seq = pairs[mask].tobytes().decode()
+    annotations = {}
+    q = record.letter_annotations.get("phred_quality")
+    if q is not None:
+        q = np.asarray(q)
+        annotations["phred_quality"] = (
+            np.stack([q, q], axis=1).reshape(-1)[mask].tolist()
+        )
+    return SeqRecord(
+        Seq(new_seq),
+        id=record.id,
+        name=record.name,
+        description=record.description,
+        letter_annotations=annotations,
+    )
 
 
 # =============================================================================
@@ -2197,6 +2284,7 @@ def consensus_while_phasing(
     tmp_dir_path: Path | str | None = None,
     timeout: int = 120,
     verbose: bool = False,
+    added_error_rate: float = 0.0,
 ) -> dict[str, consensus_class.Consensus] | None:
     """Experimental: one consensus per haplotype found by read phasing.
 
@@ -2218,6 +2306,7 @@ def consensus_while_phasing(
         dict_alignments=alns,
         intervals=get_max_extents_of_read_alignments_on_cr(intervals),
         read_records=read_records,
+        added_error_rate=added_error_rate,
     )
     phasing_reads = orient_reads_to_reference(
         {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}, alns
@@ -3105,6 +3194,7 @@ def process_consensus_container(
     clustering_mode: str = "legacy",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
+    added_error_rate: float = 0.0,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3177,7 +3267,10 @@ def process_consensus_container(
         print(f"max_intervals: {max_intervals}")
     log.info("cutting reads from alignments")
     cutreads: dict[str, SeqRecord] = trim_reads(
-        dict_alignments=alns, intervals=max_intervals, read_records=read_records
+        dict_alignments=alns,
+        intervals=max_intervals,
+        read_records=read_records,
+        added_error_rate=added_error_rate,
     )
     log.info(f"number of reads: {len(cutreads)}")
     log.info(
@@ -3211,6 +3304,7 @@ def process_consensus_container(
             tmp_dir_path=tmp_dir_path,
             timeout=timeout,
             verbose=verbose,
+            added_error_rate=added_error_rate,
         )
     if not res:
         res = consensus_while_clustering_with_kmeans(
@@ -3477,6 +3571,7 @@ def crs_containers_to_consensus(
     clustering_mode: str = "legacy",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
+    added_error_rate: float = 0.0,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3602,6 +3697,7 @@ def crs_containers_to_consensus(
                                 clustering_mode=clustering_mode,
                                 phasing_flank=phasing_flank,
                                 phasing_fallback=phasing_fallback,
+                                added_error_rate=added_error_rate,
                             )
                     except tool_timeouts.Escalate:
                         pass
