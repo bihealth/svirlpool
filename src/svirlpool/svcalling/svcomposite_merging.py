@@ -206,6 +206,149 @@ def _cohens_d_report(cohensD: float | None, d: float) -> str:
     return f"  Cohen's D: {cohensD:.3f}, threshold: {d}"
 
 
+#: Experimental, set once from the CLI (--size-gates) before any worker process
+#: is forked. Which of the three size gates of `_similar_size_detail` are
+#: active; a pair is size-similar if ANY active gate accepts it, and with none
+#: active every pair passes (proximity and k-mers then decide alone).
+#:
+#:   fraction    |size_a - size_b| <= tol * max(size)           (a-priori bound)
+#:   complexity  the population means lie within the two complexity
+#:               allowances (1 - complexity) * |size| * factor   (short-circuit)
+#:   noise       Cohen's d of the two size populations <= d; the populations
+#:               are first shifted toward each other by the complexity
+#:               allowances only when `complexity` is active too
+#:
+#: All three (the default) is the behaviour before this switch existed.
+SIZE_GATE_NAMES: tuple[str, ...] = ("fraction", "complexity", "noise")
+SIZE_GATES: frozenset[str] = frozenset(SIZE_GATE_NAMES)
+
+
+def _similar_size_detail(
+    a: SVcomposite,
+    b: SVcomposite,
+    apriori_size_difference_fraction_tolerance: float,
+    scale_by_complexity_factor: float,
+    d: float,
+    gates: frozenset[str] | None = None,
+) -> dict:
+    """`_similar_size` with every gate's verdict and the populations' statistics.
+
+    Keys: similar, fraction_similar, complexity_similar, noise_similar,
+    population_similar (= complexity or noise, the old arm 2), cohens_d (nan =
+    not reached, None = not estimable), cohens_d_status, complexity_tol_a/b,
+    pop_n_a/b, pop_mean_a/b, pop_sd_a/b (the spread of the per-read size
+    distortions, i.e. what the noise gate divides by).
+    """
+    gates = SIZE_GATES if gates is None else gates
+    use_fraction = "fraction" in gates
+    use_complexity = "complexity" in gates
+    use_noise = "noise" in gates
+
+    size_a = a.get_size()
+    size_b = b.get_size()
+
+    # --- fraction: a-priori bound on the raw sizes ---------------------------
+    max_size = max(abs(size_a), abs(size_b))
+    # apriori_size_difference_fraction_tolerance is the fraction of the larger of
+    # the two sizes that they may differ by and still count as similar: 0.0 means
+    # the sizes must be identical, 1.0 means any pair of non-negative sizes passes.
+    #
+    # There is deliberately no absolute floor under this bound. An earlier
+    # `or abs(size_a - size_b) < np.log2(abs(size_a - size_b) + 1)` disjunct read
+    # as one and was not: with d = |size_a - size_b|, log2(d + 1) > d only on the
+    # open interval 0 < d < 1, and d is a difference of alignment coordinates and
+    # so integral. The term never fired, and would have fired only for sub-bp
+    # differences if size ever became fractional. If a floor is wanted -- the
+    # dissertation text proposes F = 12 bp, the consensus-level indel parse
+    # threshold of `consensus_align --min-signal-size` -- it must be written as
+    # `abs(size_a - size_b) <= F` behind a named constant and benchmarked on its
+    # own, because it *loosens* the gate: at the default tolerance 0.06 it admits
+    # pairs the fractional arm rejects whenever max(size_a, size_b) < 200.
+    fraction_similar = bool(
+        use_fraction
+        and max_size > 0
+        and abs(size_a - size_b)
+        <= apriori_size_difference_fraction_tolerance * max_size
+    )
+
+    size_tolerance_a = size_tolerance_b = 0.0
+    if use_complexity:
+        size_tolerance_a = scale_by_complexity_factor * sizetolerance_from_SVcomposite(
+            a
+        )
+        size_tolerance_b = scale_by_complexity_factor * sizetolerance_from_SVcomposite(
+            b
+        )
+
+    # The distortion values used to be truncated toward zero TWICE before they
+    # reached Cohen's d: once by `int(size)` in
+    # SVcomposite.get_size_populations, and again by an `np.int32` cast here.
+    # That was harmless only for as long as every value was exactly 0.0. On real
+    # estimates truncation shrinks the within-group spread, which inflates |d|
+    # and biases the gate toward rejection; worse, sub-bp estimates all truncate
+    # to the same 0 and turn an informative population into a *constant* one,
+    # manufacturing exactly the degeneracy handled below. The populations are
+    # kept in floating point: this is a noise model, and quantising it to whole
+    # base pairs discards the resolution it exists to provide.
+    population_a = np.array(a.get_size_populations(), dtype=np.float64) + size_a
+    population_b = np.array(b.get_size_populations(), dtype=np.float64) + size_b
+
+    complexity_similar = False
+    noise_similar = False
+    cohensD: float | None = float("nan")
+    cohens_d_status = "not_reached"
+    have_populations = len(population_a) > 0 and len(population_b) > 0
+    if have_populations and (use_complexity or use_noise):
+        mean_a = float(np.mean(population_a))
+        mean_b = float(np.mean(population_b))
+        if use_complexity and abs(mean_a - mean_b) <= (
+            size_tolerance_a + size_tolerance_b
+        ):
+            # The granted tolerances already close the gap between the two
+            # populations; no effect size below that separation is meaningful.
+            # This short-circuit is a size test in its own right: it accepts
+            # without consulting Cohen's d, and the allowance is unbounded
+            # relative to the fraction gate, so it dominates that gate in
+            # low-complexity sequence.
+            complexity_similar = True
+        elif use_noise:
+            # A non-estimable effect size is not a small one: the noise gate
+            # abstains, and the pair is decided by the other active gates.
+            if mean_a > mean_b:
+                shifted_a = population_a - size_tolerance_a
+                shifted_b = population_b + size_tolerance_b
+            else:
+                shifted_a = population_a + size_tolerance_a
+                shifted_b = population_b - size_tolerance_b
+            cohensD = cohens_d(shifted_a, shifted_b)
+            _record_effect_size(a, b, cohensD)
+            cohens_d_status = "computed" if cohensD is not None else "not_estimable"
+            noise_similar = cohensD is not None and abs(cohensD) <= abs(d)
+
+    no_gate = not (use_fraction or use_complexity or use_noise)
+    return {
+        "similar": no_gate or fraction_similar or complexity_similar or noise_similar,
+        "fraction_similar": fraction_similar,
+        "complexity_similar": complexity_similar,
+        "noise_similar": noise_similar,
+        "population_similar": complexity_similar or noise_similar,
+        "cohens_d": cohensD,
+        "cohens_d_status": cohens_d_status,
+        "complexity_tol_a": size_tolerance_a,
+        "complexity_tol_b": size_tolerance_b,
+        "pop_n_a": len(population_a),
+        "pop_n_b": len(population_b),
+        "pop_mean_a": float(np.mean(population_a)) if len(population_a) else None,
+        "pop_mean_b": float(np.mean(population_b)) if len(population_b) else None,
+        "pop_sd_a": float(np.std(population_a, ddof=1))
+        if len(population_a) > 1
+        else None,
+        "pop_sd_b": float(np.std(population_b, ddof=1))
+        if len(population_b) > 1
+        else None,
+    }
+
+
 def _similar_size(
     a: SVcomposite,
     b: SVcomposite,
@@ -234,87 +377,18 @@ def _similar_size(
     apart deliberately: one says the arm did not run, the other says it ran on
     data that cannot support a conclusion, and only the second is a problem.
     """
-    size_a = a.get_size()
-    size_b = b.get_size()
-
-    # --- Arm 1: fractional bound on raw sizes --------------------------------
-    max_size = max(abs(size_a), abs(size_b))
-    # apriori_size_difference_fraction_tolerance is the fraction of the larger of
-    # the two sizes that they may differ by and still count as similar: 0.0 means
-    # the sizes must be identical, 1.0 means any pair of non-negative sizes passes.
-    #
-    # There is deliberately no absolute floor under this bound. An earlier
-    # `or abs(size_a - size_b) < np.log2(abs(size_a - size_b) + 1)` disjunct read
-    # as one and was not: with d = |size_a - size_b|, log2(d + 1) > d only on the
-    # open interval 0 < d < 1, and d is a difference of alignment coordinates and
-    # so integral. The term never fired, and would have fired only for sub-bp
-    # differences if size ever became fractional. If a floor is wanted -- the
-    # dissertation text proposes F = 12 bp, the consensus-level indel parse
-    # threshold of `consensus_align --min-signal-size` -- it must be written as
-    # `abs(size_a - size_b) <= F` behind a named constant and benchmarked on its
-    # own, because it *loosens* the gate: at the default tolerance 0.06 it admits
-    # pairs the fractional arm rejects whenever max(size_a, size_b) < 200.
-    fraction_similar = (
-        max_size > 0
-        and abs(size_a - size_b)
-        <= apriori_size_difference_fraction_tolerance * max_size
+    r = _similar_size_detail(
+        a,
+        b,
+        apriori_size_difference_fraction_tolerance,
+        scale_by_complexity_factor,
+        d,
     )
-
-    # --- Arm 2: Cohen's d on tolerance-shifted populations -------------------
-    size_tolerance_a = scale_by_complexity_factor * sizetolerance_from_SVcomposite(a)
-    size_tolerance_b = scale_by_complexity_factor * sizetolerance_from_SVcomposite(b)
-
-    # The distortion values used to be truncated toward zero TWICE before they
-    # reached Cohen's d: once by `int(size)` in
-    # SVcomposite.get_size_populations, and again by an `np.int32` cast here.
-    # That was harmless only for as long as every value was exactly 0.0. On real
-    # estimates truncation shrinks the within-group spread, which inflates |d|
-    # and biases the arm toward rejection; worse, sub-bp estimates all truncate
-    # to the same 0 and turn an informative population into a *constant* one,
-    # manufacturing exactly the degeneracy handled below. The populations are
-    # kept in floating point: this is a noise model, and quantising it to whole
-    # base pairs discards the resolution it exists to provide.
-    population_a = np.array(a.get_size_populations(), dtype=np.float64) + size_a
-    population_b = np.array(b.get_size_populations(), dtype=np.float64) + size_b
-
-    cohensD = float("nan")
-    if len(population_a) > 0 and len(population_b) > 0:
-        mean_a = float(np.mean(population_a))
-        mean_b = float(np.mean(population_b))
-        if abs(mean_a - mean_b) <= (size_tolerance_a + size_tolerance_b):
-            # The granted tolerances already close the gap between the two
-            # populations; no effect size below that separation is meaningful.
-            #
-            # Note that this makes arm 2 a size test in its own right whenever
-            # the complexity allowance is large: it accepts without consulting
-            # Cohen's d at all. That is deliberate — shifting past each other and
-            # then measuring an effect size across the crossing would be
-            # meaningless — but it means the allowance, which is unbounded
-            # relative to `apriori_size_difference_fraction_tolerance`, can
-            # dominate the fractional arm in low-complexity sequence.
-            population_similar = True
-        else:
-            if mean_a > mean_b:
-                shifted_a = population_a - size_tolerance_a
-                shifted_b = population_b + size_tolerance_b
-            else:
-                shifted_a = population_a + size_tolerance_a
-                shifted_b = population_b - size_tolerance_b
-            cohensD = cohens_d(shifted_a, shifted_b)
-            _record_effect_size(a, b, cohensD)
-            # A non-estimable effect size is not a small one. The arm abstains,
-            # which given the OR with the fractional arm means it neither
-            # carries nor blocks the merge -- the pair is decided by arm 1
-            # alone, as it would be with no populations at all.
-            population_similar = cohensD is not None and abs(cohensD) <= abs(d)
-    else:
-        population_similar = False
-
     return (
-        fraction_similar or population_similar,
-        fraction_similar,
-        population_similar,
-        cohensD,
+        r["similar"],
+        r["fraction_similar"],
+        r["population_similar"],
+        r["cohens_d"],
     )
 
 
@@ -376,25 +450,13 @@ def _audit_pair(
     )
 
 
-def _audit_size_features(
-    a: SVcomposite,
-    b: SVcomposite,
-    scale_by_complexity_factor: float,
-    fraction_similar: bool,
-    population_similar: bool,
-    cohensD: float | None,
-) -> dict:
-    """The size stage's inputs, for --merge-audit only (recomputes the allowances)."""
+def _audit_size_features(size_detail: dict) -> dict:
+    """The size stage's verdicts per gate and its inputs, for --merge-audit only."""
     if not merge_audit.enabled():
         return {}
     return {
-        "fraction_similar": fraction_similar,
-        "population_similar": population_similar,
-        "cohens_d": cohensD,
-        "complexity_tol_a": scale_by_complexity_factor
-        * sizetolerance_from_SVcomposite(a),
-        "complexity_tol_b": scale_by_complexity_factor
-        * sizetolerance_from_SVcomposite(b),
+        "size_gates": ",".join(g for g in SIZE_GATE_NAMES if g in SIZE_GATES) or "none",
+        **{k: v for k, v in size_detail.items() if k != "similar"},
     }
 
 
@@ -495,13 +557,17 @@ def can_merge_svComposites_insertions(
     size_a = a.get_size()
     size_b = b.get_size()
 
-    similar_size, fraction_similar, population_similar, cohensD = _similar_size(
+    _size = _similar_size_detail(
         a,
         b,
         apriori_size_difference_fraction_tolerance,
         scale_by_complexity_factor,
         d,
     )
+    similar_size = _size["similar"]
+    fraction_similar = _size["fraction_similar"]
+    population_similar = _size["population_similar"]
+    cohensD = _size["cohens_d"]
 
     if verbose:
         print(
@@ -529,14 +595,7 @@ def can_merge_svComposites_insertions(
         )
 
     _features = {
-        **_audit_size_features(
-            a,
-            b,
-            scale_by_complexity_factor,
-            fraction_similar,
-            population_similar,
-            cohensD,
-        ),
+        **_audit_size_features(_size),
         "kmer_sim": similarity,
         "kmer_compared": not (size_a < 100 and size_b < 100),
     }
@@ -632,13 +691,17 @@ def can_merge_svComposites_deletions(
     size_a = a.get_size()
     size_b = b.get_size()
 
-    similar_size, fraction_similar, population_similar, cohensD = _similar_size(
+    _size = _similar_size_detail(
         a,
         b,
         apriori_size_difference_fraction_tolerance,
         scale_by_complexity_factor,
         d,
     )
+    similar_size = _size["similar"]
+    fraction_similar = _size["fraction_similar"]
+    population_similar = _size["population_similar"]
+    cohensD = _size["cohens_d"]
 
     if verbose:
         print(
@@ -667,14 +730,7 @@ def can_merge_svComposites_deletions(
         )
 
     _features = {
-        **_audit_size_features(
-            a,
-            b,
-            scale_by_complexity_factor,
-            fraction_similar,
-            population_similar,
-            cohensD,
-        ),
+        **_audit_size_features(_size),
         "kmer_sim": similarity,
         "kmer_compared": not (size_a < 100 and size_b < 100),
     }
@@ -1062,13 +1118,17 @@ def can_merge_svComposites_inversions(
     size_a = a.get_size()
     size_b = b.get_size()
 
-    similar_size, fraction_similar, population_similar, cohensD = _similar_size(
+    _size = _similar_size_detail(
         a,
         b,
         apriori_size_difference_fraction_tolerance,
         scale_by_complexity_factor,
         d,
     )
+    similar_size = _size["similar"]
+    fraction_similar = _size["fraction_similar"]
+    population_similar = _size["population_similar"]
+    cohensD = _size["cohens_d"]
 
     if verbose:
         print(

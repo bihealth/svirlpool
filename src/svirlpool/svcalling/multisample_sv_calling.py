@@ -2765,6 +2765,22 @@ def multisample_sv_calling(
     )
 
 
+def parse_size_gates(value: str) -> frozenset[str]:
+    """--size-gates: 'none' or a comma list of fraction, complexity, noise."""
+    from .svcomposite_merging import SIZE_GATE_NAMES
+
+    names = {v.strip() for v in value.split(",") if v.strip()}
+    if names == {"none"}:
+        return frozenset()
+    unknown = names - set(SIZE_GATE_NAMES)
+    if unknown or not names:
+        raise ValueError(
+            f"--size-gates must be 'none' or a comma list of "
+            f"{', '.join(SIZE_GATE_NAMES)}; got {value!r}"
+        )
+    return frozenset(names)
+
+
 def run(args) -> None:
     # Experimental switches: module-level, set before any worker is forked.
     global MULTI_ASSEMBLY_OVERRIDE
@@ -2772,6 +2788,9 @@ def run(args) -> None:
 
     _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
+    _merging.SIZE_GATES = parse_size_gates(
+        getattr(args, "size_gates", ",".join(_merging.SIZE_GATE_NAMES))
+    )
     MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "subset")
     if getattr(args, "merge_audit", None):
         merge_audit.start(args.merge_audit)
@@ -3001,6 +3020,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--no-vertical-merge calls every horizontally merged composite on its own; "
         "with --repeat-collapse-mode none every call is one SVpattern, which is what "
         "labelling patterns against a truth set for --merge-audit needs.",
+    )
+    parser.add_argument(
+        "--size-gates",
+        default="fraction,complexity,noise",
+        help="Experimental. Which gates of the vertical merge's size test (pairs that "
+        "are not sibling assemblies) are active; a pair passes if any active gate "
+        "accepts it: 'fraction' (--apriori-size-difference-fraction-tolerance), "
+        "'complexity' (population means within the complexity allowances, "
+        "--scale-by-complexity-factor), 'noise' (Cohen's d of the size populations "
+        "<= --max_cohens_d, shifted by the complexity allowances only when "
+        "'complexity' is active too). 'none' passes every pair on size. "
+        "Default: all three, the behaviour before this option.",
     )
     parser.add_argument(
         "--merge-audit",
