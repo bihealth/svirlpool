@@ -11,7 +11,6 @@ inputs, because the gate was once triplicated by copy-paste and drifted.
 """
 
 import json
-import pickle
 import random
 from gzip import open as gzopen
 from pathlib import Path
@@ -32,7 +31,6 @@ from svirlpool.svcalling.svcomposite_merging import (
     can_merge_svComposites_deletions,
     can_merge_svComposites_insertions,
     can_merge_svComposites_inversions,
-    sizetolerance_from_SVcomposite,
 )
 from svirlpool.svcalling.svcomposite_utils import cohens_d
 from svirlpool.util.datatypes import Alignment
@@ -308,7 +306,6 @@ def _size_gate(
     size_b: int,
     *,
     tolerance: float,
-    scale_by_complexity_factor: float = 0.0,
     d: float = 2.0,
     size_distortions: dict[str, float] | None = None,
     sequence_a: str | None = None,
@@ -345,7 +342,6 @@ def _size_gate(
         d=d,
         near=10 * max(size_a, size_b, 100),
         min_kmer_overlap=0.0,
-        scale_by_complexity_factor=scale_by_complexity_factor,
     )
 
 
@@ -393,7 +389,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
     def test_similar_size_within_fraction_tolerance(self):
@@ -418,7 +413,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
     def test_different_sizes_beyond_fraction_but_populations_overlap(self):
@@ -448,7 +442,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
     def test_very_different_sizes_reject(self):
@@ -484,22 +477,15 @@ class TestCanMergeInsertions:
             d=2.0,
             near=300,
             min_kmer_overlap=0.0,
-            scale_by_complexity_factor=1.0,
         )
 
-    def test_very_different_sizes_merge_in_low_complexity(self):
-        """The same sizes DO merge inside a homopolymer, and that is intended.
+    def test_very_different_sizes_do_not_merge_in_low_complexity(self):
+        """A homopolymer grants no size allowance any more.
 
-        Complexity is a proxy for how much placement and size ambiguity the aligner
-        introduces at a locus. In a poly-A run it has near-total freedom in both,
-        so `sizetolerance_from_SVcomposite` grants a tolerance approaching the full
-        event size and a 100 bp and a 200 bp insertion at the same position are
-        treated as one VNTR allele family.
-
-        This is the mirror image of test_very_different_sizes_reject: identical
-        sizes, identical thresholds, opposite outcome, decided only by sequence
-        complexity. Setting `scale_by_complexity_factor=0.0` withdraws the
-        allowance and restores rejection.
+        The complexity gate accepted a 100 bp and a 200 bp insertion inside a
+        poly-A run as one allele family. It was removed: it never improved the
+        trio benchmark, and in a trio differently sized repeat alleles are
+        mostly distinct alleles. Sequence complexity no longer decides a merge.
         """
         a = _make_insertion_composite(
             size=100,
@@ -515,19 +501,13 @@ class TestCanMergeInsertions:
             consensusID="2.0",
             sequence="A" * 200,
         )
-        kwargs = {
-            "a": a,
-            "b": b,
-            "apriori_size_difference_fraction_tolerance": 0.1,
-            "d": 2.0,
-            "near": 300,
-            "min_kmer_overlap": 0.0,
-        }
-        assert can_merge_svComposites_insertions(
-            **kwargs, scale_by_complexity_factor=1.0
-        )
         assert not can_merge_svComposites_insertions(
-            **kwargs, scale_by_complexity_factor=0.0
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=300,
+            min_kmer_overlap=0.0,
         )
 
     def test_identical_sizes_merge_regardless_of_complexity(self):
@@ -565,7 +545,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=300,
             min_kmer_overlap=0.0,
-            scale_by_complexity_factor=1.0,
         )
 
     def test_empty_populations_fraction_pass(self):
@@ -589,7 +568,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
     def test_empty_populations_fraction_fail(self):
@@ -619,7 +597,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=300,
             min_kmer_overlap=0.0,
-            scale_by_complexity_factor=1.0,
         )
 
     def test_not_near_rejects(self):
@@ -645,7 +622,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
     def test_kmer_similarity_rejects(self):
@@ -671,7 +647,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
     def test_strict_tolerance_rejects_borderline(self):
@@ -699,7 +674,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
         # With 1% tolerance: 4.8% difference exceeds tolerance -> rejected
         assert not can_merge_svComposites_insertions(
@@ -709,7 +683,6 @@ class TestCanMergeInsertions:
             d=2.0,
             near=150,
             min_kmer_overlap=0.7,
-            scale_by_complexity_factor=0.0,
         )
 
 
@@ -832,20 +805,8 @@ class TestCanMergeDeletions:
             min_kmer_overlap=0.0,
         )
 
-    def test_very_different_sizes_merge_in_low_complexity(self):
-        """The same sizes merge inside a low-complexity reference span.
-
-        The mirror of the test above, and the deletion counterpart of
-        TestCanMergeInsertions.test_very_different_sizes_merge_in_low_complexity.
-        In a homopolymer the aligner's choice of deletion boundaries — and
-        therefore of size — is close to arbitrary, so a 100 bp and a 250 bp
-        deletion at the same position are treated as one allele family.
-
-        This is also the regime where the k-mer test cannot help: a smaller
-        deletion nested in a larger one at the same locus is k-mer identical by
-        construction, so size is the only criterion left, and it is the one that
-        complexity relaxes here.
-        """
+    def test_very_different_sizes_do_not_merge_in_low_complexity(self):
+        """Deletion counterpart: a homopolymer grants no size allowance."""
         a = _make_deletion_composite(
             size=100,
             size_distortions={"r1": 1, "r2": -1, "r3": 2},
@@ -860,19 +821,13 @@ class TestCanMergeDeletions:
             consensusID="2.0",
             sequence="A" * 250,
         )
-        kwargs = {
-            "a": a,
-            "b": b,
-            "apriori_size_difference_fraction_tolerance": 0.1,
-            "d": 2.0,
-            "near": 350,
-            "min_kmer_overlap": 0.0,
-        }
-        assert can_merge_svComposites_deletions(
-            **kwargs, scale_by_complexity_factor=1.0
-        )
         assert not can_merge_svComposites_deletions(
-            **kwargs, scale_by_complexity_factor=0.0
+            a=a,
+            b=b,
+            apriori_size_difference_fraction_tolerance=0.1,
+            d=2.0,
+            near=350,
+            min_kmer_overlap=0.0,
         )
 
     def test_empty_populations_fraction_pass(self):
@@ -1079,21 +1034,6 @@ class TestSizeGateControlSetting:
                     failures.append((kind, size_a, size_b))
         assert failures == [], f"tol=1.0 must be vacuous, but it rejected: {failures}"
 
-    def test_tolerance_one_is_vacuous_at_full_complexity_weight(self):
-        """The control must not depend on the complexity weight either."""
-        failures = []
-        for kind in _KINDS:
-            for size_a, size_b in _SIZE_PAIRS:
-                if not _size_gate(
-                    kind,
-                    size_a,
-                    size_b,
-                    tolerance=1.0,
-                    scale_by_complexity_factor=1.0,
-                ):
-                    failures.append((kind, size_a, size_b))
-        assert failures == [], f"tol=1.0 must be vacuous, but it rejected: {failures}"
-
 
 class TestSizeGateIsSharedByAllSVTypes:
     """Regression guard for F6: one gate, three entry points, one verdict.
@@ -1117,7 +1057,7 @@ class TestSizeGateIsSharedByAllSVTypes:
         assert disagreements == [], f"the size gate is not shared: {disagreements}"
 
     def test_all_three_paths_agree_with_populations_and_complexity(self):
-        """Same, with both arms live and the complexity term at full weight."""
+        """Same, with both arms live, in low- and high-complexity sequence."""
         distortions = {f"r{i}": v for i, v in enumerate([-30, -10, 0, 10, 30])}
         disagreements = []
         for size_a, size_b in [(100, 200), (200, 205), (100, 250)]:
@@ -1139,7 +1079,6 @@ class TestSizeGateIsSharedByAllSVTypes:
                             size_a,
                             size_b,
                             tolerance=tolerance,
-                            scale_by_complexity_factor=1.0,
                             size_distortions=distortions,
                             sequence_a=seq_a,
                             sequence_b=seq_b,
@@ -1210,146 +1149,46 @@ class TestFractionArmIsATrueFractionalBound:
         assert wrong == [], f"the bound is not scale invariant: {wrong}"
 
 
-class TestComplexityIsATolerance:
-    """F4: complexity must GRANT size tolerance, in bp, not rescale the sizes.
+class TestSequenceComplexityDecidesNothing:
+    """The complexity size allowance was removed from the vertical merge.
 
-    `sizetolerance_from_SVcomposite` returns the allowance in base pairs:
-    `(1 - mean_complexity) * |size|`. Low complexity -- a homopolymer, a perfect
-    repeat -- is where the aligner has the most freedom in where it places an
-    indel and how large it calls it, so it must grant the *most* tolerance.
+    It granted `(1 - mean_complexity) * |size|` bp and short-circuited the
+    size test. It is gone: the size test sees sizes and size populations only,
+    so the same sizes decide the same way whatever the sequence.
     """
 
-    def test_low_complexity_grants_more_tolerance_than_high(self):
-        homopolymer = _make_insertion_composite(size=200, sequence="A" * 200)
-        well_resolved = _make_insertion_composite(
-            size=200, sequence=_random_dna(200, seed=42)
-        )
-
-        tol_low_complexity = sizetolerance_from_SVcomposite(homopolymer)
-        tol_high_complexity = sizetolerance_from_SVcomposite(well_resolved)
-
-        assert tol_low_complexity > tol_high_complexity, (
-            f"homopolymer allowance {tol_low_complexity:.1f} bp should exceed "
-            f"well-resolved allowance {tol_high_complexity:.1f} bp"
-        )
-        # An allowance in bp, bounded by the event's own size.
-        assert 0.0 <= tol_high_complexity <= 200.0
-        assert 0.0 <= tol_low_complexity <= 200.0
-
-    def test_the_two_no_evidence_regimes_are_distinguished(self):
-        """A present all-zero track is minimum complexity, not missing data.
-
-        Those two situations are opposite and the fix deliberately separates
-        them:
-
-        * track ABSENT -- no evidence of aligner ambiguity. Fail closed:
-          mean_complexity = 1.0, allowance 0 bp.
-        * track PRESENT and all zero -- a homopolymer or a perfect repeat, i.e.
-          *minimum* complexity, which is exactly where placement is most
-          arbitrary. Allowance = the full event size.
-        """
-        absent = _make_insertion_composite(size=200)
-        # Built by the factory, then stripped: no `set_sequence`, no track.
-        absent.svPatterns[0].sequence_complexity = None
-        assert sizetolerance_from_SVcomposite(absent) == 0.0
-
-        all_zero = _make_insertion_composite(size=200)
-        all_zero.svPatterns[0].sequence_complexity = pickle.dumps(
-            np.zeros(200, dtype=np.float32)
-        )
-        assert sizetolerance_from_SVcomposite(all_zero) == pytest.approx(200.0)
-
-    def test_events_above_300_bp_get_no_allowance_whatever_their_sequence(self):
-        """A documented limitation, pinned so it cannot change unnoticed.
-
-        `set_sequence` computes a complexity track only for sequences up to
-        `sequence_complexity_max_length` (300 bp). Above that it stores a *dummy
-        all-ones* array instead -- a track that is present and well formed, and
-        that reads as maximum complexity. The allowance is therefore exactly
-        0 bp for every event above 300 bp, whatever its sequence actually is: a
-        5 kb poly-A insertion is treated as perfectly well-resolved sequence.
-
-        This is not what the complexity term is meant to express, and it is not
-        F4; it is a property of where the track is computed. Assert it so that
-        anyone who moves the 300 bp threshold sees this test rather than an
-        unexplained change in merge behaviour.
-        """
-        long_homopolymer = _make_insertion_composite(size=1000, sequence="A" * 1000)
-        assert sizetolerance_from_SVcomposite(long_homopolymer) == 0.0
-
-        short_homopolymer = _make_insertion_composite(size=300, sequence="A" * 300)
-        assert sizetolerance_from_SVcomposite(short_homopolymer) > 290.0
-
-    def test_low_complexity_merges_what_high_complexity_rejects(self):
-        """The sign of the effect, asserted on merge decisions.
-
-        Identical sizes, identical thresholds, identical populations; only the
-        sequence differs. A 100 bp and a 200 bp insertion inside a poly-A run
-        are one VNTR allele family and must merge; the same two events in
-        well-resolved sequence must not.
-        """
+    def test_low_and_high_complexity_decide_alike(self):
         distortions = {"r1": 1, "r2": -1, "r3": 2}
-        low_complexity = _size_gate(
-            "insertion",
-            100,
-            200,
-            tolerance=0.1,
-            scale_by_complexity_factor=1.0,
-            size_distortions=distortions,
-            sequence_a="A" * 100,
-            sequence_b="A" * 200,
-        )
-        high_complexity = _size_gate(
-            "insertion",
-            100,
-            200,
-            tolerance=0.1,
-            scale_by_complexity_factor=1.0,
-            size_distortions=distortions,
-            sequence_a=_random_dna(100, seed=1),
-            sequence_b=_random_dna(200, seed=2),
-        )
-        assert low_complexity, "a homopolymer must grant tolerance"
-        assert not high_complexity, "well-resolved sequence must not"
-
-    def test_scale_by_complexity_factor_withdraws_the_allowance(self):
-        """`--scale-by-complexity-factor 0.0` must turn the allowance off."""
-        distortions = {"r1": 1, "r2": -1, "r3": 2}
-        kwargs = {
-            "tolerance": 0.1,
-            "size_distortions": distortions,
-            "sequence_a": "A" * 100,
-            "sequence_b": "A" * 200,
-        }
-        assert _size_gate(
-            "insertion", 100, 200, scale_by_complexity_factor=1.0, **kwargs
-        )
-        assert not _size_gate(
-            "insertion", 100, 200, scale_by_complexity_factor=0.0, **kwargs
-        )
+        for size_a, size_b in [(100, 200), (200, 205), (100, 250), (300, 330)]:
+            for kind in _KINDS:
+                low = _size_gate(
+                    kind,
+                    size_a,
+                    size_b,
+                    tolerance=0.1,
+                    size_distortions=distortions,
+                    sequence_a="A" * size_a,
+                    sequence_b="A" * size_b,
+                )
+                high = _size_gate(
+                    kind,
+                    size_a,
+                    size_b,
+                    tolerance=0.1,
+                    size_distortions=distortions,
+                    sequence_a=_random_dna(size_a, seed=1),
+                    sequence_b=_random_dna(size_b, seed=2),
+                )
+                assert low == high, (kind, size_a, size_b)
 
     def test_a_complexity_difference_is_not_a_size_difference(self):
-        """Regression guard: two events of the SAME size must always merge.
-
-        `main` compared complexity-ADJUSTED sizes,
-        `lerp(size, size * complexity, scale)`. The two composites' complexity
-        tracks come from different consensus sequences in different samples, so
-        a difference between the two estimates was indistinguishable from a
-        difference in size and could only ever suppress merges -- hardest inside
-        the repeats where the estimates diverge most.
-
-        This passes on `main` only because the gate is inert there (F3); it
-        becomes load-bearing the moment the fractional bound is corrected, which
-        is why it is asserted at tol = 0.0, where nothing but an exact size
-        match may pass.
-        """
+        """Regression guard: two events of the SAME size must always merge."""
         for kind in _KINDS:
             assert _size_gate(
                 kind,
                 200,
                 200,
                 tolerance=0.0,
-                scale_by_complexity_factor=1.0,
                 sequence_a=_random_dna(200, seed=3),
                 sequence_b="A" * 200,
             ), f"{kind}: identical sizes must merge whatever the complexity"
@@ -1520,7 +1359,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
             "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
         ):
             similar, fraction_similar, population_similar, cohensD = (
-                svcomposite_merging._similar_size(a, b, 0.1, 0.0, 2.0)
+                svcomposite_merging._similar_size(a, b, 0.1, 2.0)
             )
         # `is False` is deliberately avoided throughout: arm 1 returns a numpy
         # bool, so identity against the Python singleton does not hold.
@@ -1539,49 +1378,12 @@ class TestDegeneratePopulationsDoNotDecideMerges:
         ):
             for _ in range(svcomposite_merging.DEGENERATE_POPULATION_WARN_LIMIT + 20):
                 a, b = self._pair(100, 200, {"r1": 0.0}, {"r1": 0.0})
-                svcomposite_merging._similar_size(a, b, 0.1, 0.0, 2.0)
+                svcomposite_merging._similar_size(a, b, 0.1, 2.0)
         per_locus = [
             r for r in caplog.records if "DEGENERATE_SIZE_POPULATION::" in r.message
         ]
         assert len(per_locus) == svcomposite_merging.DEGENERATE_POPULATION_WARN_LIMIT
         assert any("suppressed" in r.message for r in caplog.records)
-
-    def test_a_degenerate_pair_inside_the_tolerance_never_reaches_the_effect_size(
-        self, caplog
-    ):
-        """The short-circuit above the call: no warning, and the arm accepts.
-
-        With a homopolymer sequence the complexity allowance is the full event
-        size, so the two population means are already within it and arm 2 never
-        asks for an effect size. Degeneracy here is not an error -- nothing was
-        computed on it.
-        """
-        a = _make_insertion_composite(
-            size=100,
-            size_distortions={"r1": 0.0},
-            samplename="sample1",
-            consensusID="1.0",
-        )
-        b = _make_insertion_composite(
-            size=180,
-            size_distortions={"r1": 0.0},
-            samplename="sample2",
-            consensusID="2.0",
-        )
-        with caplog.at_level(
-            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
-        ):
-            _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-                a, b, 0.1, 1.0, 2.0
-            )
-        assert population_similar
-        assert isinstance(cohensD, float) and np.isnan(cohensD), (
-            "nan still means 'not computed', and must stay distinguishable from "
-            "'computed and not estimable'"
-        )
-        assert not [
-            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
-        ]
 
     def test_a_constant_population_of_real_distortions_is_still_degenerate(
         self, caplog
@@ -1607,7 +1409,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
             "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
         ):
             _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-                a, b, 0.1, 0.0, 2.0
+                a, b, 0.1, 2.0
             )
         assert cohensD is None
         assert not population_similar
@@ -1622,7 +1424,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
             "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
         ):
             _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-                a, b, 0.1, 0.0, 2.0
+                a, b, 0.1, 2.0
             )
         assert not population_similar
         assert isinstance(cohensD, float) and np.isnan(cohensD)
@@ -1645,7 +1447,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
             "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
         ):
             similar, fraction_similar, population_similar, cohensD = (
-                svcomposite_merging._similar_size(a, b, 0.1, 0.0, 2.0)
+                svcomposite_merging._similar_size(a, b, 0.1, 2.0)
             )
         assert not fraction_similar, "the fractional arm must not be what passes here"
         assert population_similar
@@ -1662,7 +1464,7 @@ class TestDegeneratePopulationsDoNotDecideMerges:
         }
         a, b = self._pair(500, 900, spread, spread)
         _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-            a, b, 0.1, 0.0, 2.0
+            a, b, 0.1, 2.0
         )
         assert cohensD is not None and np.isfinite(cohensD)
         assert abs(cohensD) > 2.0
@@ -1679,8 +1481,8 @@ class TestDegeneratePopulationsDoNotDecideMerges:
             f"r{i}": v for i, v in enumerate([0.0, 15.0, 30.0, 40.0, 50.0, 65.0, 80.0])
         }
         a, b = self._pair(500, 600, spread, spread)
-        _, _, lenient, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.0, 5.0)
-        _, _, strict, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.0, 0.5)
+        _, _, lenient, _ = svcomposite_merging._similar_size(a, b, 0.1, 5.0)
+        _, _, strict, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.5)
         assert lenient
         assert not strict
 
@@ -1699,7 +1501,7 @@ class TestVerboseReportsWhyThereIsNoEffectSize:
         yield
 
     @staticmethod
-    def _merge(kind, size_a, size_b, distortions, *, scale, capsys):
+    def _merge(kind, size_a, size_b, distortions, *, capsys):
         a = _make_composite(
             kind,
             size=size_a,
@@ -1723,7 +1525,6 @@ class TestVerboseReportsWhyThereIsNoEffectSize:
             d=2.0,
             near=10 * max(size_a, size_b),
             min_kmer_overlap=0.0,
-            scale_by_complexity_factor=scale,
             verbose=True,
         )
         return capsys.readouterr().out
@@ -1731,7 +1532,7 @@ class TestVerboseReportsWhyThereIsNoEffectSize:
     def test_degenerate_case_is_named_in_the_report(self, capsys):
         for kind in _KINDS:
             out = self._merge(
-                kind, 100, 200, {"r1": 0.0, "r2": 0.0}, scale=0.0, capsys=capsys
+                kind, 100, 200, {"r1": 0.0, "r2": 0.0}, capsys=capsys
             )
             assert "Cohen's D" in out, kind
             assert "not estimable" in out, kind
@@ -1742,7 +1543,7 @@ class TestVerboseReportsWhyThereIsNoEffectSize:
             for i, v in enumerate([0.0, 30.0, 60.0, 80.0, 100.0, 130.0, 160.0])
         }
         for kind in _KINDS:
-            out = self._merge(kind, 500, 600, spread, scale=0.0, capsys=capsys)
+            out = self._merge(kind, 500, 600, spread, capsys=capsys)
             assert "Cohen's D:" in out, kind
             assert "not estimable" not in out, kind
             assert "threshold: 2.0" in out, kind
@@ -1751,7 +1552,7 @@ class TestVerboseReportsWhyThereIsNoEffectSize:
         """Populations absent: nothing was computed, and the report says that
         rather than printing nothing at all."""
         for kind in _KINDS:
-            out = self._merge(kind, 500, 520, None, scale=0.0, capsys=capsys)
+            out = self._merge(kind, 500, 520, None, capsys=capsys)
             assert "not computed" in out, kind
 
 
@@ -1796,7 +1597,7 @@ class TestSizePopulationsKeepSubBasepairResolution:
             consensusID="2.0",
             sequence=_random_dna(102, seed=32),
         )
-        _, _, _, cohensD = svcomposite_merging._similar_size(a, b, 0.0, 0.0, 2.0)
+        _, _, _, cohensD = svcomposite_merging._similar_size(a, b, 0.0, 2.0)
         assert cohensD is not None, (
             "truncation turned two spread populations into constant vectors"
         )
@@ -1955,8 +1756,7 @@ class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
     def test_the_gate_matches_the_pure_fractional_bound_for_all_three_sv_types(self):
         """The live gate's verdict is the fractional bound, with no floor under it.
 
-        The population arm is off (`size_distortions=None`) and the complexity
-        allowance is withdrawn (`scale_by_complexity_factor=0.0`), so the gate's
+        The population arm is off (`size_distortions=None`), so the gate's
         return value *is* arm 1. Sweeping sizes, tolerances and all three entry
         points, it agrees with the disjunct-free bound everywhere -- and, by the
         test above, therefore with the pre-F5 form as well.

@@ -1,5 +1,5 @@
 """sv-calling --size-gates: the three gates of the vertical merge's size test,
-each on its own, none, and the default (all three, the previous behaviour)."""
+each on its own, none, and the default (both; the complexity gate was removed)."""
 
 import numpy as np
 import pytest
@@ -36,15 +36,15 @@ def _pair(size_a, size_b, dist_a, dist_b, random_sequence):
 SPREAD = {f"r{i}": float(v) for i, v in enumerate([0, 2, 4, 6, 8, 10])}
 
 
-def detail(a, b, gates, tol=0.06, factor=1.0, d=2.0):
-    return m._similar_size_detail(a, b, tol, factor, d, gates=frozenset(gates))
+def detail(a, b, gates, tol=0.06, d=2.0):
+    return m._similar_size_detail(a, b, tol, d, gates=frozenset(gates))
 
 
 def test_no_gate_passes_every_pair():
     a, b = _pair(100, 500, SPREAD, SPREAD, random_sequence=True)
     r = detail(a, b, [])
     assert r["similar"]
-    assert not (r["fraction_similar"] or r["complexity_similar"] or r["noise_similar"])
+    assert not (r["fraction_similar"] or r["noise_similar"])
 
 
 def test_fraction_gate_alone():
@@ -56,29 +56,14 @@ def test_fraction_gate_alone():
     assert r["cohens_d_status"] == "not_reached"
 
 
-def test_complexity_gate_alone_accepts_a_homopolymer_far_beyond_the_fraction():
-    """The unbounded allowance: 100 vs 180 bp in a homopolymer passes."""
-    a, b = _pair(100, 180, {"r1": 0.0}, {"r1": 0.0}, random_sequence=False)
-    r = detail(a, b, ["complexity"])
-    assert r["similar"] and r["complexity_similar"]
-    assert not detail(a, b, ["fraction"])["similar"]
-
-
-def test_complexity_gate_alone_never_computes_cohens_d():
-    a, b = _pair(100, 300, SPREAD, SPREAD, random_sequence=True)
-    r = detail(a, b, ["complexity"])
-    assert not r["similar"]
-    assert r["cohens_d_status"] == "not_reached"
-
-
-def test_noise_gate_alone_is_not_shifted_by_the_complexity_allowance():
-    """In a homopolymer the allowance would close the gap; alone, the noise gate
-    sees the unshifted populations and rejects a separation of 8 sd."""
+def test_noise_gate_sees_the_unshifted_populations():
+    """No complexity allowance shifts the populations: a separation of 8 sd in
+    a homopolymer is rejected."""
     a, b = _pair(100, 130, SPREAD, SPREAD, random_sequence=False)
-    alone = detail(a, b, ["noise"])
-    assert alone["cohens_d_status"] == "computed"
-    assert not alone["similar"]
-    assert detail(a, b, ["complexity", "noise"])["similar"]
+    r = detail(a, b, ["noise"])
+    assert r["cohens_d_status"] == "computed"
+    assert not r["similar"]
+    assert not detail(a, b, ALL)["similar"]
 
 
 def test_noise_gate_rejects_constant_populations_that_differ():
@@ -123,10 +108,10 @@ def test_noise_gate_constants_compare_after_the_distortion_shift():
 @pytest.mark.parametrize("sizes", [(100, 104), (100, 130), (100, 180), (300, 310)])
 @pytest.mark.parametrize("random_sequence", [True, False])
 @pytest.mark.parametrize("dist", [SPREAD, {"r1": 0.0}])
-def test_default_is_all_three_and_the_old_tuple(sizes, random_sequence, dist):
+def test_default_is_both_and_the_old_tuple(sizes, random_sequence, dist):
     a, b = _pair(*sizes, dist, dist, random_sequence)
     r = detail(a, b, ALL)
-    similar, fraction, population, cohens = m._similar_size(a, b, 0.06, 1.0, 2.0)
+    similar, fraction, population, cohens = m._similar_size(a, b, 0.06, 2.0)
     assert m.SIZE_GATES == ALL
     assert similar == r["similar"]
     assert fraction == r["fraction_similar"]
@@ -139,7 +124,9 @@ def test_default_is_all_three_and_the_old_tuple(sizes, random_sequence, dist):
 def test_parse_size_gates():
     assert parse_size_gates("none") == frozenset()
     assert parse_size_gates("fraction, noise") == frozenset({"fraction", "noise"})
-    assert parse_size_gates("fraction,complexity,noise") == ALL
+    assert parse_size_gates("fraction,noise") == ALL
+    with pytest.raises(ValueError, match="removed"):
+        parse_size_gates("fraction,complexity,noise")
     with pytest.raises(ValueError):
         parse_size_gates("fraction,cohen")
     with pytest.raises(ValueError):

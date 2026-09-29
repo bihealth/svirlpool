@@ -2518,7 +2518,6 @@ def multisample_sv_calling(
     symbolic_threshold: int,
     apriori_size_difference_fraction_tolerance: float,
     find_leftmost_reference_position: bool,
-    scale_by_complexity_factor: float = 1.0,
     verbose: bool = False,
     tmp_dir_path: Path | str | None = None,
     candidate_regions_file: Path | str | None = None,
@@ -2654,7 +2653,6 @@ def multisample_sv_calling(
             max_cohens_d=max_cohens_d,
             near=near,
             min_kmer_overlap=min_kmer_overlap,
-            scale_by_complexity_factor=scale_by_complexity_factor,
             threads=threads,
             verbose=verbose,
         )
@@ -2766,12 +2764,16 @@ def multisample_sv_calling(
 
 
 def parse_size_gates(value: str) -> frozenset[str]:
-    """--size-gates: 'none' or a comma list of fraction, complexity, noise."""
+    """--size-gates: 'none' or a comma list of fraction, noise."""
     from .svcomposite_merging import SIZE_GATE_NAMES
 
     names = {v.strip() for v in value.split(",") if v.strip()}
     if names == {"none"}:
         return frozenset()
+    if "complexity" in names:
+        raise ValueError(
+            "--size-gates: the 'complexity' gate was removed; use fraction, noise"
+        )
     unknown = names - set(SIZE_GATE_NAMES)
     if unknown or not names:
         raise ValueError(
@@ -2815,6 +2817,11 @@ def run(args) -> None:
     # set only the console handler to the requested level.
     if logfile:
         handlers[0].setLevel(log_level)
+    if getattr(args, "scale_by_complexity_factor", None) is not None:
+        log.warning(
+            "--scale-by-complexity-factor is deprecated and ignored: the "
+            "sequence-complexity size allowance of the vertical merge was removed."
+        )
 
     multisample_sv_calling(
         input=args.input,
@@ -2829,7 +2836,6 @@ def run(args) -> None:
         apriori_size_difference_fraction_tolerance=args.apriori_size_difference_fraction_tolerance,
         symbolic_threshold=args.symbolic_threshold,
         find_leftmost_reference_position=args.find_leftmost_reference_position,
-        scale_by_complexity_factor=args.scale_by_complexity_factor,
         tmp_dir_path=args.tmp_dir_path,
         verbose=args.verbose,
         candidate_regions_file=args.candidate_regions_file,
@@ -2971,15 +2977,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--scale-by-complexity-factor",
         help=(
-            "Weight (0.0 to 1.0) on the size tolerance granted by low sequence "
-            "complexity when merging. Low-complexity sequence gives the aligner more "
-            "freedom in where it places an indel and how large it calls it, so the "
-            "two size populations' means are shifted toward each other by "
-            "weight * (1 - mean_complexity) * |size| before Cohen's d is computed. "
-            "0.0 grants no complexity allowance; 1.0 grants it in full (default: 1.0)."
+            "Deprecated and ignored: the sequence-complexity size allowance of the "
+            "vertical merge was removed. Accepted so existing command lines keep "
+            "working."
         ),
         type=float,
-        default=1.0,
+        default=None,
     )
     parser.add_argument(
         "--dont-collapse-repeats",
@@ -3023,15 +3026,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--size-gates",
-        default="fraction,complexity,noise",
+        default="fraction,noise",
         help="Experimental. Which gates of the vertical merge's size test (pairs that "
         "are not sibling assemblies) are active; a pair passes if any active gate "
         "accepts it: 'fraction' (--apriori-size-difference-fraction-tolerance), "
-        "'complexity' (population means within the complexity allowances, "
-        "--scale-by-complexity-factor), 'noise' (Cohen's d of the size populations "
-        "<= --max_cohens_d, shifted by the complexity allowances only when "
-        "'complexity' is active too). 'none' passes every pair on size. "
-        "Default: all three, the behaviour before this option.",
+        "'noise' (Cohen's d of the size populations <= --max_cohens_d; two constant "
+        "populations pass when they coincide). 'none' passes every pair on size. "
+        "Default: both.",
     )
     parser.add_argument(
         "--merge-audit",
