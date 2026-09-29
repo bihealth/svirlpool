@@ -81,12 +81,11 @@ def cohens_d(x: list | np.ndarray, y: list | np.ndarray) -> float | None:
     "not computed", which is a different statement. ``None`` cannot be compared
     with ``<=`` at all, so no caller can ignore it by accident.
 
-    What a non-estimable effect size *means* is left to the caller, and the two
-    callers in this codebase answer differently -- see
-    ``svcomposite_merging._similar_size`` (refuse to merge on it) and
-    ``candidateregions.signalstrength_to_crs`` (fall back to whether the two
-    constant groups coincide). That divergence is the reason the policy is not
-    baked in here.
+    What a non-estimable effect size *means* is left to the caller. Both
+    callers in this codebase fall back to whether the two constant groups
+    coincide -- ``svcomposite_merging._similar_size_detail`` and
+    ``candidateregions.signalstrength_to_crs``. (The size gate used to refuse
+    to merge on it, which rejected identical-size pairs wholesale.)
     """
     if len(x) == 0 or len(y) == 0:
         raise ValueError("Both samples must contain at least one value")

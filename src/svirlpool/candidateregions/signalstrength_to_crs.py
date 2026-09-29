@@ -308,9 +308,9 @@ def has_similar_sv_signals(
         only statement the data still support is whether the two groups
         coincide at all -- which is what we fall back on.
 
-        This is spelled out because it is a *policy* choice and not the obvious
-        one: the vertical-merge gate in `svcalling.svcomposite_merging` makes the
-        opposite call and refuses to merge on a non-estimable effect size. Here
+        This is spelled out because it is a *policy* choice; the noise gate of
+        the vertical merge in `svcalling.svcomposite_merging` makes the same
+        call (it used to refuse to merge on a non-estimable effect size). Here
         the groups being compared are raw signal sizes from two neighbouring
         candidate regions, a single matching signal in each is a normal input,
         and refusing on it would fragment candidate regions. It also reproduces

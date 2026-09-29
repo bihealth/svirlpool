@@ -81,12 +81,42 @@ def test_noise_gate_alone_is_not_shifted_by_the_complexity_allowance():
     assert detail(a, b, ["complexity", "noise"])["similar"]
 
 
-def test_noise_gate_alone_abstains_on_constant_populations():
+def test_noise_gate_rejects_constant_populations_that_differ():
+    """No spread and different values: d is infinite in the limit."""
     a, b = _pair(
         100, 130, {"r1": 0.0, "r2": 0.0}, {"r1": 0.0, "r2": 0.0}, random_sequence=True
     )
     r = detail(a, b, ["noise"])
-    assert r["cohens_d_status"] == "not_estimable"
+    assert r["cohens_d"] is None
+    assert r["cohens_d_status"] == "constant_different"
+    assert not r["similar"]
+
+
+@pytest.mark.parametrize(
+    "dist",
+    [
+        {"r1": 0.0, "r2": 0.0, "r3": 0.0},
+        {"r1": 0.0},  # a single read on each side is constant too
+        {f"r{i}": 0.1 for i in range(19)},  # constant, np.std(ddof=1) != 0
+    ],
+)
+def test_noise_gate_merges_constant_populations_that_coincide(dist):
+    """No spread and the same value is a perfect match, not a missing one.
+
+    The gate used to abstain here, rejecting about half of all identical-size
+    cross-sample pairs of a trio call."""
+    a, b = _pair(250, 250, dist, dist, random_sequence=True)
+    r = detail(a, b, ["noise"])
+    assert r["cohens_d"] is None
+    assert r["cohens_d_status"] == "constant_equal"
+    assert r["noise_similar"] and r["similar"]
+
+
+def test_noise_gate_constants_compare_after_the_distortion_shift():
+    """Equal sizes but different constant distortions are different values."""
+    a, b = _pair(250, 250, {"r1": 0.0, "r2": 0.0}, {"r1": 3.0, "r2": 3.0}, True)
+    r = detail(a, b, ["noise"])
+    assert r["cohens_d_status"] == "constant_different"
     assert not r["similar"]
 
 

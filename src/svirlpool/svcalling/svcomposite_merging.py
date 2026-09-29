@@ -132,6 +132,15 @@ def _reset_degenerate_population_warnings() -> None:
     _effect_size_pairs = 0
 
 
+def _constant_populations_coincide(x: np.ndarray, y: np.ndarray) -> bool:
+    """Whether two constant populations hold the same value.
+
+    Compares an element, not the means: the mean of identical floats need not
+    equal them exactly (see `cohens_d`).
+    """
+    return bool(x[0] == y[0])
+
+
 def _record_effect_size(a: SVcomposite, b: SVcomposite, cohensD: float | None) -> None:
     """Count one attempted effect size, and report it if it was not estimable.
 
@@ -149,8 +158,7 @@ def _record_effect_size(a: SVcomposite, b: SVcomposite, cohensD: float | None) -
     message = (
         "DEGENERATE_SIZE_POPULATION::_similar_size::(both size populations are "
         "constant, so Cohen's d has no within-group spread to scale by; the "
-        "population arm abstains and this pair can only be merged by the "
-        f"fractional arm)	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
+        "noise gate accepts the pair only if the two constants coincide)	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
         f"regions_a={_regions_str_from_svcomposite(a)}	regions_b={_regions_str_from_svcomposite(b)}"
     )
     if _degenerate_population_warnings_emitted < DEGENERATE_POPULATION_WARN_LIMIT:
@@ -180,8 +188,8 @@ def _log_degenerate_population_summary(context: str) -> None:
             f"{_degenerate_population_pairs} of {_effect_size_pairs} pairs "
             f"({100.0 * _degenerate_population_pairs / _effect_size_pairs:.1f}%) "
             "had two constant size populations, so no effect size could be "
-            "estimated and the population arm contributed nothing to those "
-            "merge decisions."
+            "estimated and the noise gate decided those pairs on whether the "
+            "two constants coincide."
         )
 
 
@@ -200,7 +208,10 @@ def _cohens_d_report(cohensD: float | None, d: float) -> str:
     population indistinguishable from an arm that simply did not run.
     """
     if cohensD is None:
-        return "  Cohen's D: not estimable (both size populations are constant)"
+        return (
+            "  Cohen's D: not estimable (both size populations are constant; "
+            "similar only if the constants coincide)"
+        )
     if np.isnan(cohensD):
         return "  Cohen's D: not computed (the population arm did not reach it)"
     return f"  Cohen's D: {cohensD:.3f}, threshold: {d}"
@@ -235,7 +246,9 @@ def _similar_size_detail(
 
     Keys: similar, fraction_similar, complexity_similar, noise_similar,
     population_similar (= complexity or noise, the old arm 2), cohens_d (nan =
-    not reached, None = not estimable), cohens_d_status, complexity_tol_a/b,
+    not reached, None = not estimable), cohens_d_status (computed, not_reached,
+    or constant_equal / constant_different when d is not estimable and the
+    noise gate accepts exactly the coinciding constants), complexity_tol_a/b,
     pop_n_a/b, pop_mean_a/b, pop_sd_a/b (the spread of the per-read size
     distortions, i.e. what the noise gate divides by).
     """
@@ -312,8 +325,6 @@ def _similar_size_detail(
             # low-complexity sequence.
             complexity_similar = True
         elif use_noise:
-            # A non-estimable effect size is not a small one: the noise gate
-            # abstains, and the pair is decided by the other active gates.
             if mean_a > mean_b:
                 shifted_a = population_a - size_tolerance_a
                 shifted_b = population_b + size_tolerance_b
@@ -322,8 +333,21 @@ def _similar_size_detail(
                 shifted_b = population_b - size_tolerance_b
             cohensD = cohens_d(shifted_a, shifted_b)
             _record_effect_size(a, b, cohensD)
-            cohens_d_status = "computed" if cohensD is not None else "not_estimable"
-            noise_similar = cohensD is not None and abs(cohensD) <= abs(d)
+            if cohensD is not None:
+                cohens_d_status = "computed"
+                noise_similar = abs(cohensD) <= abs(d)
+            else:
+                # Both populations constant: no spread to scale by, so the only
+                # statement left is whether the two constants coincide -- the
+                # limit of d as the spread goes to 0 is 0 for equal values and
+                # infinite otherwise. Equal constants are a perfect match and
+                # merge. This gate used to abstain here, which rejected about
+                # half of all identical-size cross-sample pairs of a trio call.
+                # Same policy as candidateregions.signalstrength_to_crs.
+                noise_similar = _constant_populations_coincide(shifted_a, shifted_b)
+                cohens_d_status = (
+                    "constant_equal" if noise_similar else "constant_different"
+                )
 
     no_gate = not (use_fraction or use_complexity or use_noise)
     return {
