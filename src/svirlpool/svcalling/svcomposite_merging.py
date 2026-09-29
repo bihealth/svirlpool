@@ -7,6 +7,7 @@ This module contains the vertical merging logic:
 """
 
 import logging
+import math
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
@@ -17,6 +18,7 @@ from tqdm import tqdm
 from ..localassembly import SVpatterns
 from ..util.datastructures import UnionFind
 from ..util.util import kmer_similarity_of_groups
+from . import merge_audit
 from .SVcomposite import SVcomposite
 from .svcomposite_utils import (
     _crIDs_from_svcomposite,
@@ -340,6 +342,62 @@ def _assembly_relation(a: SVcomposite, b: SVcomposite) -> str:
     return "independent"
 
 
+def _audit_value(v):
+    """JSON-safe: numpy scalars to Python, nan to None."""
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (float, np.floating)):
+        return None if math.isnan(v) else float(v)
+    return v
+
+
+def _audit_pair(
+    svtype: str, a: SVcomposite, b: SVcomposite, decision: bool, reason: str, **features
+) -> None:
+    """One vertical-merge decision for --merge-audit; a no-op when it is off."""
+    if not merge_audit.enabled():
+        return
+    merge_audit.record(
+        stage="vertical",
+        svtype=svtype,
+        relation=_assembly_relation(a, b),
+        decision=decision,
+        reason=reason,
+        chr=a.ref_start[0],
+        pos_a=int(a.ref_start[1]),
+        pos_b=int(b.ref_start[1]),
+        size_a=int(a.get_size()),
+        size_b=int(b.get_size()),
+        patterns_a=merge_audit.pattern_keys(a),
+        patterns_b=merge_audit.pattern_keys(b),
+        **{k: _audit_value(v) for k, v in features.items()},
+    )
+
+
+def _audit_size_features(
+    a: SVcomposite,
+    b: SVcomposite,
+    scale_by_complexity_factor: float,
+    fraction_similar: bool,
+    population_similar: bool,
+    cohensD: float | None,
+) -> dict:
+    """The size stage's inputs, for --merge-audit only (recomputes the allowances)."""
+    if not merge_audit.enabled():
+        return {}
+    return {
+        "fraction_similar": fraction_similar,
+        "population_similar": population_similar,
+        "cohens_d": cohensD,
+        "complexity_tol_a": scale_by_complexity_factor
+        * sizetolerance_from_SVcomposite(a),
+        "complexity_tol_b": scale_by_complexity_factor
+        * sizetolerance_from_SVcomposite(b),
+    }
+
+
 def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
     """Decide the pair outright under HAPLOTYPE_AWARE_MERGE, or return None."""
     if not HAPLOTYPE_AWARE_MERGE:
@@ -349,6 +407,7 @@ def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
         log.debug(
             f"VERTICAL_MERGE|{svtype}|REJECT_SAME_ASSEMBLY	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}"
         )
+        _audit_pair(svtype, a, b, False, "same_assembly")
         return False
     if relation == "sibling_assembly":
         size_a, size_b = abs(a.get_size()), abs(b.get_size())
@@ -358,6 +417,14 @@ def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
             f"size_a={size_a}	size_b={size_b}	sibling_tolerance={SIBLING_SIZE_TOLERANCE}"
         )
         if not ok:
+            _audit_pair(
+                svtype,
+                a,
+                b,
+                False,
+                "sibling_size",
+                sibling_tolerance=SIBLING_SIZE_TOLERANCE,
+            )
             return False
         # sizes agree: the remaining checks (proximity, k-mers) still apply
     return None
@@ -418,6 +485,7 @@ def can_merge_svComposites_insertions(
             print(
                 f"Cannot merge insertions: SVcomposites are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
             )
+        _audit_pair("INS", a, b, False, "not_near", near=near)
         return False
 
     # - have similar sizes, tested with two criteria:
@@ -460,9 +528,22 @@ def can_merge_svComposites_insertions(
             f"K-mer similarity: {similarity:.3f}, threshold: {min_kmer_overlap}, similar_kmers: {similar_insertion_kmers}"
         )
 
+    _features = {
+        **_audit_size_features(
+            a,
+            b,
+            scale_by_complexity_factor,
+            fraction_similar,
+            population_similar,
+            cohensD,
+        ),
+        "kmer_sim": similarity,
+        "kmer_compared": not (size_a < 100 and size_b < 100),
+    }
     if _sibling:
         similar_size = True  # decided by _haplotype_gate
     if not similar_size:
+        _audit_pair("INS", a, b, False, "size", **_features)
         log.debug(
             f"VERTICAL_MERGE|INS|REJECT_SIZE	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
             f"size_a={size_a}	size_b={size_b}	regions_a={_regions_str_from_svcomposite(a)}	regions_b={_regions_str_from_svcomposite(b)}"
@@ -477,6 +558,7 @@ def can_merge_svComposites_insertions(
         )
         if verbose:
             print("Cannot merge insertions: k-mer similarity is too low")
+        _audit_pair("INS", a, b, False, "kmer", **_features)
         return False
 
     log.debug(
@@ -485,6 +567,7 @@ def can_merge_svComposites_insertions(
     )
     if verbose:
         print("Can merge insertions: all criteria passed")
+    _audit_pair("INS", a, b, True, "accept", **_features)
     return True
 
 
@@ -543,6 +626,7 @@ def can_merge_svComposites_deletions(
             print(
                 f"Cannot merge deletions: SVcomposites are not near (tolerance_radius={near}) ({a.get_regions()} vs {b.get_regions()})"
             )
+        _audit_pair("DEL", a, b, False, "not_near", near=near)
         return False
 
     size_a = a.get_size()
@@ -582,9 +666,22 @@ def can_merge_svComposites_deletions(
             f"K-mer similarity: {similarity:.3f}, threshold: {min_kmer_overlap}, similar_kmers: {similar_deletion_kmers}"
         )
 
+    _features = {
+        **_audit_size_features(
+            a,
+            b,
+            scale_by_complexity_factor,
+            fraction_similar,
+            population_similar,
+            cohensD,
+        ),
+        "kmer_sim": similarity,
+        "kmer_compared": not (size_a < 100 and size_b < 100),
+    }
     if _sibling:
         similar_size = True  # decided by _haplotype_gate
     if not similar_size:
+        _audit_pair("DEL", a, b, False, "size", **_features)
         log.debug(
             f"VERTICAL_MERGE|DEL|REJECT_SIZE	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
             f"size_a={size_a}|size_b={size_b}|regions_a={_regions_str_from_svcomposite(a)}|regions_b={_regions_str_from_svcomposite(b)}"
@@ -599,7 +696,7 @@ def can_merge_svComposites_deletions(
         )
         if verbose:
             print("Cannot merge deletions: k-mer similarity is too low")
-
+        _audit_pair("DEL", a, b, False, "kmer", **_features)
         return False
 
     log.debug(
@@ -608,6 +705,7 @@ def can_merge_svComposites_deletions(
     )
     if verbose:
         print("Can merge deletions: all criteria passed")
+    _audit_pair("DEL", a, b, True, "accept", **_features)
     return True
 
 

@@ -27,6 +27,7 @@ from tqdm import tqdm
 from ..localassembly import SVpatterns, svirltile
 from ..util.covtree import covtree
 from ..util.datastructures import UnionFind
+from . import merge_audit
 from .SVcomposite import SVcomposite
 from .svcomposite_merging import merge_svComposites
 from .svcomposite_utils import _svcomposite_log_id
@@ -281,21 +282,50 @@ def svPatterns_to_horizontally_merged_svComposites(
         uf_group = UnionFind(range(len(group)))
 
         # this is the point where horizontal merge can be prevented by skipping the union step
-        if collapse_repeats != "none":
+        # (--merge-audit evaluates the pairs anyway, to record what each mode would do)
+        if collapse_repeats != "none" or merge_audit.enabled():
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
-                    if collapse_repeats != "all" and type(group[i]) is not type(
+                    gap = group[j].read_start - group[i].read_end
+                    shared_repeatIDs = group[i].repeatIDs.intersection(
+                        group[j].repeatIDs
+                    )
+                    if collapse_repeats == "none":
+                        reason = "mode_none"
+                    elif collapse_repeats != "all" and type(group[i]) is not type(
                         group[j]
                     ):
-                        continue
-                    if (
+                        reason = "type"
+                    elif (
                         collapse_repeats in ("adjacent", "proximal")
-                        and group[j].read_start - group[i].read_end > collapse_max_gap
+                        and gap > collapse_max_gap
                     ):
-                        continue
-                    if collapse_repeats == "proximal" or group[
-                        i
-                    ].repeatIDs.intersection(group[j].repeatIDs):
+                        reason = "gap"
+                    elif collapse_repeats == "proximal" or shared_repeatIDs:
+                        reason = "accept"
+                    else:
+                        reason = "no_shared_repeat"
+                    if (
+                        merge_audit.enabled()
+                        and gap <= merge_audit.HORIZONTAL_WINDOW
+                    ):
+                        merge_audit.record(
+                            stage="horizontal",
+                            svtype=f"{group[i].get_sv_type()}/{group[j].get_sv_type()}",
+                            relation="same_assembly",
+                            decision=reason == "accept",
+                            reason=reason,
+                            chr=group[i].chr,
+                            pos_a=int(group[i].ref_start),
+                            pos_b=int(group[j].ref_start),
+                            size_a=int(group[i].get_size()),
+                            size_b=int(group[j].get_size()),
+                            gap=int(gap),
+                            shared_repeat=bool(shared_repeatIDs),
+                            patterns_a=[merge_audit.pattern_key(group[i])],
+                            patterns_b=[merge_audit.pattern_key(group[j])],
+                        )
+                    if reason == "accept":
                         # TODO: Edge case, where indels in duplicated overlapping aligned fragments are concatenated horizontally
                         log.debug(
                             f"HORIZONTAL_MERGE|UNION_BY_REPEATID	crID={crID}	consensusID={_consensusID}	"
@@ -668,6 +698,9 @@ class SVcall:
     description: dict[str, str] | None = (
         None  # optional description field for additional annotations; e.g. outer and inner intervals of inversions or duplications
     )
+    # merge_audit.pattern_key of every SVpattern in the call; only filled (and
+    # written as INFO/PATTERNIDS) under --merge-audit.
+    pattern_ids: list[str] = attrs.field(factory=list)
 
     def to_log_id(self) -> str:
         return f"{self.svtype}|{self.chrname}:{self.start}-{self.end}|consensusIDs={','.join(sorted(self.consensusIDs))}|svlen={self.svlen}|mateid={self.mateid}"
@@ -700,6 +733,8 @@ class SVcall:
         # Add sequence ID if this is a symbolic allele
         if self.sequence_id:
             info_fields["SEQ_ID"] = self.sequence_id
+        if self.pattern_ids:
+            info_fields["PATTERNIDS"] = ",".join(sorted(self.pattern_ids))
 
         info_line = ";".join([f"{key}={value}" for key, value in info_fields.items()])
         info_line += ";" + ("PRECISE" if self.precise else "IMPRECISE")
@@ -1296,6 +1331,7 @@ def svcall_object_from_svcomposite(
         consensusIDs=consensusIDs,
         ref_sequence=ref_seq,
         alt_sequence=alt_seq,
+        pattern_ids=merge_audit.pattern_keys(svComposite) if merge_audit.enabled() else [],
     )
 
 
@@ -1725,6 +1761,10 @@ def generate_header(
     header.append(
         '##INFO=<ID=SEQ_ID,Number=1,Type=String,Description="ID of sequence in companion FASTA file for symbolic alleles">'
     )
+    if merge_audit.enabled():
+        header.append(
+            '##INFO=<ID=PATTERNIDS,Number=.,Type=String,Description="SVpatterns of this call, as sample:crID.subID:start-end:TYPE on the consensus (--merge-audit)">'
+        )
     header.append('##ALT=<ID=INS,Description="Insertion">')
     header.append('##ALT=<ID=DEL,Description="Deletion">')
     header.append('##ALT=<ID=DUP,Description="Duplication">')
@@ -2490,6 +2530,7 @@ def multisample_sv_calling(
     genotype_breakpoint_margin: int | None = None,
     legacy_force_wildtype: bool = False,
     error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
+    vertical_merge: bool = True,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     if not 0.0 < error_rate < 0.5:
@@ -2606,16 +2647,24 @@ def multisample_sv_calling(
             pickle.dump(data, f)
 
     # --- vertical merging of svComposites across samples and consensus sequences --- #
-    merged: list[SVcomposite] = merge_svComposites(
-        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-        svComposites=data,
-        max_cohens_d=max_cohens_d,
-        near=near,
-        min_kmer_overlap=min_kmer_overlap,
-        scale_by_complexity_factor=scale_by_complexity_factor,
-        threads=threads,
-        verbose=verbose,
-    )
+    if vertical_merge:
+        merged: list[SVcomposite] = merge_svComposites(
+            apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+            svComposites=data,
+            max_cohens_d=max_cohens_d,
+            near=near,
+            min_kmer_overlap=min_kmer_overlap,
+            scale_by_complexity_factor=scale_by_complexity_factor,
+            threads=threads,
+            verbose=verbose,
+        )
+    else:
+        log.warning(
+            "--no-vertical-merge: every horizontally merged SVcomposite becomes its "
+            "own call; a hom SV is called once per consensus and sample. For "
+            "labelling patterns (--merge-audit), not for a released VCF."
+        )
+        merged = list(data)
 
     if verbose:
         svtype_counts_merged: dict[str, int] = {}
@@ -2724,6 +2773,8 @@ def run(args) -> None:
     _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
     MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "subset")
+    if getattr(args, "merge_audit", None):
+        merge_audit.start(args.merge_audit)
 
     log_level = getattr(logging, args.log_level)
     handlers: list[logging.Handler] = [logging.StreamHandler()]
@@ -2773,7 +2824,11 @@ def run(args) -> None:
         genotype_breakpoint_margin=args.genotype_breakpoint_margin,
         legacy_force_wildtype=args.legacy_force_wildtype_genotypes,
         error_rate=args.genotype_error_rate,
+        vertical_merge=getattr(args, "vertical_merge", True),
     )
+    audit = merge_audit.finalize()
+    if audit is not None:
+        log.info(f"Merge decisions written to {audit}")
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -2937,6 +2992,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default="subset",
         help="Which 1/1 calls at multi-assembly loci are forced to 0/1: 'subset' (default) "
         "those missing from at least one of the locus' assemblies, 'all' every one, 'off' none.",
+    )
+    parser.add_argument(
+        "--vertical-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Merge SVcomposites across consensus assemblies and samples (default: on). "
+        "--no-vertical-merge calls every horizontally merged composite on its own; "
+        "with --repeat-collapse-mode none every call is one SVpattern, which is what "
+        "labelling patterns against a truth set for --merge-audit needs.",
+    )
+    parser.add_argument(
+        "--merge-audit",
+        type=os.path.abspath,
+        default=None,
+        help="Write every horizontal and vertical merge decision (pair, features, "
+        "decision, reason, pattern keys) to this JSONL file, and each call's pattern "
+        "keys to INFO/PATTERNIDS. Does not change any call.",
     )
     parser.add_argument(
         "--repeat-collapse-max-gap",
