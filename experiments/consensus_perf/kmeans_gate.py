@@ -30,9 +30,10 @@ from multiprocessing import Pool
 from pathlib import Path
 
 import pandas as pd
+import pysam
 from phasing_eval import load_trio
 
-from svirlpool.localassembly import consensus, read_phasing
+from svirlpool.localassembly import consensus, read_phasing, ref_snv_haplotypes
 from svirlpool.localassembly import read_cache as read_cache_mod
 from svirlpool.signalprocessing import copynumber_tracks
 
@@ -61,6 +62,7 @@ def one_batch(args):
         ),
     )
     cache = read_cache_mod.ReadSequenceCache(path_alignments=Path(cfg["alignments"]))
+    ref = pysam.FastaFile(cfg["reference"])
     rows = []
     try:
         for rep, container in items:
@@ -127,6 +129,24 @@ def one_batch(args):
                     {rn: int(lb) for rn, lb in zip(names, labels, strict=True)
                      if rn in cutreads}, sort_keys=True)
 
+            # the cheap het-SNV split on the reference alignments
+            t0 = time.perf_counter()
+            chrom = row["chr"]
+            on_chr = [c for c in crs.values() if c.chr == chrom]
+            snv = ref_snv_haplotypes.ref_snv_haplotypes(
+                alns=[a for al in alns.values() for a in al],
+                reads=set(cutreads),
+                ref=ref,
+                chrom=chrom,
+                start=min(c.referenceStart for c in on_chr),
+                end=max(c.referenceEnd for c in on_chr),
+            )
+            row["t_snv"] = time.perf_counter() - t0
+            row["snv_candidates"] = snv.n_candidates
+            row["snv_sites"] = snv.n_sites
+            row["snv_split"] = snv.is_split
+            row["snv_groups"] = json.dumps(snv.haplotypes, sort_keys=True)
+
             # the phasing exactly as consensus_while_phasing prepares it
             t0 = time.perf_counter()
             iv = consensus.get_read_alignment_intervals_in_cr(
@@ -155,6 +175,7 @@ def one_batch(args):
             cache.advance(window_start=float("inf"))
     finally:
         cache.close()
+        ref.close()
     return rows
 
 
@@ -216,7 +237,9 @@ def main():
             out["bench"] = t.T2T_bench_frac >= 1
             out["trf"] = bool(t.trf)
             if not r.skipped:
-                for name, col in (("km", "kmeans_groups"), ("ph", "phase_groups")):
+                for name, col in (
+                    ("km", "kmeans_groups"), ("ph", "phase_groups"), ("snv", "snv_groups")
+                ):
                     e = allele_eval(json.loads(getattr(r, col)), trio.get(r.crID, {}), t.T2T_cat)
                     for k, v in (e or {}).items():
                         out[f"{name}_{k}"] = v

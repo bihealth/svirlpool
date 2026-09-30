@@ -274,13 +274,15 @@ def get_parser():
         default="single",
     )
     parser_run_wf.add_argument(
-        "--kmeans-fast-path-min-k",
-        help="Experimental, with --consensus-clustering-mode phased: first cluster the "
-        "reads by KMeans on their summed indels and skip the read phasing when its gate "
-        "accepts k >= this many clusters (default: 0 = off, always phase).",
+        "--fast-clustering",
+        help="Experimental, with --consensus-clustering-mode phased: skip the read "
+        "phasing where a cheaper clustering suffices. 'kmeans': KMeans on the reads' "
+        "summed indels when it finds >= 2 clusters of >= 20%% of the reads each. "
+        "'kmeans+snv': otherwise also the two haplotypes of the het SNVs in the reads' "
+        "reference alignments. Default: off (always phase).",
         required=False,
-        type=int,
-        default=0,
+        choices=("off", "kmeans", "kmeans+snv"),
+        default="off",
     )
     parser_run_wf.add_argument(
         "--cn-override",

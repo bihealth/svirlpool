@@ -40,7 +40,13 @@ from threadpoolctl import threadpool_limits
 from ..signalprocessing import alignments_to_rafs, copynumber_tracks
 from ..util import datatypes, util
 from ..util.signal_loss_logger import get_signal_loss_logger
-from . import consensus_class, consensus_lib, read_phasing, tool_timeouts
+from . import (
+    consensus_class,
+    consensus_lib,
+    read_phasing,
+    ref_snv_haplotypes,
+    tool_timeouts,
+)
 from . import read_cache as read_cache_mod
 
 matplotlib.use("Agg")  # Use non-interactive backend
@@ -3061,6 +3067,112 @@ def print_indel_distribution(read_sum_signals: dict[str, list[int]]) -> None:
         print(f"{readname}: {sum_inss} insertions, {sum_dels} deletions")
 
 
+#: --fast-clustering kmeans: the smallest KMeans cluster's minimum share of the
+#: reads. Lopsided splits were where KMeans lost alleles the phasing finds.
+FAST_KMEANS_MIN_CLUSTER_FRACTION = 0.2
+
+
+def fast_clustering_consensus(
+    samplename: str,
+    mode: str,
+    dict_summed_indels: dict[str, list[int]],
+    alns: dict[int, list[pysam.AlignedSegment]],
+    cutreads: dict[str, SeqRecord],
+    crs_dict: dict[int, datatypes.CandidateRegion],
+    max_copy_number: int,
+    ref_fasta: pysam.FastaFile | None,
+    lamassemble_mat: Path | str | None,
+    consensus_method: str,
+    threads: int = 1,
+    tmp_dir_path: Path | str | None = None,
+    timeout: int = 120,
+    verbose: bool = False,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Consensuses without the read phasing, or None when the container needs it.
+
+    ``mode`` "kmeans": the KMeans clustering if its gate accepts k >= 2 and
+    every cluster holds >= FAST_KMEANS_MIN_CLUSTER_FRACTION of the reads.
+    "kmeans+snv": otherwise also the two SNV haplotypes of the reads' reference
+    alignments, if they split the reads.
+    """
+    partition = kmeans_partition(
+        dict_summed_indels=dict_summed_indels,
+        pool=cutreads,
+        max_k=max_copy_number,
+        variance_threshold=29.0,
+        distance_threshold=29.0,
+        verbose=verbose,
+    )
+    if partition is not None and partition[2] >= 2:
+        _names, labels, k = partition
+        min_fraction = np.bincount(labels, minlength=k).min() / len(labels)
+        if min_fraction >= FAST_KMEANS_MIN_CLUSTER_FRACTION:
+            res = consensus_while_clustering_with_kmeans(
+                samplename=samplename,
+                dict_summed_indels=dict_summed_indels,
+                lamassemble_mat=lamassemble_mat,
+                pool=cutreads,
+                candidate_regions=crs_dict,
+                max_k=max_copy_number,
+                variance_threshold=29.0,
+                distance_threshold=29.0,
+                threads=threads,
+                tmp_dir_path=tmp_dir_path,
+                timeout=timeout,
+                verbose=verbose,
+                consensus_method=consensus_method,
+                partition=partition,
+            )
+            if res:
+                for consensus in res.values():
+                    consensus.clustering_meta_data = {
+                        "method": "fast_kmeans",
+                        "kmeans_k": int(k),
+                        "min_cluster_fraction": float(min_fraction),
+                    }
+                return res
+    if mode != "kmeans+snv" or ref_fasta is None:
+        return None
+    crs = sorted(crs_dict.values(), key=lambda cr: (cr.chr, cr.referenceStart))
+    chrom = crs[0].chr
+    on_chr = [cr for cr in crs if cr.chr == chrom]
+    split = ref_snv_haplotypes.ref_snv_haplotypes(
+        alns=[a for alnlist in alns.values() for a in alnlist],
+        reads=set(cutreads),
+        ref=ref_fasta,
+        chrom=chrom,
+        start=min(cr.referenceStart for cr in on_chr),
+        end=max(cr.referenceEnd for cr in on_chr),
+    )
+    if not split.is_split:
+        return None
+    clusters = {
+        h: sorted(rn for rn, hh in split.haplotypes.items() if hh == h) for h in (0, 1)
+    }
+    meta = {
+        h: {
+            "method": "fast_snv",
+            "haplotype": h,
+            "n_reads_phased": len(rns),
+            "n_snv_sites": split.n_sites,
+        }
+        for h, rns in clusters.items()
+    }
+    return consensus_from_clusters(
+        samplename=samplename,
+        clusters=clusters,
+        pool=cutreads,
+        candidate_regions=crs_dict,
+        lamassemble_mat=lamassemble_mat,
+        consensus_method=consensus_method,
+        meta=meta,
+        threads=threads,
+        tmp_dir_path=tmp_dir_path,
+        timeout=timeout,
+        verbose=verbose,
+    )
+
+
 def process_consensus_container(
     samplename: str,
     crs_dict: dict[int, datatypes.CandidateRegion],
@@ -3082,7 +3194,8 @@ def process_consensus_container(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    kmeans_fast_path_min_k: int = 0,
+    fast_clustering: str = "off",
+    ref_fasta: pysam.FastaFile | None = None,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3175,40 +3288,30 @@ def process_consensus_container(
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
 
-    # Experimental fast path: the KMeans gate is cheap, the phasing's
-    # all-vs-all is not. When the gate accepts k >= kmeans_fast_path_min_k,
-    # its clustering is assembled and the phasing is skipped.
-    if clustering_mode == "phased" and kmeans_fast_path_min_k > 0:
-        partition = kmeans_partition(
+    # Experimental fast clustering (--fast-clustering): the phasing's
+    # all-vs-all is the expensive part of the consensus stage. "kmeans" takes
+    # the KMeans clustering when its gate accepts >= 2 clusters that are all
+    # >= FAST_KMEANS_MIN_CLUSTER_FRACTION of the reads; "kmeans+snv" in addition
+    # assembles the two haplotypes of the het SNVs in the reads' reference
+    # alignments (ref_snv_haplotypes) when they split the reads. Everything else
+    # is phased. (experiments/consensus_perf/kmeans_snv_route.py)
+    if clustering_mode == "phased" and fast_clustering != "off":
+        res = fast_clustering_consensus(
+            samplename=samplename,
+            mode=fast_clustering,
             dict_summed_indels=dict_summed_indels,
-            pool=cutreads,
-            max_k=max_copy_number,
-            variance_threshold=29.0,
-            distance_threshold=29.0,
+            alns=alns,
+            cutreads=cutreads,
+            crs_dict=crs_dict,
+            max_copy_number=max_copy_number,
+            ref_fasta=ref_fasta,
+            lamassemble_mat=lamassemble_mat,
+            consensus_method=consensus_method,
+            threads=threads,
+            tmp_dir_path=tmp_dir_path,
+            timeout=timeout,
             verbose=verbose,
         )
-        if partition is not None and partition[2] >= kmeans_fast_path_min_k:
-            res = consensus_while_clustering_with_kmeans(
-                samplename=samplename,
-                dict_summed_indels=dict_summed_indels,
-                lamassemble_mat=lamassemble_mat,
-                pool=cutreads,
-                candidate_regions=crs_dict,
-                max_k=max_copy_number,
-                variance_threshold=29.0,
-                distance_threshold=29.0,
-                threads=threads,
-                tmp_dir_path=tmp_dir_path,
-                timeout=timeout,
-                verbose=verbose,
-                consensus_method=consensus_method,
-                partition=partition,
-            )
-            for consensus in (res or {}).values():
-                consensus.clustering_meta_data = {
-                    "method": "kmeans_fast_path",
-                    "kmeans_k": partition[2],
-                }
 
     if clustering_mode == "phased" and not res:
         res = consensus_while_phasing(
@@ -3478,7 +3581,7 @@ def crs_containers_to_consensus(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    kmeans_fast_path_min_k: int = 0,
+    fast_clustering: str = "off",
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3604,7 +3707,8 @@ def crs_containers_to_consensus(
                                 clustering_mode=clustering_mode,
                                 phasing_flank=phasing_flank,
                                 phasing_fallback=phasing_fallback,
-                                kmeans_fast_path_min_k=kmeans_fast_path_min_k,
+                                fast_clustering=fast_clustering,
+                                ref_fasta=_ref_fasta,
                             )
                     except tool_timeouts.Escalate:
                         pass
@@ -3752,7 +3856,7 @@ def run_consensus_script(args, **kwargs):
         clustering_mode=args.clustering_mode,
         phasing_flank=args.phasing_flank,
         phasing_fallback=args.phasing_fallback,
-        kmeans_fast_path_min_k=args.kmeans_fast_path_min_k,
+        fast_clustering=args.fast_clustering,
     )
 
 
@@ -3899,12 +4003,14 @@ def get_consensus_parser(
         "the legacy clustering.",
     )
     parser.add_argument(
-        "--kmeans-fast-path-min-k",
-        type=int,
-        default=0,
-        help="Experimental, with --clustering-mode phased: first cluster the reads by "
-        "KMeans on their summed indels and skip the read phasing when its gate accepts "
-        "k >= this many clusters (default: 0 = off, always phase).",
+        "--fast-clustering",
+        choices=("off", "kmeans", "kmeans+snv"),
+        default="off",
+        help="Experimental, with --clustering-mode phased: skip the read phasing where a "
+        "cheaper clustering suffices. 'kmeans': KMeans on the reads' summed indels when "
+        "it finds >= 2 clusters of >= 20%% of the reads each. 'kmeans+snv': otherwise "
+        "also the two haplotypes of the het SNVs in the reads' reference alignments "
+        "(needs --reference). Default: off (always phase).",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

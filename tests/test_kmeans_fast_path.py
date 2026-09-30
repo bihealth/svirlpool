@@ -1,4 +1,4 @@
-"""The KMeans gate (consensus.kmeans_partition) and --kmeans-fast-path-min-k."""
+"""The KMeans gate (consensus.kmeans_partition) used by --fast-clustering."""
 
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
