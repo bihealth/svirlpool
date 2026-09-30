@@ -3063,10 +3063,6 @@ def main():
     return
 
 
-if __name__ == "__main__":
-    main()
-
-
 # %%
 
 
@@ -3259,3 +3255,7 @@ def extract_test_svComposites(
         print(f"Saved {len(filtered_svComposites)} SVcomposites to {output_path}")
 
     return filtered_svComposites
+
+
+if __name__ == "__main__":
+    main()
