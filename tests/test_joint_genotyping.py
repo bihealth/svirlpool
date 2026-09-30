@@ -1518,7 +1518,6 @@ class TestGenotypeErrorRateIsAParameter:
                 output=Path("unused.vcf"),
                 reference=Path("unused.fa"),
                 threads=1,
-                max_cohens_d=2.0,
                 near=150,
                 min_kmer_overlap=0.7,
                 sv_types=["INS"],

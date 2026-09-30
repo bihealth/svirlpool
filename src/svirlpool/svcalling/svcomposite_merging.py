@@ -25,245 +25,77 @@ from .svcomposite_utils import (
     _regions_str_from_svcomposite,
     _svcomposite_log_id,
     _svcomposite_short_id,
-    cohens_d,
 )
 
 log = logging.getLogger(__name__)
 
 
-# A pair whose two size populations are both *constant* has no within-group
-# spread for Cohen's d to scale a difference of means by, so no effect size
-# exists for the population arm to test. `cohens_d` used to return `inf` for
-# that input, which reads as "maximally separated, therefore reject" and is
-# indistinguishable, in the output, from a real and very large effect size.
-# That silence is what let the read-derived noise model fail genome-wide
-# through an entire benchmark campaign (F1/F2).
-#
-# It is not a rare input. While the distortion estimates are broken every
-# population is constant, so this fires for essentially every candidate pair;
-# warning once per pair over a whole genome would emit millions of lines. Only
-# the first few pairs per process are warned about; every one is counted and
-# the totals are reported once per chromosome.
-DEGENERATE_POPULATION_WARN_LIMIT = 5
-_degenerate_population_warnings_emitted = 0
-_degenerate_population_pairs = 0
-_effect_size_pairs = 0
+#: The vertical merge's size test, set once from the CLI before any worker
+#: process is forked. Two sizes are similar when
+#:
+#:     |size_a - size_b| <= max(SIZE_TOLERANCE_FLOOR, fraction * ref(size_a, size_b))
+#:
+#: with ref the smaller size ('min'), the larger ('max') or their harmonic mean
+#: ('hmean'), and `fraction` the caller's tolerance
+#: (--apriori-size-difference-fraction-tolerance, or SIBLING_SIZE_TOLERANCE for
+#: two haplotypes of one sample). Nothing else enters the size decision.
+#:
+#: Above the floor the three references are one test in three
+#: parametrisations: each accepts exactly the pairs with max/min <= R, where
+#: R = 1 + f for 'min', 1 / (1 - f) for 'max' and f + sqrt(f^2 + 1) for
+#: 'hmean'. They differ only in which ratio a given f stands for.
+#:
+#: Two further allowances were removed after the svp_merging size-gate study
+#: (2026-09-29): a sequence-complexity allowance (1 - complexity) * |size|,
+#: which rejected identical sizes and was unbounded, and a "noise" gate, Cohen's
+#: d of the per-read distortion populations, which never improved the trio
+#: benchmark and whose scale overstates the consensus' size error 2-8x.
+SIZE_TOLERANCE_REFERENCES: tuple[str, ...] = ("min", "max", "hmean")
+SIZE_TOLERANCE_REFERENCE: str = "max"
+SIZE_TOLERANCE_FLOOR: float = 0.0
 
 
-def _reset_degenerate_population_warnings() -> None:
-    """Reset the per-process rate limiter and the degenerate-population counters."""
-    global _degenerate_population_warnings_emitted
-    global _degenerate_population_pairs
-    global _effect_size_pairs
-    _degenerate_population_warnings_emitted = 0
-    _degenerate_population_pairs = 0
-    _effect_size_pairs = 0
-
-
-def _constant_populations_coincide(x: np.ndarray, y: np.ndarray) -> bool:
-    """Whether two constant populations hold the same value.
-
-    Compares an element, not the means: the mean of identical floats need not
-    equal them exactly (see `cohens_d`).
-    """
-    return bool(x[0] == y[0])
-
-
-def _record_effect_size(a: SVcomposite, b: SVcomposite, cohensD: float | None) -> None:
-    """Count one attempted effect size, and report it if it was not estimable.
-
-    Rate limited to ``DEGENERATE_POPULATION_WARN_LIMIT`` warnings per process;
-    beyond that the event is visible only at DEBUG level and in the summary
-    logged by the per-chromosome merge drivers.
-    """
-    global _degenerate_population_warnings_emitted
-    global _degenerate_population_pairs
-    global _effect_size_pairs
-    _effect_size_pairs += 1
-    if cohensD is not None:
-        return
-    _degenerate_population_pairs += 1
-    message = (
-        "DEGENERATE_SIZE_POPULATION::_similar_size::(both size populations are "
-        "constant, so Cohen's d has no within-group spread to scale by; the "
-        "noise gate accepts the pair only if the two constants coincide)	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
-        f"regions_a={_regions_str_from_svcomposite(a)}	regions_b={_regions_str_from_svcomposite(b)}"
-    )
-    if _degenerate_population_warnings_emitted < DEGENERATE_POPULATION_WARN_LIMIT:
-        log.warning(message)
-        _degenerate_population_warnings_emitted += 1
-        if _degenerate_population_warnings_emitted == DEGENERATE_POPULATION_WARN_LIMIT:
-            log.warning(
-                "DEGENERATE_SIZE_POPULATION|RATE_LIMIT: further per-pair warnings are "
-                f"suppressed after {DEGENERATE_POPULATION_WARN_LIMIT} in this process; "
-                "see the merge summary for the total."
-            )
+def size_tolerance(size_a: float, size_b: float, fraction: float) -> float:
+    """The largest |size_a - size_b| at which the two sizes still count as similar."""
+    x, y = abs(size_a), abs(size_b)
+    if SIZE_TOLERANCE_REFERENCE == "min":
+        ref = min(x, y)
+    elif SIZE_TOLERANCE_REFERENCE == "max":
+        ref = max(x, y)
+    elif SIZE_TOLERANCE_REFERENCE == "hmean":
+        ref = 2.0 * x * y / (x + y) if x + y > 0 else 0.0
     else:
-        log.debug(message)
-
-
-def _log_degenerate_population_summary(context: str) -> None:
-    """Report how much of the population arm was decided on nothing."""
-    if _effect_size_pairs == 0:
-        return
-    log.info(
-        f"Summary ({context}): pairs reaching Cohen's d={_effect_size_pairs}, "
-        f"of those not estimable={_degenerate_population_pairs}"
-    )
-    if _degenerate_population_pairs > 0:
-        log.warning(
-            f"DEGENERATE_SIZE_POPULATION|SUMMARY ({context}): "
-            f"{_degenerate_population_pairs} of {_effect_size_pairs} pairs "
-            f"({100.0 * _degenerate_population_pairs / _effect_size_pairs:.1f}%) "
-            "had two constant size populations, so no effect size could be "
-            "estimated and the noise gate decided those pairs on whether the "
-            "two constants coincide."
+        raise ValueError(
+            f"SIZE_TOLERANCE_REFERENCE must be one of {SIZE_TOLERANCE_REFERENCES}, "
+            f"got {SIZE_TOLERANCE_REFERENCE!r}"
         )
+    return max(SIZE_TOLERANCE_FLOOR, fraction * ref)
 
 
-def _cohens_d_report(cohensD: float | None, d: float) -> str:
-    """The `verbose` line for the population arm's effect size.
-
-    Three outcomes have to stay apart, and used to be reported as two:
-
-    * ``None``  -- reached the effect size and it is not estimable (both
-      populations constant). This is the F2 case and must be visible.
-    * ``nan``   -- never reached it: a population was empty, or the noise gate
-      is not active.
-    * a float   -- a real effect size, compared against `d`.
-
-    Collapsing the first two into "print nothing" is what made a degenerate
-    population indistinguishable from an arm that simply did not run.
-    """
-    if cohensD is None:
-        return (
-            "  Cohen's D: not estimable (both size populations are constant; "
-            "similar only if the constants coincide)"
-        )
-    if np.isnan(cohensD):
-        return "  Cohen's D: not computed (the population arm did not reach it)"
-    return f"  Cohen's D: {cohensD:.3f}, threshold: {d}"
-
-
-#: Experimental, set once from the CLI (--size-gates) before any worker process
-#: is forked. Which of the two size gates of `_similar_size_detail` are
-#: active; a pair is size-similar if ANY active gate accepts it, and with none
-#: active every pair passes (proximity and k-mers then decide alone).
-#:
-#:   fraction    |size_a - size_b| <= tol * max(size)           (a-priori bound)
-#:   noise       Cohen's d of the two size populations <= d
-#:
-#: A third gate, a sequence-complexity allowance (1 - complexity) * |size|
-#: that short-circuited the size test, was removed: it rejected identical-size
-#: pairs (it compared noise-shifted population means, not sizes), its
-#: allowance was unbounded, and it never improved the trio benchmark in any
-#: combination (svp_merging size-gate study, 2026-09-29).
-SIZE_GATE_NAMES: tuple[str, ...] = ("fraction", "noise")
-SIZE_GATES: frozenset[str] = frozenset(SIZE_GATE_NAMES)
+def sizes_similar(size_a: float, size_b: float, fraction: float) -> bool:
+    """Whether two SV sizes agree within the floored relative tolerance."""
+    return abs(abs(size_a) - abs(size_b)) <= size_tolerance(size_a, size_b, fraction)
 
 
 def _similar_size_detail(
     a: SVcomposite,
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
-    d: float,
-    gates: frozenset[str] | None = None,
 ) -> dict:
-    """`_similar_size` with every gate's verdict and the populations' statistics.
+    """The size test of the vertical merge, with its inputs for --merge-audit.
 
-    Keys: similar, fraction_similar, noise_similar, population_similar (=
-    noise_similar, the old arm 2), cohens_d (nan = not reached, None = not
-    estimable), cohens_d_status (computed, not_reached, or constant_equal /
-    constant_different when d is not estimable and the noise gate accepts
-    exactly the coinciding constants), pop_n_a/b, pop_mean_a/b, pop_sd_a/b (the
-    spread of the per-read size distortions, i.e. what the noise gate divides
-    by).
+    Keys: similar, size_tolerance (bp), size_reference, size_floor.
     """
-    gates = SIZE_GATES if gates is None else gates
-    use_fraction = "fraction" in gates
-    use_noise = "noise" in gates
-
     size_a = a.get_size()
     size_b = b.get_size()
-
-    # --- fraction: a-priori bound on the raw sizes ---------------------------
-    max_size = max(abs(size_a), abs(size_b))
-    # apriori_size_difference_fraction_tolerance is the fraction of the larger of
-    # the two sizes that they may differ by and still count as similar: 0.0 means
-    # the sizes must be identical, 1.0 means any pair of non-negative sizes passes.
-    #
-    # There is deliberately no absolute floor under this bound. An earlier
-    # `or abs(size_a - size_b) < np.log2(abs(size_a - size_b) + 1)` disjunct read
-    # as one and was not: with d = |size_a - size_b|, log2(d + 1) > d only on the
-    # open interval 0 < d < 1, and d is a difference of alignment coordinates and
-    # so integral. The term never fired, and would have fired only for sub-bp
-    # differences if size ever became fractional. If a floor is wanted -- the
-    # dissertation text proposes F = 12 bp, the consensus-level indel parse
-    # threshold of `consensus_align --min-signal-size` -- it must be written as
-    # `abs(size_a - size_b) <= F` behind a named constant and benchmarked on its
-    # own, because it *loosens* the gate: at the default tolerance 0.06 it admits
-    # pairs the fractional arm rejects whenever max(size_a, size_b) < 200.
-    fraction_similar = bool(
-        use_fraction
-        and max_size > 0
-        and abs(size_a - size_b)
-        <= apriori_size_difference_fraction_tolerance * max_size
+    tolerance = size_tolerance(
+        size_a, size_b, apriori_size_difference_fraction_tolerance
     )
-
-    # The distortion values used to be truncated toward zero TWICE before they
-    # reached Cohen's d: once by `int(size)` in
-    # SVcomposite.get_size_populations, and again by an `np.int32` cast here.
-    # That was harmless only for as long as every value was exactly 0.0. On real
-    # estimates truncation shrinks the within-group spread, which inflates |d|
-    # and biases the gate toward rejection; worse, sub-bp estimates all truncate
-    # to the same 0 and turn an informative population into a *constant* one,
-    # manufacturing exactly the degeneracy handled below. The populations are
-    # kept in floating point: this is a noise model, and quantising it to whole
-    # base pairs discards the resolution it exists to provide.
-    population_a = np.array(a.get_size_populations(), dtype=np.float64) + size_a
-    population_b = np.array(b.get_size_populations(), dtype=np.float64) + size_b
-
-    noise_similar = False
-    cohensD: float | None = float("nan")
-    cohens_d_status = "not_reached"
-    have_populations = len(population_a) > 0 and len(population_b) > 0
-    if have_populations and use_noise:
-        cohensD = cohens_d(population_a, population_b)
-        _record_effect_size(a, b, cohensD)
-        if cohensD is not None:
-            cohens_d_status = "computed"
-            noise_similar = abs(cohensD) <= abs(d)
-        else:
-            # Both populations constant: no spread to scale by, so the only
-            # statement left is whether the two constants coincide -- the
-            # limit of d as the spread goes to 0 is 0 for equal values and
-            # infinite otherwise. Equal constants are a perfect match and
-            # merge. This gate used to abstain here, which rejected about
-            # half of all identical-size cross-sample pairs of a trio call.
-            # Same policy as candidateregions.signalstrength_to_crs.
-            noise_similar = _constant_populations_coincide(population_a, population_b)
-            cohens_d_status = (
-                "constant_equal" if noise_similar else "constant_different"
-            )
-
-    no_gate = not (use_fraction or use_noise)
     return {
-        "similar": no_gate or fraction_similar or noise_similar,
-        "fraction_similar": fraction_similar,
-        "noise_similar": noise_similar,
-        "population_similar": noise_similar,
-        "cohens_d": cohensD,
-        "cohens_d_status": cohens_d_status,
-        "pop_n_a": len(population_a),
-        "pop_n_b": len(population_b),
-        "pop_mean_a": float(np.mean(population_a)) if len(population_a) else None,
-        "pop_mean_b": float(np.mean(population_b)) if len(population_b) else None,
-        "pop_sd_a": float(np.std(population_a, ddof=1))
-        if len(population_a) > 1
-        else None,
-        "pop_sd_b": float(np.std(population_b, ddof=1))
-        if len(population_b) > 1
-        else None,
+        "similar": abs(abs(size_a) - abs(size_b)) <= tolerance,
+        "size_tolerance": tolerance,
+        "size_reference": SIZE_TOLERANCE_REFERENCE,
+        "size_floor": SIZE_TOLERANCE_FLOOR,
     }
 
 
@@ -271,40 +103,11 @@ def _similar_size(
     a: SVcomposite,
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
-    d: float,
-) -> tuple[bool, bool, bool, float | None]:
-    """Two-armed size-similarity test, shared by insertions, deletions and inversions.
-
-    Arm 1 — a fractional bound on the **raw** sizes:
-        |size_a - size_b| <= tol * max(size_a, size_b)
-    Strict for tol < 1.0, and vacuous at tol = 1.0, since |x - y| <= max(x, y)
-    holds for every non-negative x, y.
-
-    Arm 2 — Cohen's *d* on the two size populations; two constant populations
-    pass exactly when they coincide.
-
-    The arms are OR-ed, so this is the union of two acceptance regions and the
-    weaker arm dominates. That is intended, but it is also why a vacuous arm 1
-    silences arm 2 completely.
-
-    Returns (similar_size, fraction_similar, population_similar, cohensD).
-    `cohensD` is nan when it was not computed at all, and None when it was
-    computed and found not estimable -- see `_cohens_d_report`. The two are kept
-    apart deliberately: one says the arm did not run, the other says it ran on
-    data that cannot support a conclusion.
-    """
-    r = _similar_size_detail(
-        a,
-        b,
-        apriori_size_difference_fraction_tolerance,
-        d,
-    )
-    return (
-        r["similar"],
-        r["fraction_similar"],
-        r["population_similar"],
-        r["cohens_d"],
-    )
+) -> bool:
+    """Whether the sizes of two SVcomposites are similar (see `size_tolerance`)."""
+    return _similar_size_detail(a, b, apriori_size_difference_fraction_tolerance)[
+        "similar"
+    ]
 
 
 #: Experimental, set once from the CLI before any worker process is forked.
@@ -312,8 +115,7 @@ def _similar_size(
 #: candidate region as the haplotypes they are: two patterns of the SAME assembly
 #: are distinct events and never merge; two patterns of SIBLING assemblies (same
 #: sample, same crID, different consensus) are two haplotypes' alleles and merge
-#: only if their sizes agree within SIBLING_SIZE_TOLERANCE, with no population
-#: arm.
+#: only if their sizes agree within SIBLING_SIZE_TOLERANCE (see `size_tolerance`).
 HAPLOTYPE_AWARE_MERGE: bool = True
 SIBLING_SIZE_TOLERANCE: float = 0.1
 
@@ -366,13 +168,10 @@ def _audit_pair(
 
 
 def _audit_size_features(size_detail: dict) -> dict:
-    """The size stage's verdicts per gate and its inputs, for --merge-audit only."""
+    """The size test's tolerance and its inputs, for --merge-audit only."""
     if not merge_audit.enabled():
         return {}
-    return {
-        "size_gates": ",".join(g for g in SIZE_GATE_NAMES if g in SIZE_GATES) or "none",
-        **{k: v for k, v in size_detail.items() if k != "similar"},
-    }
+    return {k: v for k, v in size_detail.items() if k != "similar"}
 
 
 def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
@@ -388,10 +187,11 @@ def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
         return False
     if relation == "sibling_assembly":
         size_a, size_b = abs(a.get_size()), abs(b.get_size())
-        ok = abs(size_a - size_b) <= SIBLING_SIZE_TOLERANCE * max(size_a, size_b)
+        ok = sizes_similar(size_a, size_b, SIBLING_SIZE_TOLERANCE)
         log.debug(
             f"VERTICAL_MERGE|{svtype}|{'ACCEPT' if ok else 'REJECT_SIBLING_SIZE'}	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
-            f"size_a={size_a}	size_b={size_b}	sibling_tolerance={SIBLING_SIZE_TOLERANCE}"
+            f"size_a={size_a}	size_b={size_b}	sibling_tolerance={SIBLING_SIZE_TOLERANCE}	"
+            f"size_reference={SIZE_TOLERANCE_REFERENCE}	size_floor={SIZE_TOLERANCE_FLOOR}"
         )
         if not ok:
             _audit_pair(
@@ -401,6 +201,9 @@ def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
                 False,
                 "sibling_size",
                 sibling_tolerance=SIBLING_SIZE_TOLERANCE,
+                size_tolerance=size_tolerance(size_a, size_b, SIBLING_SIZE_TOLERANCE),
+                size_reference=SIZE_TOLERANCE_REFERENCE,
+                size_floor=SIZE_TOLERANCE_FLOOR,
             )
             return False
         # sizes agree: the remaining checks (proximity, k-mers) still apply
@@ -412,7 +215,6 @@ def can_merge_svComposites_insertions(
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
     near: int,
-    d: float = 2.0,
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
@@ -464,33 +266,19 @@ def can_merge_svComposites_insertions(
         _audit_pair("INS", a, b, False, "not_near", near=near)
         return False
 
-    # - have similar sizes, tested with two criteria:
-    #   1) simple fractional size difference check
-    #   2) population-driven Cohen's D on background signals
+    # - have similar sizes (floored relative tolerance, see `size_tolerance`)
 
     size_a = a.get_size()
     size_b = b.get_size()
 
-    _size = _similar_size_detail(
-        a,
-        b,
-        apriori_size_difference_fraction_tolerance,
-        d,
-    )
+    _size = _similar_size_detail(a, b, apriori_size_difference_fraction_tolerance)
     similar_size = _size["similar"]
-    fraction_similar = _size["fraction_similar"]
-    population_similar = _size["population_similar"]
-    cohensD = _size["cohens_d"]
 
     if verbose:
         print(
             f"Size comparison: size_a={size_a}, size_b={size_b}, "
-            f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
-            f"similar_size={similar_size}"
+            f"tolerance={_size['size_tolerance']:.1f} bp, similar_size={similar_size}"
         )
-        print(_cohens_d_report(cohensD, d))
-        print(f"  Population A sizes: {list(a.get_size_populations())}")
-        print(f"  Population B sizes: {list(b.get_size_populations())}")
 
     # if the inserton is between two break points, then it is necessary to take the sequence from inserted_sequence
     if size_a < 100 and size_b < 100:
@@ -548,7 +336,6 @@ def can_merge_svComposites_deletions(
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
     near: int,
-    d: float = 2.0,
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
@@ -603,26 +390,14 @@ def can_merge_svComposites_deletions(
     size_a = a.get_size()
     size_b = b.get_size()
 
-    _size = _similar_size_detail(
-        a,
-        b,
-        apriori_size_difference_fraction_tolerance,
-        d,
-    )
+    _size = _similar_size_detail(a, b, apriori_size_difference_fraction_tolerance)
     similar_size = _size["similar"]
-    fraction_similar = _size["fraction_similar"]
-    population_similar = _size["population_similar"]
-    cohensD = _size["cohens_d"]
 
     if verbose:
         print(
             f"Size comparison: size_a={size_a}, size_b={size_b}, "
-            f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
-            f"similar_size={similar_size}"
+            f"tolerance={_size['size_tolerance']:.1f} bp, similar_size={similar_size}"
         )
-        print(_cohens_d_report(cohensD, d))
-        print(f"  Population A sizes: {list(a.get_size_populations())}")
-        print(f"  Population B sizes: {list(b.get_size_populations())}")
 
     if size_a < 100 and size_b < 100:
         similarity = 1.0  # don't compare k-mers for small deletions, they are too short to be meaningful
@@ -678,7 +453,6 @@ def can_merge_svComposites_deletions(
 
 def vertically_merged_svComposites_from_group(
     group: list[SVcomposite],
-    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -750,7 +524,6 @@ def vertically_merged_svComposites_from_group(
 
     merged_insertions = merge_insertions(
         insertions=list(insertions.values()),
-        d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
         verbose=verbose,
@@ -758,7 +531,6 @@ def vertically_merged_svComposites_from_group(
     )
     merged_deletions = merge_deletions(
         deletions=list(deletions.values()),
-        d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
         verbose=verbose,
@@ -766,7 +538,6 @@ def vertically_merged_svComposites_from_group(
     )
     merged_inversions = merge_inversions(
         inversions=list(inversions.values()),
-        d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
         verbose=verbose,
@@ -774,7 +545,6 @@ def vertically_merged_svComposites_from_group(
     )
     merged_breakends = merge_breakends(
         breakends=list(breakends.values()),
-        d=d,
         near=near,
         min_kmer_overlap=min_kmer_overlap,
         verbose=verbose,
@@ -818,7 +588,6 @@ def merge_alt_count_dicts(
 
 def merge_insertions(
     insertions: list[SVcomposite],
-    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -866,7 +635,6 @@ def merge_insertions(
                 a=insertions[i],
                 b=insertions[j],
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-                d=d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 verbose=verbose,
@@ -896,7 +664,6 @@ def merge_insertions(
 
 def merge_deletions(
     deletions: list[SVcomposite],
-    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -924,7 +691,6 @@ def merge_deletions(
                 a=deletions[i],
                 b=deletions[j],
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-                d=d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 verbose=verbose,
@@ -960,7 +726,6 @@ def can_merge_svComposites_inversions(
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
     near: int,
-    d: float = 2.0,
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
@@ -1020,26 +785,14 @@ def can_merge_svComposites_inversions(
     size_a = a.get_size()
     size_b = b.get_size()
 
-    _size = _similar_size_detail(
-        a,
-        b,
-        apriori_size_difference_fraction_tolerance,
-        d,
-    )
+    _size = _similar_size_detail(a, b, apriori_size_difference_fraction_tolerance)
     similar_size = _size["similar"]
-    fraction_similar = _size["fraction_similar"]
-    population_similar = _size["population_similar"]
-    cohensD = _size["cohens_d"]
 
     if verbose:
         print(
             f"Size comparison: size_a={size_a}, size_b={size_b}, "
-            f"fraction_similar={fraction_similar}, population_similar={population_similar}, "
-            f"similar_size={similar_size}"
+            f"tolerance={_size['size_tolerance']:.1f} bp, similar_size={similar_size}"
         )
-        print(_cohens_d_report(cohensD, d))
-        print(f"  Population A sizes: {list(a.get_size_populations())}")
-        print(f"  Population B sizes: {list(b.get_size_populations())}")
 
     # Use inserted sequences from inversions for k-mer similarity comparison
     # For inversions, we need to get the inverted sequences (inserted_sequence from SVpatternInversion)
@@ -1098,7 +851,6 @@ def can_merge_svComposites_inversions(
 
 def merge_inversions(
     inversions: list[SVcomposite],
-    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -1153,7 +905,6 @@ def merge_inversions(
             if can_merge_svComposites_inversions(
                 a=inversions[i],
                 b=inversions[j],
-                d=d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -1190,7 +941,6 @@ def can_merge_svComposites_breakends(
     b: SVcomposite,
     apriori_size_difference_fraction_tolerance: float,
     near: int,
-    d: float = 2.0,
     min_kmer_overlap: float = 0.7,
     verbose: bool = False,
 ) -> bool:
@@ -1285,7 +1035,6 @@ def can_merge_svComposites_breakends(
 
 def merge_breakends(
     breakends: list[SVcomposite],
-    d: float,
     near: int,
     min_kmer_overlap: float,
     apriori_size_difference_fraction_tolerance: float,
@@ -1337,7 +1086,6 @@ def merge_breakends(
                 a=breakends[i],
                 b=breakends[j],
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-                d=d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 verbose=verbose,
@@ -1514,7 +1262,6 @@ def merge_adjacencies(
 def merge_svComposites_across_chromosomes(
     svComposites: list[SVcomposite],
     apriori_size_difference_fraction_tolerance: float,
-    max_cohens_d: float,
     near: int,
     min_kmer_overlap: float,
     verbose: bool = False,
@@ -1524,7 +1271,6 @@ def merge_svComposites_across_chromosomes(
     This function processes all chromosomes sequentially.
     """
     log.debug("CHROMOSOME_MERGE|ACROSS_CHR|START|n_composites=%d", len(svComposites))
-    _reset_degenerate_population_warnings()
 
     # build overlap trees for all chromosomes
     overlap_trees: dict[str, IntervalTree] = defaultdict(IntervalTree)
@@ -1592,7 +1338,6 @@ def merge_svComposites_across_chromosomes(
 
             merged = vertically_merged_svComposites_from_group(
                 group=svComposite_group,
-                d=max_cohens_d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -1611,7 +1356,6 @@ def merge_svComposites_across_chromosomes(
         len(svComposites),
         len(merged_svComposites),
     )
-    _log_degenerate_population_summary("adjacencies, all chromosomes")
     return merged_svComposites
 
 
@@ -1619,7 +1363,6 @@ def merge_svComposites_for_chromosome(
     chr_name: str,
     svComposites: list[SVcomposite],
     apriori_size_difference_fraction_tolerance: float,
-    max_cohens_d: float,
     near: int,
     min_kmer_overlap: float,
     verbose: bool = False,
@@ -1633,7 +1376,6 @@ def merge_svComposites_for_chromosome(
     )
     # This is the entry point of a worker process when threads > 1, so the
     # per-process rate limiter and counters belong here.
-    _reset_degenerate_population_warnings()
 
     # Build overlap trees for this chromosome only
     overlaptree = IntervalTree()
@@ -1710,7 +1452,6 @@ def merge_svComposites_for_chromosome(
             )
             merged = vertically_merged_svComposites_from_group(
                 group=svComposite_group,
-                d=max_cohens_d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -1731,14 +1472,12 @@ def merge_svComposites_for_chromosome(
         len(svComposites),
         len(merged_svComposites),
     )
-    _log_degenerate_population_summary(chr_name)
     return merged_svComposites
 
 
 def merge_svComposites(
     svComposites: list[SVcomposite],
     apriori_size_difference_fraction_tolerance: float,
-    max_cohens_d: float,
     near: int,
     min_kmer_overlap: float,
     verbose: bool = False,
@@ -1785,7 +1524,6 @@ def merge_svComposites(
         worker_fn = partial(
             merge_svComposites_for_chromosome,
             apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-            max_cohens_d=max_cohens_d,
             near=near,
             min_kmer_overlap=min_kmer_overlap,
             verbose=verbose,
@@ -1821,7 +1559,6 @@ def merge_svComposites(
                 chr_name=chr_name,
                 svComposites=chr_svComposites,
                 apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-                max_cohens_d=max_cohens_d,
                 near=near,
                 min_kmer_overlap=min_kmer_overlap,
                 verbose=verbose,
@@ -1834,7 +1571,6 @@ def merge_svComposites(
         merge_svComposites_across_chromosomes(
             svComposites=cpx_groups,
             apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
-            max_cohens_d=max_cohens_d,
             near=near,
             min_kmer_overlap=min_kmer_overlap,
             verbose=verbose,

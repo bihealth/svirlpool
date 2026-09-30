@@ -2510,7 +2510,6 @@ def multisample_sv_calling(
     output: Path,
     reference: Path,
     threads: int,
-    max_cohens_d: float,
     near: int,
     min_kmer_overlap: float,
     sv_types: list[str],
@@ -2650,7 +2649,6 @@ def multisample_sv_calling(
         merged: list[SVcomposite] = merge_svComposites(
             apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
             svComposites=data,
-            max_cohens_d=max_cohens_d,
             near=near,
             min_kmer_overlap=min_kmer_overlap,
             threads=threads,
@@ -2763,26 +2761,6 @@ def multisample_sv_calling(
     )
 
 
-def parse_size_gates(value: str) -> frozenset[str]:
-    """--size-gates: 'none' or a comma list of fraction, noise."""
-    from .svcomposite_merging import SIZE_GATE_NAMES
-
-    names = {v.strip() for v in value.split(",") if v.strip()}
-    if names == {"none"}:
-        return frozenset()
-    if "complexity" in names:
-        raise ValueError(
-            "--size-gates: the 'complexity' gate was removed; use fraction, noise"
-        )
-    unknown = names - set(SIZE_GATE_NAMES)
-    if unknown or not names:
-        raise ValueError(
-            f"--size-gates must be 'none' or a comma list of "
-            f"{', '.join(SIZE_GATE_NAMES)}; got {value!r}"
-        )
-    return frozenset(names)
-
-
 def run(args) -> None:
     # Experimental switches: module-level, set before any worker is forked.
     global MULTI_ASSEMBLY_OVERRIDE
@@ -2790,9 +2768,8 @@ def run(args) -> None:
 
     _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
-    _merging.SIZE_GATES = parse_size_gates(
-        getattr(args, "size_gates", ",".join(_merging.SIZE_GATE_NAMES))
-    )
+    _merging.SIZE_TOLERANCE_REFERENCE = getattr(args, "size_tolerance_reference", "max")
+    _merging.SIZE_TOLERANCE_FLOOR = getattr(args, "size_tolerance_floor", 0.0)
     MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "subset")
     if getattr(args, "merge_audit", None):
         merge_audit.start(args.merge_audit)
@@ -2822,13 +2799,18 @@ def run(args) -> None:
             "--scale-by-complexity-factor is deprecated and ignored: the "
             "sequence-complexity size allowance of the vertical merge was removed."
         )
+    if getattr(args, "max_cohens_d", None) is not None:
+        log.warning(
+            "--max_cohens_d is deprecated and ignored: the Cohen's d noise gate of "
+            "the vertical merge was removed; sizes are compared by "
+            "--apriori-size-difference-fraction-tolerance and --size-tolerance-floor only."
+        )
 
     multisample_sv_calling(
         input=args.input,
         output=args.output,
         reference=args.reference,
         threads=args.threads,
-        max_cohens_d=args.max_cohens_d,
         near=args.near,
         min_kmer_overlap=args.min_kmer_overlap,
         sv_types=args.sv_types,
@@ -2884,9 +2866,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max_cohens_d",
-        help="Maximum Cohen's d value for merging SVs (default: 2.0).",
+        help="Deprecated and ignored: the Cohen's d noise gate of the vertical merge "
+        "was removed. Accepted so existing command lines keep working.",
         type=float,
-        default=2.0,
+        default=None,
     )
     parser.add_argument(
         "--near",
@@ -2929,11 +2912,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
-        help="Fraction of the larger of the two sizes that two SVs may "
-        "differ by and still be merged (default: 0.06). 0.0 = no tolerance (sizes must "
-        "be identical); 1.0 = maximum tolerance, which is vacuous by construction and "
-        "reproduces the pre-fix behaviour of an inert size gate. Decrease for stronger "
-        "separation of haplotypes.",
+        help="Fraction of the reference size (--size-tolerance-reference) that two SVs "
+        "may differ by and still be merged; never less than --size-tolerance-floor "
+        "(default: 0.06). 0.0 = sizes must agree within the floor. Decrease for "
+        "stronger separation of haplotypes.",
         type=float,
         default=0.06,
     )
@@ -3006,7 +2988,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--sibling-size-tolerance",
         type=float,
         default=0.1,
-        help="Size tolerance (fraction of the larger) for --haplotype-aware-merge (default: 0.1).",
+        help="Size tolerance for --haplotype-aware-merge, as a fraction of the reference size (--size-tolerance-reference), never less than --size-tolerance-floor (default: 0.1).",
     )
     parser.add_argument(
         "--multi-assembly-override",
@@ -3025,14 +3007,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "labelling patterns against a truth set for --merge-audit needs.",
     )
     parser.add_argument(
-        "--size-gates",
-        default="fraction,noise",
-        help="Experimental. Which gates of the vertical merge's size test (pairs that "
-        "are not sibling assemblies) are active; a pair passes if any active gate "
-        "accepts it: 'fraction' (--apriori-size-difference-fraction-tolerance), "
-        "'noise' (Cohen's d of the size populations <= --max_cohens_d; two constant "
-        "populations pass when they coincide). 'none' passes every pair on size. "
-        "Default: both.",
+        "--size-tolerance-reference",
+        choices=("min", "max", "hmean"),
+        default="max",
+        help="Which size the merge size tolerances are a fraction of: the smaller "
+        "of the two SVs ('min'), the larger ('max', default) or their harmonic mean "
+        "('hmean'). Above the floor all three accept exactly the pairs whose size "
+        "ratio max/min stays under one bound; they differ only in the ratio a given "
+        "fraction stands for.",
+    )
+    parser.add_argument(
+        "--size-tolerance-floor",
+        type=float,
+        default=0.0,
+        help="Absolute floor (bp) under the merge size tolerances: two SVs whose sizes "
+        "differ by at most this many bp are always similar in size (default: 0).",
     )
     parser.add_argument(
         "--merge-audit",

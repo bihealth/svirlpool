@@ -1,9 +1,9 @@
 """Unit tests for the vertical-merge size-similarity gate.
 
-The gate is two-armed and the arms are OR-ed, so the *weaker* arm decides:
-
-  1) a fractional bound on the two sizes;
-  2) a population-driven Cohen's D on the background size-distortion signals.
+The gate is one floored relative bound on the two sizes,
+|a - b| <= max(floor, tol * ref(a, b)) (see `svcomposite_merging.size_tolerance`).
+A Cohen's d arm on the per-read size-distortion populations used to be OR-ed
+with it; it was removed, and sizes are all that decide.
 
 The same gate is reached from three entry points -- insertions, deletions and
 inversions -- and the tests below deliberately exercise all three with the same
@@ -25,7 +25,7 @@ from svirlpool.signalprocessing.alignments_to_rafs import (
     get_start_end,
     parse_SVsignals_from_alignment,
 )
-from svirlpool.svcalling import genotyping, svcomposite_merging
+from svirlpool.svcalling import genotyping
 from svirlpool.svcalling.SVcomposite import SVcomposite
 from svirlpool.svcalling.svcomposite_merging import (
     can_merge_svComposites_deletions,
@@ -306,7 +306,6 @@ def _size_gate(
     size_b: int,
     *,
     tolerance: float,
-    d: float = 2.0,
     size_distortions: dict[str, float] | None = None,
     sequence_a: str | None = None,
     sequence_b: str | None = None,
@@ -315,9 +314,8 @@ def _size_gate(
 
     `near` is set far beyond both events and `min_kmer_overlap` to 0.0, so the
     proximity and k-mer arms always pass and the return value *is* the size
-    gate's verdict. With `size_distortions=None` the population arm is off as
-    well (empty populations are treated as "not similar"), so the verdict is
-    exactly the fractional arm.
+    gate's verdict. `size_distortions` no longer enters it; it is kept so tests
+    can show that.
     """
     a = _make_composite(
         kind,
@@ -339,7 +337,6 @@ def _size_gate(
         a=a,
         b=b,
         apriori_size_difference_fraction_tolerance=tolerance,
-        d=d,
         near=10 * max(size_a, size_b, 100),
         min_kmer_overlap=0.0,
     )
@@ -386,7 +383,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -410,15 +406,17 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
 
-    def test_different_sizes_beyond_fraction_but_populations_overlap(self):
-        """Sizes differ by >10%, but populations have overlapping distributions → merge via Cohen's D."""
+    def test_different_sizes_beyond_fraction_reject_even_if_populations_overlap(self):
+        """Sizes differ by >10%: rejected, however wide the noise populations.
+
+        A Cohen's d arm used to merge this pair because the populations overlap.
+        It was removed; only the sizes decide.
+        """
         # sizes: 500 vs 600 → diff/max = 100/600 ≈ 16.7% → fraction test fails
-        # but populations with large spread should overlap and have small Cohen's D
         a = _make_insertion_composite(
             size=500,
             size_distortions={
@@ -435,11 +433,10 @@ class TestCanMergeInsertions:
             samplename="sample2",
             consensusID="2.0",
         )
-        assert can_merge_svComposites_insertions(
+        assert not can_merge_svComposites_insertions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -448,13 +445,8 @@ class TestCanMergeInsertions:
         """Very different sizes are rejected when the sequence is well resolved.
 
         Sizes 100 vs 200 (a 2x difference) fail the fraction test, which requires
-        the relative size difference to be within `tol` (here 10%). With a
-        high-complexity sequence the complexity allowance is close to zero, so the
-        shifted Cohen's D test fails as well and the merge is correctly rejected.
-
-        The sequence matters: complexity is what decides how much size disagreement
-        is tolerated (see test_very_different_sizes_merge_in_low_complexity for the
-        same sizes in a homopolymer).
+        the relative size difference to be within `tol` (here 10%), and nothing
+        else can accept a pair.
         """
         a = _make_insertion_composite(
             size=100,
@@ -474,7 +466,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=300,
             min_kmer_overlap=0.0,
         )
@@ -505,7 +496,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=300,
             min_kmer_overlap=0.0,
         )
@@ -542,7 +532,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=300,
             min_kmer_overlap=0.0,
         )
@@ -565,7 +554,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -573,8 +561,7 @@ class TestCanMergeInsertions:
     def test_empty_populations_fraction_fail(self):
         """With no populations, a large size difference fails the fraction test and is rejected.
 
-        With no size_distortions, population_similar=False (empty populations). The
-        corrected fraction test also fails because a 100 vs 200 size difference (100%)
+        The fraction test fails because a 100 vs 200 size difference (100%)
         exceeds the 10% tolerance, so similar_size=False and the merge is correctly
         rejected.
         """
@@ -594,7 +581,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=300,
             min_kmer_overlap=0.0,
         )
@@ -619,7 +605,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -644,7 +629,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -671,7 +655,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -680,7 +663,6 @@ class TestCanMergeInsertions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.01,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -712,7 +694,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -736,15 +717,13 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
 
-    def test_different_sizes_beyond_fraction_but_populations_overlap(self):
-        """Sizes differ by >10%, but wide population distributions → merge via Cohen's D."""
+    def test_different_sizes_beyond_fraction_reject_even_if_populations_overlap(self):
+        """Sizes differ by >10%: rejected, however wide the noise populations."""
         # 500 vs 600 → 16.7% → fraction fails
-        # wide spread populations should produce small Cohen's D
         a = _make_deletion_composite(
             size=500,
             size_distortions={
@@ -761,26 +740,19 @@ class TestCanMergeDeletions:
             samplename="sample2",
             consensusID="2.0",
         )
-        assert can_merge_svComposites_deletions(
+        assert not can_merge_svComposites_deletions(
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
 
     def test_very_different_sizes_reject(self):
-        """A 150% size difference is rejected when the reference is well resolved.
+        """A 150% size difference is rejected.
 
         Sizes 100 vs 250 fail the fraction test (the relative size difference far
-        exceeds the 10% tolerance). With a high-complexity reference span the
-        complexity allowance is small, so the shifted Cohen's D test fails too and
-        the merge is correctly rejected.
-
-        Deletions take their complexity from the REFERENCE span rather than an
-        assembled sequence (`get_reference_complexity_tracks`), which is the right
-        substrate: it is the reference the aligner is placing the event against.
+        exceeds the 10% tolerance), and nothing else can accept a pair.
         """
         a = _make_deletion_composite(
             size=100,
@@ -800,7 +772,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=350,
             min_kmer_overlap=0.0,
         )
@@ -825,7 +796,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=350,
             min_kmer_overlap=0.0,
         )
@@ -848,7 +818,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -856,8 +825,7 @@ class TestCanMergeDeletions:
     def test_empty_populations_fraction_fail(self):
         """With no populations, a large size difference fails the fraction test and is rejected.
 
-        With no size_distortions, population_similar=False (empty populations). The
-        corrected fraction test also fails because a 100 vs 200 size difference (100%)
+        The fraction test fails because a 100 vs 200 size difference (100%)
         exceeds the 10% tolerance, so similar_size=False and the merge is correctly
         rejected.
         """
@@ -877,7 +845,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=300,
             min_kmer_overlap=0.0,
         )
@@ -902,7 +869,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -927,48 +893,6 @@ class TestCanMergeDeletions:
             a=a,
             b=b,
             apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
-            near=150,
-            min_kmer_overlap=0.7,
-        )
-
-    def test_strict_cohens_d_threshold(self):
-        """With strict Cohen's D and strict fraction tolerance together, a borderline size difference is rejected."""
-        # 500 vs 560 → diff/max = 60/560 ≈ 10.7% → fails both the 10% and the 5% fraction tolerance
-        # wide population spread so Cohen's D is moderate (~1.1)
-        a = _make_deletion_composite(
-            size=500,
-            size_distortions={
-                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
-            },
-            samplename="sample1",
-            consensusID="1.0",
-        )
-        b = _make_deletion_composite(
-            size=560,
-            size_distortions={
-                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
-            },
-            samplename="sample2",
-            consensusID="2.0",
-        )
-        # With lenient d=2.0: fraction test fails (10.7% > 10%), but Cohen's D ~1.1 is
-        # within the lenient threshold -> merge via the population test
-        assert can_merge_svComposites_deletions(
-            a=a,
-            b=b,
-            apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
-            near=150,
-            min_kmer_overlap=0.7,
-        )
-        # With strict d=0.5 and a strict 5% fraction tolerance: both tests fail
-        # (10.7% > 5%, and Cohen's D ~1.1 > 0.5) -> the merge is rejected
-        assert not can_merge_svComposites_deletions(
-            a=a,
-            b=b,
-            apriori_size_difference_fraction_tolerance=0.05,
-            d=0.5,
             near=150,
             min_kmer_overlap=0.7,
         )
@@ -1300,264 +1224,11 @@ class TestCohensDIsNotEstimableOnDegenerateInput:
             cohens_d([1, 2, 3], [])
 
 
-class TestDegeneratePopulationsDoNotDecideMerges:
-    """The same thing seen through the size gate.
-
-    The distortion values in these fixtures are deliberately non-negative:
-    production signal sizes are magnitudes (`size=int(abs(delr - dell))`), so a
-    population containing negative values is a shape the pipeline cannot
-    produce. Older fixtures in this file do use negative values; these do not
-    add to that.
-
-    Which inputs actually reach the degenerate branch is narrower than it looks,
-    because arm 2 short-circuits to `population_similar = True` whenever the two
-    population means are already within the granted complexity tolerance. What
-    is left is: *both* populations constant AND the size gap strictly greater
-    than that tolerance.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_rate_limiter(self):
-        svcomposite_merging._reset_degenerate_population_warnings()
-        yield
-        svcomposite_merging._reset_degenerate_population_warnings()
-
-    @staticmethod
-    def _pair(size_a: int, size_b: int, distortions_a, distortions_b):
-        a = _make_insertion_composite(
-            size=size_a,
-            size_distortions=distortions_a,
-            samplename="sample1",
-            consensusID="1.0",
-            sequence=_random_dna(size_a, seed=11),
-        )
-        b = _make_insertion_composite(
-            size=size_b,
-            size_distortions=distortions_b,
-            samplename="sample2",
-            consensusID="2.0",
-            sequence=_random_dna(size_b, seed=12),
-        )
-        return a, b
-
-    def test_degenerate_pair_is_rejected_and_warned_about(self, caplog):
-        """Both populations constant, gap far beyond any tolerance.
-
-        This is exactly the state F1 produces genome-wide: every distortion
-        value 0.0, so every population a constant vector at the composite's own
-        size. Pre-fix `cohensD` came back as `inf` and `population_similar` was
-        False -- the right verdict reached by an invented number, and reached in
-        complete silence.
-        """
-        a, b = self._pair(
-            100,
-            200,
-            {"r1": 0.0, "r2": 0.0, "r3": 0.0},
-            {"r1": 0.0, "r2": 0.0, "r3": 0.0},
-        )
-        with caplog.at_level(
-            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
-        ):
-            similar, fraction_similar, population_similar, cohensD = (
-                svcomposite_merging._similar_size(a, b, 0.1, 2.0)
-            )
-        # `is False` is deliberately avoided throughout: arm 1 returns a numpy
-        # bool, so identity against the Python singleton does not hold.
-        assert not population_similar
-        assert not fraction_similar
-        assert not similar
-        assert cohensD is None, "a non-estimable effect size must not be a number"
-        assert any(
-            "DEGENERATE_SIZE_POPULATION" in record.message for record in caplog.records
-        ), "the degenerate population must be reported, not swallowed"
-
-    def test_the_warning_is_rate_limited(self, caplog):
-        """A whole-genome run hits this at every locus while F1 is unfixed."""
-        with caplog.at_level(
-            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
-        ):
-            for _ in range(svcomposite_merging.DEGENERATE_POPULATION_WARN_LIMIT + 20):
-                a, b = self._pair(100, 200, {"r1": 0.0}, {"r1": 0.0})
-                svcomposite_merging._similar_size(a, b, 0.1, 2.0)
-        per_locus = [
-            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION::" in r.message
-        ]
-        assert len(per_locus) == svcomposite_merging.DEGENERATE_POPULATION_WARN_LIMIT
-        assert any("suppressed" in r.message for r in caplog.records)
-
-    def test_a_constant_population_of_real_distortions_is_still_degenerate(
-        self, caplog
-    ):
-        """The same trap, reached the way production reaches it.
-
-        Real distortion values are weighted means, i.e. arbitrary doubles, not
-        the small dyadic fractions a hand-written fixture tends to produce. A
-        population of 19 identical copies of 100.1 has a range of exactly 0 and
-        a computed sample standard deviation of 1.5e-14, so a guard written as
-        `pooled_std == 0` does not fire and Cohen's *d* comes back as a finite
-        number of order 1e16. Degeneracy has to be decided on the range of the
-        inputs, and this asserts that it is.
-        """
-        distortions = {f"r{i}": 0.1 for i in range(19)}
-        a, b = self._pair(100, 300, distortions, distortions)
-        population_a = np.array(a.get_size_populations()) + a.get_size()
-        assert np.ptp(population_a) == 0.0, "the population is constant"
-        assert np.std(population_a, ddof=1) != 0.0, (
-            "the premise: its *computed* spread is not exactly zero"
-        )
-        with caplog.at_level(
-            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
-        ):
-            _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-                a, b, 0.1, 2.0
-            )
-        assert cohensD is None
-        assert not population_similar
-        assert any(
-            "DEGENERATE_SIZE_POPULATION" in record.message for record in caplog.records
-        )
-
-    def test_empty_populations_are_not_reported_as_degenerate(self, caplog):
-        """No population at all is missing data, not a degenerate one."""
-        a, b = self._pair(100, 200, None, None)
-        with caplog.at_level(
-            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
-        ):
-            _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-                a, b, 0.1, 2.0
-            )
-        assert not population_similar
-        assert isinstance(cohensD, float) and np.isnan(cohensD)
-        assert not [
-            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
-        ]
-
-    def test_a_real_population_still_yields_a_real_effect_size(self, caplog):
-        """Regression guard: the arm is guarded, not disabled.
-
-        Populations with genuine spread must still be measured, and must still
-        be able to carry a merge that the fractional arm rejects.
-        """
-        spread = {
-            f"r{i}": v
-            for i, v in enumerate([0.0, 30.0, 60.0, 80.0, 100.0, 130.0, 160.0])
-        }
-        a, b = self._pair(500, 600, spread, spread)
-        with caplog.at_level(
-            "WARNING", logger="svirlpool.svcalling.svcomposite_merging"
-        ):
-            similar, fraction_similar, population_similar, cohensD = (
-                svcomposite_merging._similar_size(a, b, 0.1, 2.0)
-            )
-        assert not fraction_similar, "the fractional arm must not be what passes here"
-        assert population_similar
-        assert similar
-        assert cohensD is not None and np.isfinite(cohensD)
-        assert not [
-            r for r in caplog.records if "DEGENERATE_SIZE_POPULATION" in r.message
-        ]
-
-    def test_a_real_population_still_rejects_when_the_effect_size_is_large(self):
-        """The same populations, a size gap they cannot absorb."""
-        spread = {
-            f"r{i}": v for i, v in enumerate([0.0, 3.0, 6.0, 8.0, 10.0, 13.0, 16.0])
-        }
-        a, b = self._pair(500, 900, spread, spread)
-        _, _, population_similar, cohensD = svcomposite_merging._similar_size(
-            a, b, 0.1, 2.0
-        )
-        assert cohensD is not None and np.isfinite(cohensD)
-        assert abs(cohensD) > 2.0
-        assert not population_similar
-
-    def test_max_cohens_d_still_moves_the_decision(self):
-        """`--max_cohens_d` must actually be a knob again.
-
-        On `main` it had no influence on any merge decision at all: with
-        degenerate populations the comparison was `inf <= d`, False for every
-        finite `d`.
-        """
-        spread = {
-            f"r{i}": v for i, v in enumerate([0.0, 15.0, 30.0, 40.0, 50.0, 65.0, 80.0])
-        }
-        a, b = self._pair(500, 600, spread, spread)
-        _, _, lenient, _ = svcomposite_merging._similar_size(a, b, 0.1, 5.0)
-        _, _, strict, _ = svcomposite_merging._similar_size(a, b, 0.1, 0.5)
-        assert lenient
-        assert not strict
-
-
-class TestVerboseReportsWhyThereIsNoEffectSize:
-    """The three `verbose` consumers of the returned Cohen's D.
-
-    They were the only place the value surfaced at all, and they used `nan` as
-    "not computed". They now have to distinguish that from "computed, and not
-    estimable", which is the whole point of F2.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_rate_limiter(self):
-        svcomposite_merging._reset_degenerate_population_warnings()
-        yield
-
-    @staticmethod
-    def _merge(kind, size_a, size_b, distortions, *, capsys):
-        a = _make_composite(
-            kind,
-            size=size_a,
-            size_distortions=distortions,
-            samplename="sample1",
-            consensusID="1.0",
-            sequence=_random_dna(size_a, seed=21),
-        )
-        b = _make_composite(
-            kind,
-            size=size_b,
-            size_distortions=distortions,
-            samplename="sample2",
-            consensusID="2.0",
-            sequence=_random_dna(size_b, seed=22),
-        )
-        _MERGERS[kind](
-            a=a,
-            b=b,
-            apriori_size_difference_fraction_tolerance=0.1,
-            d=2.0,
-            near=10 * max(size_a, size_b),
-            min_kmer_overlap=0.0,
-            verbose=True,
-        )
-        return capsys.readouterr().out
-
-    def test_degenerate_case_is_named_in_the_report(self, capsys):
-        for kind in _KINDS:
-            out = self._merge(
-                kind, 100, 200, {"r1": 0.0, "r2": 0.0}, capsys=capsys
-            )
-            assert "Cohen's D" in out, kind
-            assert "not estimable" in out, kind
-
-    def test_computed_case_still_prints_the_number(self, capsys):
-        spread = {
-            f"r{i}": v
-            for i, v in enumerate([0.0, 30.0, 60.0, 80.0, 100.0, 130.0, 160.0])
-        }
-        for kind in _KINDS:
-            out = self._merge(kind, 500, 600, spread, capsys=capsys)
-            assert "Cohen's D:" in out, kind
-            assert "not estimable" not in out, kind
-            assert "threshold: 2.0" in out, kind
-
-    def test_not_computed_case_says_so(self, capsys):
-        """Populations absent: nothing was computed, and the report says that
-        rather than printing nothing at all."""
-        for kind in _KINDS:
-            out = self._merge(kind, 500, 520, None, capsys=capsys)
-            assert "not computed" in out, kind
-
-
 class TestSizePopulationsKeepSubBasepairResolution:
-    """N2 -- the distortion values must reach Cohen's *d* unquantised.
+    """N2 -- the distortion values must stay unquantised.
+
+    (The merge no longer computes Cohen's d on them; `cohens_d` is still used by
+    candidate-region merging, and the populations are the noise model's output.)
 
     `get_size_populations()` used to wrap every value in `int()` and
     `_similar_size` cast the result to `np.int32` on top. Both were invisible
@@ -1597,7 +1268,9 @@ class TestSizePopulationsKeepSubBasepairResolution:
             consensusID="2.0",
             sequence=_random_dna(102, seed=32),
         )
-        _, _, _, cohensD = svcomposite_merging._similar_size(a, b, 0.0, 2.0)
+        population_a = np.array(a.get_size_populations()) + a.get_size()
+        population_b = np.array(b.get_size_populations()) + b.get_size()
+        cohensD = cohens_d(population_a, population_b)
         assert cohensD is not None, (
             "truncation turned two spread populations into constant vectors"
         )
@@ -1789,7 +1462,10 @@ class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
                     ), f"{kind}: ({size_a}, {size_b}) at tol={tolerance}"
 
     def test_no_floor_is_granted_below_the_fractional_bound(self):
-        """There is no absolute-difference floor, and in particular none at 12 bp.
+        """By default there is no absolute-difference floor, in particular none at 12 bp.
+
+        A floor now exists as --size-tolerance-floor (SIZE_TOLERANCE_FLOOR), off
+        by default; tests/test_size_tolerance.py covers it.
 
         The dissertation text proposes F = 12 bp -- the consensus-level indel
         parse threshold (`consensus_align.py --min-signal-size`, default 12).
