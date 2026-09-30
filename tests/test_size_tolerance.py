@@ -92,28 +92,23 @@ def test_an_unknown_reference_is_refused(rule):
         m.size_tolerance(100, 110, 0.1)
 
 
-def _pair(size_a, size_b, *, sibling=False, dist_a=None, dist_b=None):
-    a = _make_insertion_composite(
-        size=size_a, size_distortions=dist_a, samplename="sample1", consensusID="1.0"
-    )
+def _pair(size_a, size_b, *, sibling=False):
+    a = _make_insertion_composite(size=size_a, samplename="sample1", consensusID="1.0")
     b = _make_insertion_composite(
         size=size_b,
-        size_distortions=dist_b,
         samplename="sample1" if sibling else "sample2",
         consensusID="1.1" if sibling else "2.0",
     )
     return a, b
 
 
-def test_noise_populations_do_not_enter_the_size_test(rule):
-    """Wide, overlapping distortion populations no longer rescue a size gap."""
+def test_sizes_alone_decide(rule):
+    """At fraction 0.1 (ref = max), 500 vs 600 is rejected and 500 vs 540 accepted."""
     rule()
-    wide = {f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])}
-    for dist in (None, wide):
-        a, b = _pair(500, 600, dist_a=dist, dist_b=dist)
-        assert not m._similar_size(a, b, 0.1)
-        a, b = _pair(500, 540, dist_a=dist, dist_b=dist)
-        assert m._similar_size(a, b, 0.1)
+    a, b = _pair(500, 600)
+    assert not m._similar_size(a, b, 0.1)
+    a, b = _pair(500, 540)
+    assert m._similar_size(a, b, 0.1)
 
 
 def test_detail_reports_the_tolerance(rule):

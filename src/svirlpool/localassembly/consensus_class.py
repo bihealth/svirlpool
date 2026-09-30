@@ -71,16 +71,15 @@ class ConsensusPadding:
 
 
 @attrs.define
-class ConsensusDistortion:
-    position: int
-    size: int
-    type: int  # 0 for insertion, 1 for deletion
-    readname: str
-    forward: bool  # True if the read is in the forward direction
-
-
-@attrs.define
 class Consensus:
+    """A local consensus sequence and the cut reads aligned to it.
+
+    Older records also carry ``cut_read_alignment_signals`` (the
+    per-read CIGAR SV signals that fed the removed size-distortion noise
+    model). cattrs ignores unknown keys when structuring, so such records still
+    load; the field is simply dropped.
+    """
+
     ID: str
     crIDs: list[int]
     original_regions: list[tuple[str, int, int]]  # chr,start,end
@@ -88,10 +87,7 @@ class Consensus:
     consensus_padding: ConsensusPadding | None = None
     intervals_cutread_alignments: list[
         tuple[int, int, str, bool]
-    ] = []  # start,end,readname,forward
-    cut_read_alignment_signals: list[
-        datatypes.ReadAlignmentSignals
-    ] = []  # ReadAlignmentSignals objects of the aligned cut reads to their consensus
+    ] = []  # start,end,readname,forward; core-consensus coordinates
     clustering_meta_data: dict[
         str, str | int | float
     ] = {}  # metadata from the clustering step
@@ -105,22 +101,6 @@ class Consensus:
             readname
             for start, end, readname, forward in self.intervals_cutread_alignments
         }
-
-    def get_consensus_distortions(self) -> list[ConsensusDistortion]:
-        if len(self.cut_read_alignment_signals) == 0:
-            return []
-        return [
-            ConsensusDistortion(
-                position=signal.ref_start,
-                size=signal.size,
-                type=signal.sv_type,
-                readname=ras.read_name,
-                forward=ras.alignment_forward,
-            )
-            for ras in self.cut_read_alignment_signals
-            for signal in ras.SV_signals
-            if signal.sv_type in (0, 1)
-        ]
 
     def get_max_cutread_coverage(self) -> int:
         # compute the maximum depth of overlaps of cut reads on the consensus

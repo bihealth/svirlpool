@@ -163,7 +163,7 @@ def _make_insertion_composite(
         consensusID=consensusID,
         reads=reads,
     )
-    pattern = SVpatterns.SVpatternInsertion(SVprimitives=[svp], size_distortions=None)
+    pattern = SVpatterns.SVpatternInsertion(SVprimitives=[svp])
     pattern.set_sequence("A" * size)
     return SVcomposite.from_SVpattern(pattern)
 

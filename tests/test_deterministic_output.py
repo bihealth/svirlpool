@@ -210,54 +210,6 @@ def test_get_supporting_reads_is_stable_across_hash_seeds() -> None:
     )
 
 
-def test_size_distortions_key_order_is_stable_across_hash_seeds() -> None:
-    """``distortions_by_svPattern`` freezes the read order into a dict.
-
-    That dict is stored as ``SVpattern.size_distortions`` and pickled into the
-    svirltile DB, so its key order is persisted output.
-    """
-    body = f"""
-        from svirlpool.localassembly import SVpatterns
-        from svirlpool.localassembly.SVprimitives import SVprimitive
-        from svirlpool.svcalling import genotyping
-
-        class _NoDistortionConsensus:
-            ID = "1.0"
-            def get_consensus_distortions(self):
-                return []
-
-        p = SVprimitive(
-            ref_start=1000, ref_end=1000, read_start=100, read_end=600, size=500,
-            sv_type=0, chr="chr1", repeatIDs=[], original_alt_sequences=["A" * 500],
-            original_ref_sequences=[], samplename="sample1", consensusID="1.0",
-            alignmentID=0, svID=0, aln_is_reverse=False,
-            consensus_aln_interval=("chr1", 500, 1500),
-            genotypeMeasurement=genotyping.GenotypeMeasurement(
-                start_on_consensus=100,
-                supporting_reads_start={READS_START!r},
-                end_on_consensus=600,
-                supporting_reads_end={READS_END!r},
-            ),
-        )
-        pattern = SVpatterns.SVpatternInsertion(SVprimitives=[p])
-        distortions = SVpatterns.distortions_by_svPattern(
-            svPattern=pattern,
-            consensus=_NoDistortionConsensus(),
-            distance_scale=5000.0,
-            falloff=1.0,
-        )
-        print(",".join(distortions.keys()))
-    """
-    outputs = {seed: _run_under_hash_seed(seed, body) for seed in HASH_SEEDS}
-    assert len(set(outputs.values())) == 1, (
-        f"size_distortions key order depends on PYTHONHASHSEED: {outputs}"
-    )
-    # and the durable contract, checked in-process
-    assert outputs[HASH_SEEDS[0]].split(",") == sorted(
-        set(READS_START) | set(READS_END)
-    )
-
-
 # --------------------------------------------------------------------------- #
 # VCF writer: the CONSENSUSIDs INFO field
 # --------------------------------------------------------------------------- #

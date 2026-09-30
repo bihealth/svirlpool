@@ -14,7 +14,7 @@ import numpy as np
 from Bio.Seq import Seq  # type: ignore
 from intervaltree import Interval  # type: ignore
 
-from ..util.util import complexity_local_track, exponential_weight
+from ..util.util import complexity_local_track
 from .consensus_class import Consensus
 from .SVprimitives import SVprimitive
 
@@ -25,12 +25,15 @@ log = logging.getLogger(__name__)
 # region SVpattern
 @attrs.define
 class SVpattern(ABC):
-    """Base class for all SV-specific patterns."""
+    """Base class for all SV-specific patterns.
+
+    Older svPatterns databases also store ``size_distortions`` (per-read size
+    distortions of the removed noise model). cattrs ignores unknown keys when
+    structuring and attrs' slotted ``__setstate__`` ignores unknown pickled
+    attributes, so such records still load; the field is simply dropped.
+    """
 
     SVprimitives: list[SVprimitive]
-    size_distortions: dict[str, float] | None = (
-        None  # is set after filtering by similar regions on the consensus sequence
-    )
 
     def __attrs_post_init__(self):
         if not self.SVprimitives or len(self.SVprimitives) == 0:
@@ -131,14 +134,12 @@ class SVpattern(ABC):
     def get_supporting_reads(self) -> list[str]:
         """Return the de-duplicated supporting readnames in canonical (sorted) order.
 
-        The order is deliberately sorted rather than arbitrary: this list is
-        frozen into ``dict.fromkeys(...)`` by ``distortions_by_svPattern`` and
-        the resulting ``SVpattern.size_distortions`` dict is pickled into the
-        svirltile DB.  ``list(set(...))`` would make that key order depend on
-        the process-local string hash seed, so two runs on identical input
-        produced byte-different tiles and could not be regression-diffed.
-        No caller depends on the position of any particular element - every
-        consumer either takes ``len(...)`` or folds the result into a set.
+        The order is deliberately sorted rather than arbitrary: ``list(set(...))``
+        would make it depend on the process-local string hash seed, so two runs
+        on identical input could produce different output and could not be
+        regression-diffed. No caller depends on the position of any particular
+        element - every consumer either takes ``len(...)`` or folds the result
+        into a set.
         """
         start = [
             readname
@@ -1552,106 +1553,6 @@ def break_up_CPX(
         )
 
     return result
-
-
-def distortions_by_svPattern(
-    svPattern: SVpatternType,
-    consensus: Consensus,
-    distance_scale: float,
-    falloff: float,
-) -> dict[str, float]:
-    r"""Return distortion magnitudes weighted by their distance to the SV pattern.
-
-    The weighting uses exponential decay and returns weighted means per read name."""
-
-    supporting_reads = svPattern.get_supporting_reads()
-    result = dict.fromkeys(supporting_reads, 0.0)
-    distortions = [
-        d
-        for d in consensus.get_consensus_distortions()
-        if d.readname in supporting_reads
-    ]
-    if not distortions:
-        log.debug(
-            f"No distortions found for consensus {consensus.ID}. Returning trivial result for {len(supporting_reads)} reads."
-        )
-    if len(distortions) == 0:
-        return result
-
-    # Calculate SV pattern boundaries.
-    # ConsensusDistortion.position is signal.ref_start of a cut read aligned to the
-    # *core* consensus FASTA (consensus.final_consensus), i.e. a core-consensus offset
-    # in [0, len(consensus.consensus_sequence)]. SVprimitive.read_start/read_end come
-    # from the *padded* consensus-to-reference alignment. Both operands must be
-    # brought into the core-consensus space before their distance is meaningful;
-    # SVprimitive.ref_start/ref_end are reference-genome coordinates and must not be
-    # used here (see add_genotypeMeasurements_to_SVprimitives, which performs the same
-    # conversion with core_interval_start=consensus_padding.padding_size_left).
-    if consensus.consensus_padding is None:
-        raise ValueError(
-            f"Consensus {consensus.ID} has no consensus_padding, cannot map SVpattern "
-            "boundaries into consensus coordinates."
-        )
-    core_sequence_start: int = consensus.consensus_padding.padding_size_left
-    boundary_a = svPattern.SVprimitives[0].read_start - core_sequence_start
-    boundary_b = svPattern.SVprimitives[-1].read_end - core_sequence_start
-    sv_start = min(boundary_a, boundary_b)
-    sv_end = max(boundary_a, boundary_b)
-
-    consensus_length = len(consensus.consensus_sequence)
-    out_of_range_distortions = 0
-
-    # Group distortions by read name
-    distortions_by_read: dict[str, list[tuple[float, float]]] = {}
-    for distortion in distortions:
-        distance = min(
-            abs(distortion.position - sv_start), abs(distortion.position - sv_end)
-        )
-        if distance > consensus_length:
-            # Both operands live on the same consensus, so this is impossible unless
-            # the two coordinate spaces have drifted apart again. Warn rather than
-            # raise: a single aberrant locus must not abort a whole-genome run.
-            out_of_range_distortions += 1
-        weight = exponential_weight(
-            distance=distance, scale=distance_scale, falloff=falloff
-        )
-
-        if distortion.readname not in distortions_by_read:
-            distortions_by_read[distortion.readname] = []
-        distortions_by_read[distortion.readname].append((distortion.size, weight))
-
-    if out_of_range_distortions:
-        log.warning(
-            f"distortions_by_svPattern: coordinate space mismatch on consensus "
-            f"{consensus.ID}: {out_of_range_distortions}/{len(distortions)} distortions "
-            f"are further than the consensus length ({consensus_length} bp) from the "
-            f"SVpattern at {svPattern.chr}:{svPattern.ref_start}-{svPattern.ref_end} "
-            f"(consensus-local pattern interval {sv_start}-{sv_end}). "
-            "The weighted distortion estimates for this pattern are unreliable."
-        )
-
-    # Calculate weighted mean for each read
-    weighted_means: dict[str, float] = dict.fromkeys(
-        svPattern.get_supporting_reads(), 0.0
-    )
-    for readname, size_weight_pairs in distortions_by_read.items():
-        total_weighted_size = sum(size * weight for size, weight in size_weight_pairs)
-        total_weight = sum(weight for _, weight in size_weight_pairs)
-
-        if total_weight > 0:
-            weighted_means[readname] = total_weighted_size / total_weight
-        else:
-            weighted_means[readname] = 0.0
-
-    return weighted_means
-
-
-# def build_size_population_by_svPattern(
-#         base_size: int,
-#         svPattern: SVpatternType) -> list[int]:
-#     if not svPattern.size_distortions:
-#         raise ValueError("SVpattern has no size distortions defined.")
-#     return [base_size + value for value in svPattern.size_distortions.values()]
 
 
 # ======== CATTRS CONFIGURATION FOR SERIALIZATION ======== #

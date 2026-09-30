@@ -19,8 +19,7 @@ import cattrs
 import numpy as np
 import pytest
 
-from svirlpool.localassembly import SVpatterns, SVprimitives, consensus_class
-from svirlpool.localassembly.consensus import parse_ReadAlignmentSignals_from_alignment
+from svirlpool.localassembly import SVpatterns, SVprimitives
 from svirlpool.signalprocessing.alignments_to_rafs import (
     get_start_end,
     parse_SVsignals_from_alignment,
@@ -116,7 +115,6 @@ def _make_svprimitive_del(
 def _make_insertion_composite(
     *,
     size: int = 500,
-    size_distortions: dict[str, float] | None = None,
     chr: str = "chr1",
     ref_start: int = 1000,
     samplename: str = "sample1",
@@ -124,7 +122,7 @@ def _make_insertion_composite(
     sequence: str | None = None,
     reads: list[str] | None = None,
 ) -> SVcomposite:
-    """Create an insertion SVcomposite with controllable size and size_distortions."""
+    """Create an insertion SVcomposite with controllable size."""
     svp = _make_svprimitive_ins(
         chr=chr,
         ref_start=ref_start,
@@ -137,7 +135,6 @@ def _make_insertion_composite(
     )
     pattern = SVpatterns.SVpatternInsertion(
         SVprimitives=[svp],
-        size_distortions=size_distortions,
     )
     if sequence is None:
         sequence = "A" * size
@@ -148,7 +145,6 @@ def _make_insertion_composite(
 def _make_deletion_composite(
     *,
     size: int = 500,
-    size_distortions: dict[str, float] | None = None,
     chr: str = "chr1",
     ref_start: int = 1000,
     samplename: str = "sample1",
@@ -156,7 +152,7 @@ def _make_deletion_composite(
     sequence: str | None = None,
     reads: list[str] | None = None,
 ) -> SVcomposite:
-    """Create a deletion SVcomposite with controllable size and size_distortions."""
+    """Create a deletion SVcomposite with controllable size."""
     svp = _make_svprimitive_del(
         chr=chr,
         ref_start=ref_start,
@@ -169,7 +165,6 @@ def _make_deletion_composite(
     )
     pattern = SVpatterns.SVpatternDeletion(
         SVprimitives=[svp],
-        size_distortions=size_distortions,
     )
     if sequence is None:
         sequence = "A" * size
@@ -228,7 +223,6 @@ def _make_svprimitive_inv(
 def _make_inversion_composite(
     *,
     size: int = 500,
-    size_distortions: dict[str, float] | None = None,
     chr: str = "chr1",
     ref_start: int = 1000,
     samplename: str = "sample1",
@@ -271,7 +265,6 @@ def _make_inversion_composite(
     )
     pattern = SVpatterns.SVpatternInversion(
         SVprimitives=[outer_left, inner_left, inner_right, outer_right],
-        size_distortions=size_distortions,
     )
     if sequence is None:
         sequence = "A" * size
@@ -306,7 +299,6 @@ def _size_gate(
     size_b: int,
     *,
     tolerance: float,
-    size_distortions: dict[str, float] | None = None,
     sequence_a: str | None = None,
     sequence_b: str | None = None,
 ) -> bool:
@@ -314,13 +306,11 @@ def _size_gate(
 
     `near` is set far beyond both events and `min_kmer_overlap` to 0.0, so the
     proximity and k-mer arms always pass and the return value *is* the size
-    gate's verdict. `size_distortions` no longer enters it; it is kept so tests
-    can show that.
+    gate's verdict.
     """
     a = _make_composite(
         kind,
         size=size_a,
-        size_distortions=size_distortions,
         samplename="sample1",
         consensusID="1.0",
         sequence=sequence_a,
@@ -328,7 +318,6 @@ def _size_gate(
     b = _make_composite(
         kind,
         size=size_b,
-        size_distortions=size_distortions,
         samplename="sample2",
         consensusID="2.0",
         sequence=sequence_b,
@@ -366,16 +355,14 @@ class TestCanMergeInsertions:
     """Tests for can_merge_svComposites_insertions."""
 
     def test_identical_insertions_merge(self):
-        """Two identical-size insertions at the same locus with similar populations should merge."""
+        """Two identical-size insertions at the same locus should merge."""
         a = _make_insertion_composite(
             size=500,
-            size_distortions={"r1": 5, "r2": -3, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=500,
-            size_distortions={"r1": 4, "r2": -2, "r3": 1},
             samplename="sample2",
             consensusID="2.0",
         )
@@ -392,13 +379,11 @@ class TestCanMergeInsertions:
         # 500 vs 540 → diff=40, 10% of 540=54 → within tolerance
         a = _make_insertion_composite(
             size=500,
-            size_distortions={"r1": 10, "r2": -10},
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=540,
-            size_distortions={"r1": 10, "r2": -10},
             samplename="sample2",
             consensusID="2.0",
         )
@@ -410,26 +395,21 @@ class TestCanMergeInsertions:
             min_kmer_overlap=0.7,
         )
 
-    def test_different_sizes_beyond_fraction_reject_even_if_populations_overlap(self):
-        """Sizes differ by >10%: rejected, however wide the noise populations.
+    def test_different_sizes_beyond_fraction_reject(self):
+        """Sizes differ by >10%: rejected.
 
-        A Cohen's d arm used to merge this pair because the populations overlap.
-        It was removed; only the sizes decide.
+        A Cohen's d arm on per-read size-distortion populations used to merge
+        such pairs when the populations overlapped. It was removed; only the
+        sizes decide.
         """
         # sizes: 500 vs 600 → diff/max = 100/600 ≈ 16.7% → fraction test fails
         a = _make_insertion_composite(
             size=500,
-            size_distortions={
-                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
-            },
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=600,
-            size_distortions={
-                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
-            },
             samplename="sample2",
             consensusID="2.0",
         )
@@ -450,14 +430,12 @@ class TestCanMergeInsertions:
         """
         a = _make_insertion_composite(
             size=100,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
             sequence=_random_dna(100, seed=1),
         )
         b = _make_insertion_composite(
             size=200,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
             sequence=_random_dna(200, seed=2),
@@ -480,14 +458,12 @@ class TestCanMergeInsertions:
         """
         a = _make_insertion_composite(
             size=100,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
             sequence="A" * 100,
         )
         b = _make_insertion_composite(
             size=200,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
             sequence="A" * 200,
@@ -516,14 +492,12 @@ class TestCanMergeInsertions:
         """
         a = _make_insertion_composite(
             size=200,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
             sequence=_random_dna(200, seed=3),
         )
         b = _make_insertion_composite(
             size=200,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
             sequence="A" * 200,
@@ -536,17 +510,15 @@ class TestCanMergeInsertions:
             min_kmer_overlap=0.0,
         )
 
-    def test_empty_populations_fraction_pass(self):
-        """When populations are empty, only the fractional test is used. Similar sizes merge."""
+    def test_small_size_difference_passes_the_fraction_test(self):
+        """500 vs 520 bp is within the 10% fraction tolerance and merges."""
         a = _make_insertion_composite(
             size=500,
-            size_distortions=None,
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=520,
-            size_distortions=None,
             samplename="sample2",
             consensusID="2.0",
         )
@@ -558,8 +530,8 @@ class TestCanMergeInsertions:
             min_kmer_overlap=0.7,
         )
 
-    def test_empty_populations_fraction_fail(self):
-        """With no populations, a large size difference fails the fraction test and is rejected.
+    def test_large_size_difference_fails_the_fraction_test(self):
+        """A large size difference fails the fraction test and is rejected.
 
         The fraction test fails because a 100 vs 200 size difference (100%)
         exceeds the 10% tolerance, so similar_size=False and the merge is correctly
@@ -567,13 +539,11 @@ class TestCanMergeInsertions:
         """
         a = _make_insertion_composite(
             size=100,
-            size_distortions=None,
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=200,
-            size_distortions=None,
             samplename="sample2",
             consensusID="2.0",
         )
@@ -589,14 +559,12 @@ class TestCanMergeInsertions:
         """Insertions on different chromosomes should not merge."""
         a = _make_insertion_composite(
             size=500,
-            size_distortions={"r1": 5},
             chr="chr1",
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=500,
-            size_distortions={"r1": 5},
             chr="chr2",
             samplename="sample2",
             consensusID="2.0",
@@ -613,14 +581,12 @@ class TestCanMergeInsertions:
         """Same-size insertions with different sequence content should be rejected by k-mer check."""
         a = _make_insertion_composite(
             size=200,
-            size_distortions={"r1": 5, "r2": -3},
             samplename="sample1",
             consensusID="1.0",
             sequence="ATCGATCG" * 25,  # 200bp AT-rich
         )
         b = _make_insertion_composite(
             size=200,
-            size_distortions={"r1": 5, "r2": -3},
             samplename="sample2",
             consensusID="2.0",
             sequence="GCGCGCGC" * 25,  # 200bp GC-rich
@@ -640,13 +606,11 @@ class TestCanMergeInsertions:
         # merges now genuinely depends on the tolerance value, as the test name implies.
         a = _make_insertion_composite(
             size=500,
-            size_distortions={"r1": 1, "r2": -1},
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_insertion_composite(
             size=525,
-            size_distortions={"r1": 1, "r2": -1},
             samplename="sample2",
             consensusID="2.0",
         )
@@ -680,13 +644,11 @@ class TestCanMergeDeletions:
         """Two identical-size deletions at the same locus should merge."""
         a = _make_deletion_composite(
             size=500,
-            size_distortions={"r1": 5, "r2": -3, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=500,
-            size_distortions={"r1": 4, "r2": -2, "r3": 1},
             samplename="sample2",
             consensusID="2.0",
         )
@@ -703,13 +665,11 @@ class TestCanMergeDeletions:
         # 1000 vs 1080 → diff=80, 10% of 1080=108 → within tolerance
         a = _make_deletion_composite(
             size=1000,
-            size_distortions={"r1": 10, "r2": -10},
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=1080,
-            size_distortions={"r1": 10, "r2": -10},
             samplename="sample2",
             consensusID="2.0",
         )
@@ -721,22 +681,16 @@ class TestCanMergeDeletions:
             min_kmer_overlap=0.7,
         )
 
-    def test_different_sizes_beyond_fraction_reject_even_if_populations_overlap(self):
-        """Sizes differ by >10%: rejected, however wide the noise populations."""
+    def test_different_sizes_beyond_fraction_reject(self):
+        """Sizes differ by >10%: rejected."""
         # 500 vs 600 → 16.7% → fraction fails
         a = _make_deletion_composite(
             size=500,
-            size_distortions={
-                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
-            },
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=600,
-            size_distortions={
-                f"r{i}": v for i, v in enumerate([-80, -50, -20, 0, 20, 50, 80])
-            },
             samplename="sample2",
             consensusID="2.0",
         )
@@ -756,14 +710,12 @@ class TestCanMergeDeletions:
         """
         a = _make_deletion_composite(
             size=100,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
             sequence=_random_dna(100, seed=11),
         )
         b = _make_deletion_composite(
             size=250,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
             sequence=_random_dna(250, seed=12),
@@ -780,14 +732,12 @@ class TestCanMergeDeletions:
         """Deletion counterpart: a homopolymer grants no size allowance."""
         a = _make_deletion_composite(
             size=100,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample1",
             consensusID="1.0",
             sequence="A" * 100,
         )
         b = _make_deletion_composite(
             size=250,
-            size_distortions={"r1": 1, "r2": -1, "r3": 2},
             samplename="sample2",
             consensusID="2.0",
             sequence="A" * 250,
@@ -800,17 +750,15 @@ class TestCanMergeDeletions:
             min_kmer_overlap=0.0,
         )
 
-    def test_empty_populations_fraction_pass(self):
-        """Empty populations fall back to fractional test only. Similar sizes merge."""
+    def test_small_size_difference_passes_the_fraction_test(self):
+        """500 vs 530 bp is within the 10% fraction tolerance and merges."""
         a = _make_deletion_composite(
             size=500,
-            size_distortions=None,
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=530,
-            size_distortions=None,
             samplename="sample2",
             consensusID="2.0",
         )
@@ -822,8 +770,8 @@ class TestCanMergeDeletions:
             min_kmer_overlap=0.7,
         )
 
-    def test_empty_populations_fraction_fail(self):
-        """With no populations, a large size difference fails the fraction test and is rejected.
+    def test_large_size_difference_fails_the_fraction_test(self):
+        """A large size difference fails the fraction test and is rejected.
 
         The fraction test fails because a 100 vs 200 size difference (100%)
         exceeds the 10% tolerance, so similar_size=False and the merge is correctly
@@ -831,13 +779,11 @@ class TestCanMergeDeletions:
         """
         a = _make_deletion_composite(
             size=100,
-            size_distortions=None,
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=200,
-            size_distortions=None,
             samplename="sample2",
             consensusID="2.0",
         )
@@ -853,14 +799,12 @@ class TestCanMergeDeletions:
         """Deletions on different chromosomes should not merge."""
         a = _make_deletion_composite(
             size=500,
-            size_distortions={"r1": 5},
             chr="chr1",
             samplename="sample1",
             consensusID="1.0",
         )
         b = _make_deletion_composite(
             size=500,
-            size_distortions={"r1": 5},
             chr="chr2",
             samplename="sample2",
             consensusID="2.0",
@@ -877,14 +821,12 @@ class TestCanMergeDeletions:
         """Same-size deletions with different reference sequence content should be rejected."""
         a = _make_deletion_composite(
             size=200,
-            size_distortions={"r1": 5, "r2": -3},
             samplename="sample1",
             consensusID="1.0",
             sequence="ATCGATCG" * 25,  # 200bp AT-rich
         )
         b = _make_deletion_composite(
             size=200,
-            size_distortions={"r1": 5, "r2": -3},
             samplename="sample2",
             consensusID="2.0",
             sequence="GCGCGCGC" * 25,  # 200bp GC-rich
@@ -980,9 +922,8 @@ class TestSizeGateIsSharedByAllSVTypes:
                     disagreements.append((size_a, size_b, tolerance, verdicts))
         assert disagreements == [], f"the size gate is not shared: {disagreements}"
 
-    def test_all_three_paths_agree_with_populations_and_complexity(self):
-        """Same, with both arms live, in low- and high-complexity sequence."""
-        distortions = {f"r{i}": v for i, v in enumerate([-30, -10, 0, 10, 30])}
+    def test_all_three_paths_agree_in_low_and_high_complexity(self):
+        """Same, in low- and high-complexity sequence."""
         disagreements = []
         for size_a, size_b in [(100, 200), (200, 205), (100, 250)]:
             for tolerance in (0.0, 0.06, 0.5):
@@ -1003,20 +944,21 @@ class TestSizeGateIsSharedByAllSVTypes:
                             size_a,
                             size_b,
                             tolerance=tolerance,
-                            size_distortions=distortions,
                             sequence_a=seq_a,
                             sequence_b=seq_b,
                         )
                         for kind in _KINDS
                     }
                     if len(set(verdicts.values())) != 1:
-                        disagreements.append((
-                            size_a,
-                            size_b,
-                            tolerance,
-                            sequence,
-                            verdicts,
-                        ))
+                        disagreements.append(
+                            (
+                                size_a,
+                                size_b,
+                                tolerance,
+                                sequence,
+                                verdicts,
+                            )
+                        )
         assert disagreements == [], f"the size gate is not shared: {disagreements}"
 
 
@@ -1077,12 +1019,10 @@ class TestSequenceComplexityDecidesNothing:
     """The complexity size allowance was removed from the vertical merge.
 
     It granted `(1 - mean_complexity) * |size|` bp and short-circuited the
-    size test. It is gone: the size test sees sizes and size populations only,
-    so the same sizes decide the same way whatever the sequence.
+    size test. It is gone: the size test sees sizes only, so the same sizes decide the same way whatever the sequence.
     """
 
     def test_low_and_high_complexity_decide_alike(self):
-        distortions = {"r1": 1, "r2": -1, "r3": 2}
         for size_a, size_b in [(100, 200), (200, 205), (100, 250), (300, 330)]:
             for kind in _KINDS:
                 low = _size_gate(
@@ -1090,7 +1030,6 @@ class TestSequenceComplexityDecidesNothing:
                     size_a,
                     size_b,
                     tolerance=0.1,
-                    size_distortions=distortions,
                     sequence_a="A" * size_a,
                     sequence_b="A" * size_b,
                 )
@@ -1099,7 +1038,6 @@ class TestSequenceComplexityDecidesNothing:
                     size_a,
                     size_b,
                     tolerance=0.1,
-                    size_distortions=distortions,
                     sequence_a=_random_dna(size_a, seed=1),
                     sequence_b=_random_dna(size_b, seed=2),
                 )
@@ -1222,59 +1160,6 @@ class TestCohensDIsNotEstimableOnDegenerateInput:
             cohens_d([], [1, 2, 3])
         with pytest.raises(ValueError):
             cohens_d([1, 2, 3], [])
-
-
-class TestSizePopulationsKeepSubBasepairResolution:
-    """N2 -- the distortion values must stay unquantised.
-
-    (The merge no longer computes Cohen's d on them; `cohens_d` is still used by
-    candidate-region merging, and the populations are the noise model's output.)
-
-    `get_size_populations()` used to wrap every value in `int()` and
-    `_similar_size` cast the result to `np.int32` on top. Both were invisible
-    while F1 pinned every value at exactly 0.0. With real distortion estimates
-    they are not: truncation toward zero shrinks the within-group spread, which
-    inflates `|d|` and biases the arm toward rejection -- and, at the values the
-    noise model actually produces, can collapse a perfectly informative
-    population into a *constant* one, manufacturing the very degeneracy this
-    section is about.
-    """
-
-    def test_populations_are_not_truncated(self):
-        composite = _make_insertion_composite(
-            size=500, size_distortions={"r1": 35.95, "r2": 129.96, "r3": 16.46}
-        )
-        assert composite.get_size_populations() == pytest.approx([35.95, 129.96, 16.46])
-
-    def test_sub_basepair_distortions_do_not_become_a_degenerate_population(self):
-        """Three distinct sub-bp estimates truncate to three identical zeros.
-
-        Both populations below have a real spread of 0.8 bp. Truncated, both
-        become constant vectors and the pair reached `cohens_d` as a degenerate
-        one -- `inf` pre-fix, "not estimable" under the new contract. Untruncated
-        it is an ordinary, perfectly measurable effect size.
-        """
-        a = _make_insertion_composite(
-            size=100,
-            size_distortions={"r1": 0.1, "r2": 0.5, "r3": 0.9},
-            samplename="sample1",
-            consensusID="1.0",
-            sequence=_random_dna(100, seed=31),
-        )
-        b = _make_insertion_composite(
-            size=102,
-            size_distortions={"r1": -0.9, "r2": -0.5, "r3": -0.1},
-            samplename="sample2",
-            consensusID="2.0",
-            sequence=_random_dna(102, seed=32),
-        )
-        population_a = np.array(a.get_size_populations()) + a.get_size()
-        population_b = np.array(b.get_size_populations()) + b.get_size()
-        cohensD = cohens_d(population_a, population_b)
-        assert cohensD is not None, (
-            "truncation turned two spread populations into constant vectors"
-        )
-        assert np.isfinite(cohensD)
 
 
 # ===========================================================================
@@ -1429,8 +1314,7 @@ class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
     def test_the_gate_matches_the_pure_fractional_bound_for_all_three_sv_types(self):
         """The live gate's verdict is the fractional bound, with no floor under it.
 
-        The population arm is off (`size_distortions=None`), so the gate's
-        return value *is* arm 1. Sweeping sizes, tolerances and all three entry
+        The gate's return value *is* arm 1. Sweeping sizes, tolerances and all three entry
         points, it agrees with the disjunct-free bound everywhere -- and, by the
         test above, therefore with the pre-F5 form as well.
         """
@@ -1493,7 +1377,7 @@ class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
 
 
 # ===========================================================================
-# SIZE-POPULATION SIGN CONVENTION (F8)
+# INDEL SIGNAL SIGN CONVENTION (F8)
 # ===========================================================================
 
 
@@ -1505,63 +1389,13 @@ def _load_simulated_alignments(name: str) -> list[Alignment]:
     return cattrs.structure(data["alignments"], list[Alignment])
 
 
-def _consensus_with_read_signals(
-    alignments: list[Alignment], consensusID: str = "1.0"
-) -> consensus_class.Consensus:
-    """Build a Consensus carrying the cut-read alignment signals of ``alignments``.
+class TestIndelSignalSignConvention:
+    """Pin the sign convention of parsed indel signals.
 
-    This is the production path: ``consensus.make_consensus`` aligns the cut
-    reads back to the consensus sequence and stores
-    ``parse_ReadAlignmentSignals_from_alignment`` for each of them.
-    """
-    # Post-F1, distortions_by_svPattern maps SVpattern boundaries into consensus
-    # coordinates and therefore requires the padding record.  These fixtures use
-    # zero padding, so core and padded coordinates coincide and the magnitudes
-    # this class is about are unaffected.
-    padding = consensus_class.ConsensusPadding(
-        sequence="A" * 1000,
-        readname_left="pad_read_left",
-        readname_right="pad_read_right",
-        padding_size_left=0,
-        padding_size_right=0,
-        consensus_interval_on_sequence_with_padding=(0, 1000),
-    )
-    return consensus_class.Consensus(
-        ID=consensusID,
-        crIDs=[1],
-        original_regions=[("chr1", 0, 1000)],
-        consensus_sequence="A" * 1000,
-        consensus_padding=padding,
-        cut_read_alignment_signals=[
-            parse_ReadAlignmentSignals_from_alignment(
-                samplename="sample1",
-                alignment=aln.to_pysam(),
-                min_signal_size=10,
-                min_bnd_size=50,
-            )
-            for aln in alignments
-        ],
-        intervals_cutread_alignments=[
-            (
-                aln.to_pysam().reference_start,
-                aln.to_pysam().reference_end,
-                str(aln.to_pysam().query_name),
-                aln.to_pysam().is_forward,
-            )
-            for aln in alignments
-        ],
-    )
-
-
-class TestSizePopulationSignConvention:
-    """Pin the *actual* sign convention of ``SVcomposite.get_size_populations``.
-
-    ``get_size_populations``'s docstring used to claim "Size is neg. for del and
-    pos. for ins.". It is not: deletion sizes are magnitudes from the moment
-    they are parsed (``size=int(abs(delr - dell))`` in
-    ``alignments_to_rafs.parse_SVsignals_from_alignment``) and nothing in the
-    chain to ``get_size_populations`` ever re-signs them. These tests pin that
-    so the docstring cannot silently drift back.
+    Deletion sizes are magnitudes from the moment they are parsed
+    (``size=int(abs(delr - dell))`` in
+    ``alignments_to_rafs.parse_SVsignals_from_alignment``); only
+    ``SVsignal.sv_type`` tells insertions and deletions apart.
     """
 
     def test_indel_signals_are_unsigned_magnitudes_at_the_source(self):
@@ -1592,80 +1426,3 @@ class TestSizePopulationSignConvention:
         assert [20] == sizes_by_type[0]
         # only the separate sv_type field distinguishes them
         assert sizes_by_type[0] == sizes_by_type[1]
-
-    def test_consensus_distortions_carry_the_magnitude_unchanged(self):
-        """``Consensus.get_consensus_distortions`` copies the unsigned size."""
-        consensus = _consensus_with_read_signals(
-            _load_simulated_alignments("simulated.with_deletion.json.gz")
-        )
-        distortions = consensus.get_consensus_distortions()
-        assert 1 == len(distortions)
-        assert 1 == distortions[0].type  # deletion
-        assert 20 == distortions[0].size  # magnitude, not -20
-
-    def test_get_size_populations_is_unsigned_for_a_deletion(self):
-        """The end-to-end pin: a deletion distortion reaches the population as +20."""
-        alignments = _load_simulated_alignments("simulated.with_deletion.json.gz")
-        readname = str(alignments[0].to_pysam().query_name)
-        consensus = _consensus_with_read_signals(alignments)
-
-        pattern = SVpatterns.SVpatternDeletion(
-            SVprimitives=[
-                _make_svprimitive_del(ref_start=1000, ref_end=1500, reads=[readname])
-            ]
-        )
-        pattern.size_distortions = SVpatterns.distortions_by_svPattern(
-            svPattern=pattern,
-            consensus=consensus,
-            distance_scale=5000.0,
-            falloff=1.0,
-        )
-        assert {readname: 20.0} == pattern.size_distortions
-
-        pattern.set_sequence("A" * 500)
-        composite = SVcomposite.from_SVpattern(pattern)
-        population = composite.get_size_populations()
-
-        assert [20] == population, (
-            "a deletion's size distortion must reach the population as a positive "
-            "magnitude; the old docstring claimed it would be negative"
-        )
-        assert all(size >= 0 for size in population)
-
-    def test_insertion_and_deletion_populations_are_indistinguishable(self):
-        """The consequence for the noise model, made explicit.
-
-        Because the sign is dropped, a locus whose background noise is all
-        deletions produces exactly the same size population as one whose noise
-        is all insertions of the same magnitude. Balanced ins/del noise reads as
-        noisy rather than as quiet. This is intentional under the current
-        design; the older signed intent survives only in the commented-out
-        ``build_size_population_by_svPattern`` in ``SVpatterns.py``.
-        """
-        populations = {}
-        for label, fixture in (
-            ("deletion", "simulated.with_deletion.json.gz"),
-            ("insertion", "simulated.with_insertion.json.gz"),
-        ):
-            alignments = _load_simulated_alignments(fixture)
-            readname = str(alignments[0].to_pysam().query_name)
-            consensus = _consensus_with_read_signals(alignments)
-            pattern = SVpatterns.SVpatternDeletion(
-                SVprimitives=[
-                    _make_svprimitive_del(
-                        ref_start=1000, ref_end=1500, reads=[readname]
-                    )
-                ]
-            )
-            pattern.size_distortions = SVpatterns.distortions_by_svPattern(
-                svPattern=pattern,
-                consensus=consensus,
-                distance_scale=5000.0,
-                falloff=1.0,
-            )
-            pattern.set_sequence("A" * 500)
-            populations[label] = SVcomposite.from_SVpattern(
-                pattern
-            ).get_size_populations()
-
-        assert populations["deletion"] == populations["insertion"] == [20]

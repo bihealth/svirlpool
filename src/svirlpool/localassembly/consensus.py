@@ -839,9 +839,6 @@ def make_consensus_with_lamassemble(
 
 
 def final_consensus(
-    samplename: str,
-    min_indel_size: int,
-    min_bnd_size: int,
     reads_fasta: Path,
     consensus_fasta_path: Path,
     consensus_sequence: str,
@@ -885,17 +882,6 @@ def final_consensus(
         )
         return None
 
-    # Extract SV signals from alignments
-    cut_read_alignment_signals = [
-        parse_ReadAlignmentSignals_from_alignment(
-            alignment=aln,
-            min_signal_size=min_indel_size,
-            min_bnd_size=min_bnd_size,
-            samplename=samplename,
-        )
-        for aln in cut_read_alns
-    ]
-
     # Extract alignment intervals
     intervals_cutread_alignments = [
         (aln.reference_start, aln.reference_end, aln.query_name, aln.is_forward)
@@ -906,10 +892,6 @@ def final_consensus(
         raise ValueError(
             f"No alignment intervals found for consensus {ID} in {tmp_alignments.name}. Cannot proceed."
         )
-    if len(cut_read_alignment_signals) == 0:
-        log.warning(
-            f"No alignment signals found for consensus {ID} -> no distortions available?. Returning None."
-        )
 
     # Create final Consensus object
     result = consensus_class.Consensus(
@@ -917,7 +899,6 @@ def final_consensus(
         crIDs=crIDs,
         original_regions=original_regions,
         consensus_sequence=consensus_sequence,
-        cut_read_alignment_signals=cut_read_alignment_signals,
         intervals_cutread_alignments=intervals_cutread_alignments,
     )
     log.debug(
@@ -939,27 +920,14 @@ def final_consensus(
 def add_cutread_alignments_to_consensus_inplace(
     alns: list[pysam.AlignedSegment],
     consensus: consensus_class.Consensus,
-    min_indel_size: int,
-    min_bnd_size: int,
-    samplename: str,
 ) -> None:
-    cut_read_alignment_signals = [
-        parse_ReadAlignmentSignals_from_alignment(
-            alignment=aln,
-            min_signal_size=min_indel_size,
-            min_bnd_size=min_bnd_size,
-            samplename=samplename,
-        )
-        for aln in alns
-    ]
     intervals_cutread_alignments = [
         (aln.reference_start, aln.reference_end, aln.query_name, aln.is_forward)
         for aln in alns
     ]
-    consensus.cut_read_alignment_signals.extend(cut_read_alignment_signals)
     consensus.intervals_cutread_alignments.extend(intervals_cutread_alignments)
     log.debug(
-        f"Added {len(alns)} alignments to consensus {consensus.ID}. Now has {len(consensus.cut_read_alignment_signals)} signals and {len(consensus.intervals_cutread_alignments)} intervals."
+        f"Added {len(alns)} alignments to consensus {consensus.ID}. Now has {len(consensus.intervals_cutread_alignments)} intervals."
     )
 
 
@@ -1635,9 +1603,6 @@ def consensus_while_clustering(
                 if result is None:
                     result = {}
                 consensus = final_consensus(
-                    samplename=samplename,
-                    min_indel_size=8,
-                    min_bnd_size=100,
                     reads_fasta=Path(reads_fasta.name),
                     consensus_fasta_path=Path(consensus_fasta.name),
                     consensus_sequence=consensus_sequence,
@@ -1720,9 +1685,6 @@ def consensus_while_clustering(
                     if result is None:
                         result = {}
                     consensus = final_consensus(
-                        samplename=samplename,
-                        min_indel_size=8,
-                        min_bnd_size=100,
                         reads_fasta=Path(reads_fasta.name),
                         consensus_fasta_path=Path(consensus_fasta.name),
                         consensus_sequence=consensus_sequence,
@@ -1968,9 +1930,6 @@ def consensus_while_clustering_with_kmeans(
                 if result is None:
                     result = {}
                 consensus = final_consensus(
-                    samplename=samplename,
-                    min_indel_size=8,
-                    min_bnd_size=100,
                     reads_fasta=Path(reads_fasta.name),
                     consensus_fasta_path=Path(consensus_fasta.name),
                     consensus_sequence=consensus_sequence,
@@ -2035,9 +1994,6 @@ def consensus_while_clustering_with_kmeans(
                     if result is None:
                         result = {}
                     consensus = final_consensus(
-                        samplename=samplename,
-                        min_indel_size=8,
-                        min_bnd_size=100,
                         reads_fasta=Path(reads_fasta.name),
                         consensus_fasta_path=Path(consensus_fasta.name),
                         consensus_sequence=consensus_sequence,
@@ -2127,9 +2083,6 @@ def consensus_from_clusters(
                     )
                     continue
                 consensus = final_consensus(
-                    samplename=samplename,
-                    min_indel_size=8,
-                    min_bnd_size=100,
                     reads_fasta=reads_fasta,
                     consensus_fasta_path=consensus_fasta,
                     consensus_sequence=consensus_sequence,
@@ -2267,14 +2220,10 @@ def consensus_while_phasing(
 
 
 def add_unaligned_reads_to_consensuses_inplace(
-    samplename: str,
     consensus_objects: dict[str, consensus_class.Consensus],
     pool: dict[str, SeqRecord],
-    min_indel_size: int,
-    min_bnd_size: int,
 ) -> None:
     """Inplace: Add all reads that are not used in any consensus object to the consensus object that they align best to."""
-    """A read is not added to a consensus if its SV signals are significantly more than all already added reads."""
     assert len(consensus_objects) > 0, (
         "consensus_sequences must contain at least one consensus object"
     )
@@ -2344,9 +2293,6 @@ def add_unaligned_reads_to_consensuses_inplace(
             add_cutread_alignments_to_consensus_inplace(
                 alns=assigned_alignments,
                 consensus=consensus,
-                min_indel_size=min_indel_size,
-                min_bnd_size=min_bnd_size,
-                samplename=samplename,
             )
 
 
@@ -3294,19 +3240,15 @@ def process_consensus_container(
         )
     # sorted(): this dict is written out as a FASTA in iteration order and the
     # resulting alignment order is appended to
-    # Consensus.cut_read_alignment_signals / .intervals_cutread_alignments,
-    # which are serialised into consensus_containers.txt and the consensus
-    # batch JSONL.  Iterating the readname set directly made that order depend
+    # Consensus.intervals_cutread_alignments, which is serialised into
+    # consensus_containers.txt and the consensus batch JSONL.  Iterating the readname set directly made that order depend
     # on the process-local string hash seed.
     pool_unused_reads = {
         readname: cutreads[readname] for readname in sorted(unused_reads)
     }
     add_unaligned_reads_to_consensuses_inplace(
         pool=pool_unused_reads,
-        samplename=samplename,
         consensus_objects=consensus_objects,
-        min_bnd_size=100,
-        min_indel_size=12,
     )
     if verbose:
         # again, find the unused reads
@@ -3318,16 +3260,6 @@ def process_consensus_container(
         )
 
     # ================================ ADDING UNUSED READS TO CONSENSUS OBJECTS END ================================ #
-    # add original SV singals (ExtendedSVsignal) to the consensus
-    # each consensus has a list of reconstructible reads
-    # each reconstructible read has a member alignment
-    # this alignment has a member readname and function aug_name() that returns the augmented readname
-    # use the augmented readname to get the signals from the cr
-
-    # for consensus in consensus_objects.values():
-    #     _readnames = [x.read_name for x in consensus.cut_read_alignment_signals]
-    #     signals = [signal for cr in crs_dict.values() for signal in cr.sv_signals if signal.readname in _readnames]
-    #     consensus.original_signals = signals
     set_unused_readnames = set(cutreads.keys())
     for consensus in consensus_objects.values():
         set_unused_readnames -= consensus.get_used_readnames()

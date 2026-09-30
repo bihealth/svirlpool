@@ -3,15 +3,12 @@ import logging
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from svirlpool.localassembly import (
     SVpatterns,
     SVprimitives,
     consensus_align,
     consensus_class,
 )
-from svirlpool.util import datatypes
 
 # %%
 
@@ -326,17 +323,9 @@ def test_svPrimitives_to_svPatterns_inv15():
 
 # %%
 # ---------------------------------------------------------------------------
-# F7: the "no distortions" guard in
-# add_consensus_sequence_and_size_distortions_to_svPatterns must inspect the
-# *values* of the distortion dict, not only its length.
-#
-# distortions_by_svPattern never returns an empty dict for a pattern that has
-# supporting reads: when it finds no distortion it can weight, it returns
-# dict.fromkeys(supporting_reads, 0.0). The length-only guard cannot see that.
-#
-# The fixture below is a genuinely matched (Consensus, SVprimitives) pair taken
-# from ONE real run, so the objects under test are objects the pipeline can
-# actually produce. It was generated with:
+# add_consensus_sequences_to_svPatterns on a genuinely matched
+# (Consensus, SVprimitives) pair taken from ONE real run, so the objects under
+# test are objects the pipeline can actually produce. It was generated with:
 #
 #   from svirlpool.localassembly import consensus_align, SVpatterns
 #   cons = {}
@@ -354,18 +343,15 @@ def test_svPrimitives_to_svPatterns_inv15():
 # production defaults). Do NOT pair fixtures by consensus ID alone: IDs are
 # "<crID>.<subID>" and are only unique within a run, so two files from
 # different datasets can share an ID while describing loci megabases apart.
+#
+# The consensus record predates the removal of the per-read size distortions
+# and still carries ``cut_read_alignment_signals``; loading it is also the
+# backward-compatibility check for old consensus JSONL.
 # ---------------------------------------------------------------------------
 
 MATCHED_PAIR_FIXTURE = (
-    DATADIR / "consensus_align" / "all_zero_size_distortions.chr6_157299125.json.gz"
+    DATADIR / "consensus_align" / "matched_pair.chr6_157299125.json.gz"
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_all_zero_distortion_warning_counter():
-    """Reset the per-process warning rate limiter between tests."""
-    getattr(consensus_align, "_reset_all_zero_distortion_warnings", lambda: None)()
-    yield
 
 
 def load_matched_pattern_and_consensus() -> tuple[
@@ -374,8 +360,8 @@ def load_matched_pattern_and_consensus() -> tuple[
     """Load a genuinely matched SVpattern/Consensus pair from one real run.
 
     The SVpattern is rebuilt from its SVprimitives the way production does, so it
-    arrives with ``size_distortions is None`` — the state
-    ``add_consensus_sequence_and_size_distortions_to_svPatterns`` expects.
+    arrives without any consensus-derived sequence — the state
+    ``add_consensus_sequences_to_svPatterns`` expects.
 
     The assertions below are the point of this helper: they pin the invariants a
     matched pair must satisfy, so a mismatched pair can never silently be used as
@@ -428,58 +414,6 @@ def load_matched_pattern_and_consensus() -> tuple[
     return pattern, consensus
 
 
-def attach_distortions_to_consensus(
-    consensus: consensus_class.Consensus,
-    distortions: dict[str, list[tuple[int, int, int]]],
-) -> consensus_class.Consensus:
-    """Attach cut-read alignment signals to a Consensus.
-
-    ``distortions`` maps a read name to a list of ``(position, size, sv_type)``
-    triples in **core-consensus** coordinates — the space in which
-    ``Consensus.get_consensus_distortions`` surfaces ``signal.ref_start``.
-    """
-    core_length = len(consensus.consensus_sequence)
-    for signals in distortions.values():
-        for position, _size, _sv_type in signals:
-            assert 0 <= position < core_length, (
-                f"distortion position {position} is outside the consensus "
-                f"[0, {core_length})"
-            )
-
-    consensus.cut_read_alignment_signals = [
-        datatypes.ReadAlignmentSignals(
-            samplename="testsample",
-            read_name=readname,
-            reference_name=consensus.ID,
-            alignment_forward=True,
-            SV_signals=[
-                datatypes.SVsignal(
-                    ref_start=position,
-                    ref_end=position + max(size, 1),
-                    read_start=position,
-                    read_end=position + max(size, 1),
-                    size=size,
-                    sv_type=sv_type,
-                )
-                for position, size, sv_type in signals
-            ],
-        )
-        for readname, signals in distortions.items()
-    ]
-    return consensus
-
-
-def _spread_distortions(
-    readnames, core_length: int
-) -> dict[str, list[tuple[int, int, int]]]:
-    """One insertion distortion per read, spread across the core consensus."""
-    readnames = list(readnames)
-    step = max(core_length // (len(readnames) + 2), 1)
-    return {
-        readname: [(step * (i + 1), 30 + i, 0)] for i, readname in enumerate(readnames)
-    }
-
-
 def test_matched_pair_fixture_is_a_coherent_production_object():
     """The fixture really is one pattern and one consensus from the same run."""
     pattern, consensus = load_matched_pattern_and_consensus()
@@ -487,7 +421,7 @@ def test_matched_pair_fixture_is_a_coherent_production_object():
     assert "0.1" == consensus.ID
     assert ("chr6", 157299125, 157299125) == pattern.get_reference_region()
     assert isinstance(pattern, SVpatterns.SVpatternInsertion)
-    assert pattern.size_distortions is None
+    assert pattern.inserted_sequence is None
 
     # the invariants load_matched_pattern_and_consensus() asserts, restated here
     # so that a regression names the broken invariant rather than a helper.
@@ -502,188 +436,53 @@ def test_matched_pair_fixture_is_a_coherent_production_object():
     assert 530 == len(consensus.consensus_sequence)
 
 
-def test_real_locus_without_read_distortions_yields_an_all_zero_dict():
-    """The state the F7 guard has to be able to see, straight from real data.
+def test_an_old_consensus_record_with_read_signals_still_loads():
+    """Consensus JSON written before the size distortions were removed loads.
 
-    At this locus no cut read carries an indel signal, so
-    ``distortions_by_svPattern`` returns ``dict.fromkeys(supporting_reads, 0.0)``:
-    one entry per supporting read, every value exactly 0.0. The dict is not
-    empty, so the old ``len(...) > 0`` guard passes.
-
-    This route to an all-zero dict does not depend on the distance weighting at
-    all — there is nothing to weight — so it holds both before and after F1.
+    The dropped ``cut_read_alignment_signals`` key is ignored; everything else,
+    in particular the cut-read intervals, is kept.
     """
-    pattern, consensus = load_matched_pattern_and_consensus()
-    supporting_reads = pattern.get_supporting_reads()
-    assert [] == [
-        d
-        for d in consensus.get_consensus_distortions()
-        if d.readname in set(supporting_reads)
-    ]
+    import json
+    from gzip import open as gzip_open
 
-    result = SVpatterns.distortions_by_svPattern(
-        svPattern=pattern,
-        consensus=consensus,
-        distance_scale=5000.0,
-        falloff=1.0,
+    import cattrs
+
+    with gzip_open(MATCHED_PAIR_FIXTURE, "rt") as f:
+        data = json.load(f)["consensus"]
+    assert data["cut_read_alignment_signals"], "fixture must carry the old field"
+
+    consensus = cattrs.structure(data, consensus_class.Consensus)
+    assert not hasattr(consensus, "cut_read_alignment_signals")
+    assert len(data["intervals_cutread_alignments"]) == len(
+        consensus.intervals_cutread_alignments
     )
-    assert len(supporting_reads) == len(result)
-    assert all(value == 0.0 for value in result.values())
+    assert "cut_read_alignment_signals" not in consensus.unstructure()
 
 
-def test_guard_detects_all_zero_size_distortions(caplog):
-    """All-zero distortions must be detected, counted and warned about.
-
-    On unmodified ``main`` the guard only checks ``len(...) > 0``, so this
-    pathological locus passes silently and nothing at all is logged. The
-    warning assertion therefore comes first: it is the substantive failure.
-    """
+def test_add_consensus_sequences_sets_the_inserted_sequence():
+    """The insertion receives its inserted sequence from the consensus."""
     pattern, consensus = load_matched_pattern_and_consensus()
-    chrom, start, _end = pattern.get_reference_region()
+    expected = pattern.get_sequence_from_consensus(consensus=consensus)
+    assert 30 == len(expected)
 
-    with caplog.at_level(logging.WARNING, logger=consensus_align.log.name):
-        result = (
-            consensus_align.add_consensus_sequence_and_size_distortions_to_svPatterns(
-                consensus_objects={consensus.ID: consensus},
-                svPatterns=[pattern],
-                distance_scale=5000.0,
-                falloff=1.0,
-            )
-        )
-
-    messages = [rec.getMessage() for rec in caplog.records]
-    assert any(consensus.ID in msg and f"{chrom}:{start}" in msg for msg in messages), (
-        "an all-zero size-distortion dict must be reported with the consensus ID "
-        f"and the genomic coordinate; logged instead: {messages}"
+    processed = consensus_align.add_consensus_sequences_to_svPatterns(
+        consensus_objects={consensus.ID: consensus},
+        svPatterns=[pattern],
     )
 
-    processed, stats = result
-    # observability only: the pattern is still processed and still carries the
-    # (all-zero) distortions it had before.
-    assert 1 == len(processed)
-    assert processed[0].size_distortions is not None
-    assert all(v == 0.0 for v in processed[0].size_distortions.values())
-
-    assert 1 == stats["n_all_zero_distortions"]
-    assert 1 == stats["n_patterns"]
+    assert [pattern] == processed
+    assert expected == processed[0].get_sequence()
+    assert processed[0].get_sequence_complexity() is not None
 
 
-def test_guard_still_raises_on_a_genuinely_empty_distortion_dict():
-    """An empty dict means the pattern has no supporting reads at all.
+def test_add_consensus_sequences_keeps_patterns_without_a_consensus():
+    """A pattern whose consensus is not in the batch is passed through unchanged."""
+    pattern, _consensus = load_matched_pattern_and_consensus()
 
-    That is a real invariant violation and stays a hard failure.
-    """
-    pattern, consensus = load_matched_pattern_and_consensus()
-    for svp in pattern.SVprimitives:
-        svp.genotypeMeasurement.supporting_reads_start = []
-        svp.genotypeMeasurement.supporting_reads_end = []
-    assert [] == pattern.get_supporting_reads()
-
-    with pytest.raises(ValueError, match="No size distortions"):
-        consensus_align.add_consensus_sequence_and_size_distortions_to_svPatterns(
-            consensus_objects={consensus.ID: consensus},
-            svPatterns=[pattern],
-            distance_scale=5000.0,
-            falloff=1.0,
-        )
-
-
-def test_guard_is_silent_for_a_healthy_all_nonzero_distortion_dict(caplog):
-    """A dict with only non-zero values is normal: no warning, no error."""
-    pattern, consensus = load_matched_pattern_and_consensus()
-    supporting_reads = pattern.get_supporting_reads()
-    consensus = attach_distortions_to_consensus(
-        consensus,
-        _spread_distortions(supporting_reads, len(consensus.consensus_sequence)),
+    processed = consensus_align.add_consensus_sequences_to_svPatterns(
+        consensus_objects={},
+        svPatterns=[pattern],
     )
 
-    # A distance scale large enough that the weight cannot underflow whichever
-    # coordinate space the distance is measured in, so this test says nothing
-    # about F1 either way.
-    with caplog.at_level(logging.WARNING, logger=consensus_align.log.name):
-        processed, stats = (
-            consensus_align.add_consensus_sequence_and_size_distortions_to_svPatterns(
-                consensus_objects={consensus.ID: consensus},
-                svPatterns=[pattern],
-                distance_scale=1e9,
-                falloff=1.0,
-            )
-        )
-
-    assert 1 == len(processed)
-    distortions = processed[0].size_distortions
-    assert distortions is not None
-    assert len(distortions) == len(supporting_reads)
-    assert all(value != 0.0 for value in distortions.values())
-    assert 0 == stats["n_all_zero_distortions"]
-    assert not [
-        rec for rec in caplog.records if "ALL_ZERO_DISTORTIONS" in rec.getMessage()
-    ]
-
-
-def test_guard_treats_a_partly_zero_distortion_dict_as_normal(caplog):
-    """Only an *all*-zero dict is pathological.
-
-    Reads without a distortion legitimately contribute 0.0 — a locus where some
-    reads are distorted and others are not is exactly what the noise model is
-    meant to measure, so it must not be flagged.
-    """
-    pattern, consensus = load_matched_pattern_and_consensus()
-    supporting_reads = sorted(pattern.get_supporting_reads())
-    assert len(supporting_reads) >= 4
-    distorted = supporting_reads[: len(supporting_reads) // 2]
-    consensus = attach_distortions_to_consensus(
-        consensus, _spread_distortions(distorted, len(consensus.consensus_sequence))
-    )
-
-    with caplog.at_level(logging.WARNING, logger=consensus_align.log.name):
-        processed, stats = (
-            consensus_align.add_consensus_sequence_and_size_distortions_to_svPatterns(
-                consensus_objects={consensus.ID: consensus},
-                svPatterns=[pattern],
-                distance_scale=1e9,
-                falloff=1.0,
-            )
-        )
-
-    distortions = processed[0].size_distortions
-    assert distortions is not None
-    zeros = [v for v in distortions.values() if v == 0.0]
-    nonzeros = [v for v in distortions.values() if v != 0.0]
-    assert len(zeros) > 0 and len(nonzeros) > 0, "test setup must be partly zero"
-    assert 0 == stats["n_all_zero_distortions"]
-    assert not [
-        rec for rec in caplog.records if "ALL_ZERO_DISTORTIONS" in rec.getMessage()
-    ]
-
-
-def test_all_zero_distortion_warnings_are_rate_limited(caplog):
-    """The warning is rate limited; the *count* is complete.
-
-    While F1 is unfixed essentially every locus in the genome is all-zero, so an
-    unlimited per-locus warning would emit millions of lines. Only the first few
-    loci are warned about, but all of them are counted for the run summary.
-    """
-    import copy
-
-    pattern, consensus = load_matched_pattern_and_consensus()
-    n_loci = consensus_align.ALL_ZERO_DISTORTION_WARN_LIMIT + 7
-    patterns = [copy.deepcopy(pattern) for _ in range(n_loci)]
-
-    with caplog.at_level(logging.WARNING, logger=consensus_align.log.name):
-        _processed, stats = (
-            consensus_align.add_consensus_sequence_and_size_distortions_to_svPatterns(
-                consensus_objects={consensus.ID: consensus},
-                svPatterns=patterns,
-                distance_scale=5000.0,
-                falloff=1.0,
-            )
-        )
-
-    assert n_loci == stats["n_all_zero_distortions"], "every locus must be counted"
-    emitted = [
-        rec for rec in caplog.records if "ALL_ZERO_DISTORTIONS" in rec.getMessage()
-    ]
-    assert len(emitted) <= consensus_align.ALL_ZERO_DISTORTION_WARN_LIMIT + 1, (
-        f"expected at most the warn limit (+1 suppression notice), got {len(emitted)}"
-    )
+    assert [pattern] == processed
+    assert processed[0].get_sequence() is None
