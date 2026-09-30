@@ -30,50 +30,29 @@ from .svcomposite_utils import (
 log = logging.getLogger(__name__)
 
 
-#: The vertical merge's size test, set once from the CLI before any worker
-#: process is forked. Two sizes are similar when
+#: The vertical merge's size test. Two sizes are similar when
 #:
-#:     |size_a - size_b| <= max(SIZE_TOLERANCE_FLOOR, fraction * ref(size_a, size_b))
+#:     |size_a - size_b| <= fraction * max(|size_a|, |size_b|)
 #:
-#: with ref the smaller size ('min'), the larger ('max') or their harmonic mean
-#: ('hmean'), and `fraction` the caller's tolerance
+#: with `fraction` the caller's tolerance
 #: (--apriori-size-difference-fraction-tolerance, or SIBLING_SIZE_TOLERANCE for
 #: two haplotypes of one sample). Nothing else enters the size decision.
 #:
-#: Above the floor the three references are one test in three
-#: parametrisations: each accepts exactly the pairs with max/min <= R, where
-#: R = 1 + f for 'min', 1 / (1 - f) for 'max' and f + sqrt(f^2 + 1) for
-#: 'hmean'. They differ only in which ratio a given f stands for.
-#:
-#: Two further allowances were removed after the svp_merging size-gate study
-#: (2026-09-29): a sequence-complexity allowance (1 - complexity) * |size|,
-#: which rejected identical sizes and was unbounded, and a "noise" gate, Cohen's
-#: d of the per-read distortion populations, which never improved the trio
-#: benchmark and whose scale overstates the consensus' size error 2-8x.
-SIZE_TOLERANCE_REFERENCES: tuple[str, ...] = ("min", "max", "hmean")
-SIZE_TOLERANCE_REFERENCE: str = "max"
-SIZE_TOLERANCE_FLOOR: float = 0.0
+#: Settled by the svp_merging size study (2026-09-29/30): the reference (min,
+#: max or harmonic mean) only reparametrises one ratio test max/min <= R, and
+#: an absolute floor under the bound (3-20 bp) lowered precision at every
+#: setting. Removed earlier: a sequence-complexity allowance, which rejected
+#: identical sizes and was unbounded, and a "noise" gate on per-read
+#: distortion populations, which never improved the trio benchmark.
 
 
 def size_tolerance(size_a: float, size_b: float, fraction: float) -> float:
     """The largest |size_a - size_b| at which the two sizes still count as similar."""
-    x, y = abs(size_a), abs(size_b)
-    if SIZE_TOLERANCE_REFERENCE == "min":
-        ref = min(x, y)
-    elif SIZE_TOLERANCE_REFERENCE == "max":
-        ref = max(x, y)
-    elif SIZE_TOLERANCE_REFERENCE == "hmean":
-        ref = 2.0 * x * y / (x + y) if x + y > 0 else 0.0
-    else:
-        raise ValueError(
-            f"SIZE_TOLERANCE_REFERENCE must be one of {SIZE_TOLERANCE_REFERENCES}, "
-            f"got {SIZE_TOLERANCE_REFERENCE!r}"
-        )
-    return max(SIZE_TOLERANCE_FLOOR, fraction * ref)
+    return fraction * max(abs(size_a), abs(size_b))
 
 
 def sizes_similar(size_a: float, size_b: float, fraction: float) -> bool:
-    """Whether two SV sizes agree within the floored relative tolerance."""
+    """Whether two SV sizes agree within `fraction` of the larger one."""
     return abs(abs(size_a) - abs(size_b)) <= size_tolerance(size_a, size_b, fraction)
 
 
@@ -84,7 +63,7 @@ def _similar_size_detail(
 ) -> dict:
     """The size test of the vertical merge, with its inputs for --merge-audit.
 
-    Keys: similar, size_tolerance (bp), size_reference, size_floor.
+    Keys: similar, size_tolerance (bp).
     """
     size_a = a.get_size()
     size_b = b.get_size()
@@ -94,8 +73,6 @@ def _similar_size_detail(
     return {
         "similar": abs(abs(size_a) - abs(size_b)) <= tolerance,
         "size_tolerance": tolerance,
-        "size_reference": SIZE_TOLERANCE_REFERENCE,
-        "size_floor": SIZE_TOLERANCE_FLOOR,
     }
 
 
@@ -190,8 +167,7 @@ def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
         ok = sizes_similar(size_a, size_b, SIBLING_SIZE_TOLERANCE)
         log.debug(
             f"VERTICAL_MERGE|{svtype}|{'ACCEPT' if ok else 'REJECT_SIBLING_SIZE'}	a={_svcomposite_short_id(a)}	b={_svcomposite_short_id(b)}	"
-            f"size_a={size_a}	size_b={size_b}	sibling_tolerance={SIBLING_SIZE_TOLERANCE}	"
-            f"size_reference={SIZE_TOLERANCE_REFERENCE}	size_floor={SIZE_TOLERANCE_FLOOR}"
+            f"size_a={size_a}	size_b={size_b}	sibling_tolerance={SIBLING_SIZE_TOLERANCE}"
         )
         if not ok:
             _audit_pair(
@@ -202,8 +178,6 @@ def _haplotype_gate(a: SVcomposite, b: SVcomposite, svtype: str) -> bool | None:
                 "sibling_size",
                 sibling_tolerance=SIBLING_SIZE_TOLERANCE,
                 size_tolerance=size_tolerance(size_a, size_b, SIBLING_SIZE_TOLERANCE),
-                size_reference=SIZE_TOLERANCE_REFERENCE,
-                size_floor=SIZE_TOLERANCE_FLOOR,
             )
             return False
         # sizes agree: the remaining checks (proximity, k-mers) still apply
@@ -266,7 +240,7 @@ def can_merge_svComposites_insertions(
         _audit_pair("INS", a, b, False, "not_near", near=near)
         return False
 
-    # - have similar sizes (floored relative tolerance, see `size_tolerance`)
+    # - have similar sizes (a fraction of the larger size, see `size_tolerance`)
 
     size_a = a.get_size()
     size_b = b.get_size()

@@ -1348,8 +1348,8 @@ class TestRemovingTheLogSizeDisjunctChangesNoVerdict:
     def test_no_floor_is_granted_below_the_fractional_bound(self):
         """By default there is no absolute-difference floor, in particular none at 12 bp.
 
-        A floor now exists as --size-tolerance-floor (SIZE_TOLERANCE_FLOOR), off
-        by default; tests/test_size_tolerance.py covers it.
+        A floor option (--size-tolerance-floor) was tried and removed: floors of
+        3-20 bp lowered precision in the svp_merging size study (2026-09-30).
 
         The dissertation text proposes F = 12 bp -- the consensus-level indel
         parse threshold (`consensus_align.py --min-signal-size`, default 12).
