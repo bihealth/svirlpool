@@ -20,6 +20,7 @@ from io import StringIO
 from math import floor
 from os import getpgid, killpg
 from pathlib import Path
+from typing import NamedTuple
 
 import cattrs
 import numpy as np
@@ -236,6 +237,115 @@ def align_reads_with_minimap(
     finally:
         if logfile and log_handle:
             log_handle.close()
+
+
+class PafRecord(NamedTuple):
+    """One minimap2 PAF record. Coordinates are 0-based and half-open."""
+
+    query_name: str
+    query_length: int
+    query_start: int
+    query_end: int
+    is_forward: bool
+    target_name: str
+    target_length: int
+    target_start: int
+    target_end: int
+    n_matches: int
+    block_length: int
+    mapq: int
+    # tp tag: P primary (and supplementary), S secondary, I/i inversion
+    alignment_type: str
+
+
+def parse_paf_line(line: str) -> PafRecord:
+    """Parse one PAF line into a PafRecord (the first 12 columns and the tp tag)."""
+    fields = line.rstrip("\n").split("\t")
+    if len(fields) < 12:
+        raise ValueError(f"not a PAF line (fewer than 12 columns): {line!r}")
+    alignment_type = "P"
+    for tag in fields[12:]:
+        if tag.startswith("tp:A:"):
+            alignment_type = tag[5:]
+            break
+    return PafRecord(
+        query_name=fields[0],
+        query_length=int(fields[1]),
+        query_start=int(fields[2]),
+        query_end=int(fields[3]),
+        is_forward=fields[4] == "+",
+        target_name=fields[5],
+        target_length=int(fields[6]),
+        target_start=int(fields[7]),
+        target_end=int(fields[8]),
+        n_matches=int(fields[9]),
+        block_length=int(fields[10]),
+        mapq=int(fields[11]),
+        alignment_type=alignment_type,
+    )
+
+
+def align_reads_with_minimap_paf(
+    reference: Path | str,
+    reads: Path | str | list[Path | str],
+    tech: str = "map-ont",
+    threads: int = 3,
+    aln_args: str = "",
+    logfile: Path | None = None,
+    timeout: float | None = None,
+) -> list[PafRecord]:
+    """Align reads with minimap2 in PAF mode (no ``-a``) and return the records.
+
+    Records are returned in minimap2's output order. Secondary alignments
+    (``tp:A:S``) are dropped, so the result corresponds to the primary and
+    supplementary records of a SAM run with ``--secondary=no``. PAF does not
+    flag supplementary alignments: both they and the primary alignment carry
+    ``tp:A:P``, and the primary alignment is the first record of its query.
+
+    Without ``-c`` in ``aln_args`` the coordinates are those of the chain, not
+    of a base-level alignment. If timeout is given (seconds), minimap2 is killed
+    after it and a TimeoutError is raised.
+    """
+    if isinstance(reads, list):
+        reads_str = " ".join(str(r) for r in reads)
+    else:
+        reads_str = str(reads)
+    cmd_align = shlex.split(
+        f"minimap2 -x {tech} -t {threads} {aln_args} {reference} {reads_str}"
+    )
+    log_handle = open(logfile, "wt") if logfile else None
+    try:
+        log.info(" ".join(cmd_align))
+        # own process group, so the whole tree can be killed on timeout
+        p_align = subprocess.Popen(
+            cmd_align,
+            stdout=subprocess.PIPE,
+            stderr=log_handle,
+            start_new_session=True,
+            text=True,
+        )
+        try:
+            stdout, _ = p_align.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log.error("Alignment timed out, killing processes...")
+            try:
+                killpg(getpgid(p_align.pid), signal.SIGTERM)
+            except Exception:
+                try:
+                    p_align.kill()
+                except Exception:
+                    pass
+            p_align.communicate()
+            raise TimeoutError(
+                "Alignment with minimap2 timed out after the specified time limit."
+            )
+        if p_align.returncode != 0:
+            raise subprocess.CalledProcessError(p_align.returncode, " ".join(cmd_align))
+    finally:
+        if log_handle:
+            log_handle.close()
+    records = [parse_paf_line(line) for line in stdout.splitlines() if line]
+    return [r for r in records if r.alignment_type != "S"]
 
 
 def align_reads_with_last(

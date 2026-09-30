@@ -838,6 +838,45 @@ def make_consensus_with_lamassemble(
 # =============================================================================
 
 
+#: minimap2 options for aligning cut reads to their consensus (PAF output).
+#: Secondary alignments are not reported; primary and supplementary are kept.
+#: ``-c`` makes minimap2 compute the base-level alignment so the PAF ends are
+#: those of the former SAM records. Without it the ends come from chaining:
+#: on 543 real alignment jobs (HG002, 2 consensus batches) they were off by a
+#: median 7 bp (95th percentile ~30 bp) for cut reads and 13-15 bp (95th
+#: percentile 200-255 bp) for re-distributed reads, which changed the
+#: supporting reads at 7% resp. 31% of SV breakpoints and, for re-distributed
+#: reads, the chosen primary. With ``-c`` the intervals were identical to the
+#: SAM-derived ones, order included.
+CUTREAD_TO_CONSENSUS_ALN_ARGS = "-c --secondary=no -U 10,25 -H"
+#: The same for re-distributing unused reads to the consensus they fit best.
+UNUSED_READS_TO_CONSENSUS_ALN_ARGS = "-c --secondary=no -U 25,75 -H"
+
+
+def cutread_intervals_from_paf(
+    records: list[util.PafRecord],
+    target_order: dict[str, int] | None = None,
+) -> list[tuple[int, int, str, bool]]:
+    """Turn PAF records into ``Consensus.intervals_cutread_alignments`` entries.
+
+    Each entry is (target start, target end, read name, is_forward) on the
+    consensus the read aligned to. The records are ordered by (target, start,
+    strand) with ties kept in minimap2's order -- the order of a
+    coordinate-sorted BAM, which the intervals were built from before. Targets
+    are ordered by ``target_order`` (their index in the reference FASTA) or,
+    without it, by name.
+    """
+    if target_order is None:
+        target_order = {
+            name: i for i, name in enumerate(sorted({r.target_name for r in records}))
+        }
+    ordered = sorted(
+        records,
+        key=lambda r: (target_order[r.target_name], r.target_start, not r.is_forward),
+    )
+    return [(r.target_start, r.target_end, r.query_name, r.is_forward) for r in ordered]
+
+
 def final_consensus(
     reads_fasta: Path,
     consensus_fasta_path: Path,
@@ -847,7 +886,6 @@ def final_consensus(
     original_regions: list[tuple[str, int, int]],
     threads: int,
     verbose: bool,
-    tmp_dir_path: Path | None = None,
 ) -> consensus_class.Consensus | None:
     # check if the consensus_fasta_path or reads_fasta are empty. if so, raise an exception
     if os.path.getsize(consensus_fasta_path) == 0:
@@ -857,41 +895,21 @@ def final_consensus(
     if os.path.getsize(reads_fasta) == 0:
         raise ValueError(f"reads fasta {reads_fasta} is empty. Cannot proceed.")
 
-    min_cr = min(crIDs)
-    tmp_alignments = tempfile.NamedTemporaryFile(
-        dir=tmp_dir_path,
-        prefix=f"consensus.{str(min_cr)}.final_tmp_alignments.",
-        suffix=".bam",
-        delete=False if tmp_dir_path else True,
-    )
-
-    util.align_reads_with_minimap(
-        bamout=tmp_alignments.name,
-        reads=reads_fasta,
+    # Only the extent, read name and strand of each alignment are used, so a
+    # PAF is enough; no CIGAR is parsed.
+    records = util.align_reads_with_minimap_paf(
         reference=consensus_fasta_path,
-        aln_args=" -Y --sam-hit-only --secondary=no  -U 10,25 -H",
+        reads=reads_fasta,
+        aln_args=CUTREAD_TO_CONSENSUS_ALN_ARGS,
         threads=threads,
     )
-
-    # Parse alignments using context manager
-    with pysam.AlignmentFile(tmp_alignments.name, mode="r") as aln_file:
-        cut_read_alns: list[pysam.AlignedFragment] = list(aln_file)
-    if len(cut_read_alns) == 0:
+    if len(records) == 0:
         log.warning(
-            f"No alignments found for consensus {ID} in {tmp_alignments.name}. Returning None."
+            f"No alignments found for consensus {ID} of the reads in {reads_fasta}. Returning None."
         )
         return None
 
-    # Extract alignment intervals
-    intervals_cutread_alignments = [
-        (aln.reference_start, aln.reference_end, aln.query_name, aln.is_forward)
-        for aln in cut_read_alns
-    ]
-    # if they are empty, then raise an exception
-    if len(intervals_cutread_alignments) == 0:
-        raise ValueError(
-            f"No alignment intervals found for consensus {ID} in {tmp_alignments.name}. Cannot proceed."
-        )
+    intervals_cutread_alignments = cutread_intervals_from_paf(records)
 
     # Create final Consensus object
     result = consensus_class.Consensus(
@@ -910,24 +928,22 @@ def final_consensus(
     )
 
     if verbose:
-        alignments_to_rafs.display_ascii_alignments(
-            alignments=cut_read_alns, terminal_width=125
+        log.info(
+            f"cut reads aligned to consensus {ID} (start, end, read, forward):\n"
+            + "\n".join(str(interval) for interval in intervals_cutread_alignments)
         )
 
     return result
 
 
 def add_cutread_alignments_to_consensus_inplace(
-    alns: list[pysam.AlignedSegment],
+    intervals: list[tuple[int, int, str, bool]],
     consensus: consensus_class.Consensus,
 ) -> None:
-    intervals_cutread_alignments = [
-        (aln.reference_start, aln.reference_end, aln.query_name, aln.is_forward)
-        for aln in alns
-    ]
-    consensus.intervals_cutread_alignments.extend(intervals_cutread_alignments)
+    """Append cut-read intervals (see ``cutread_intervals_from_paf``) to a consensus."""
+    consensus.intervals_cutread_alignments.extend(intervals)
     log.debug(
-        f"Added {len(alns)} alignments to consensus {consensus.ID}. Now has {len(consensus.intervals_cutread_alignments)} intervals."
+        f"Added {len(intervals)} alignments to consensus {consensus.ID}. Now has {len(consensus.intervals_cutread_alignments)} intervals."
     )
 
 
@@ -1614,7 +1630,6 @@ def consensus_while_clustering(
                     ],
                     threads=threads,
                     verbose=verbose,
-                    tmp_dir_path=Path(tmp_dir),
                 )
                 if consensus is not None:
                     result[consensus_name] = consensus
@@ -1696,7 +1711,6 @@ def consensus_while_clustering(
                         ],
                         threads=threads,
                         verbose=verbose,
-                        tmp_dir_path=Path(tmp_dir),
                     )
                     if consensus is not None:
                         result[consensus_name] = consensus
@@ -1941,7 +1955,6 @@ def consensus_while_clustering_with_kmeans(
                     ],
                     threads=threads,
                     verbose=verbose,
-                    tmp_dir_path=Path(tmp_dir),
                 )
                 if consensus is not None:
                     result[consensus_name] = consensus
@@ -2005,7 +2018,6 @@ def consensus_while_clustering_with_kmeans(
                         ],
                         threads=threads,
                         verbose=verbose,
-                        tmp_dir_path=Path(tmp_dir),
                     )
                     if consensus is not None:
                         result[consensus_name] = consensus
@@ -2091,7 +2103,6 @@ def consensus_from_clusters(
                     original_regions=original_regions,
                     threads=threads,
                     verbose=verbose,
-                    tmp_dir_path=Path(tmp_dir),
                 )
                 if consensus is None:
                     log.warning(
@@ -2251,49 +2262,37 @@ def add_unaligned_reads_to_consensuses_inplace(
         with open(tmp_reads.name, "w") as f:
             SeqIO.write(pool.values(), f, "fasta")
         # align all reads to all consensus sequences
-        tmp_alignments = tempfile.NamedTemporaryFile(
-            prefix="tmp_alignments.", suffix=".bam", dir=tmp_dir, delete=True
-        )
-        util.align_reads_with_minimap(
+        records = util.align_reads_with_minimap_paf(
             reference=tmp_consensus.name,
             reads=tmp_reads.name,
-            bamout=tmp_alignments.name,
             threads=1,
             tech="map-ont",
-            aln_args="  --secondary=no --sam-hit-only -U 25,75 -H",
+            aln_args=UNUSED_READS_TO_CONSENSUS_ALN_ARGS,
         )
 
-        # for each alignment, choose the primary alignment's reference name to re-distribute the read to the consensus object
-        redistribution: dict[str, str] = {}  # {readname:consensusID}
-        with pysam.AlignmentFile(tmp_alignments.name, mode="r") as aln_file:
-            alns = list(aln_file)
-        for aln in alns:
-            if aln.is_unmapped:
-                continue
-            if aln.is_supplementary:
-                continue
-            readname = aln.query_name
-            consensusID = aln.reference_name
-            if readname in redistribution:
-                log.warning(
-                    f"read {readname} already assigned to consensus {redistribution[readname]}. Skipping additional alignment to {consensusID}."
-                )
-                continue
-            redistribution[readname] = consensusID
+    # choose the primary alignment's consensus to re-distribute the read to. PAF
+    # has no supplementary flag; the primary is the first record of each read.
+    redistribution: dict[str, str] = {}  # {readname:consensusID}
+    for record in records:
+        if record.query_name not in redistribution:
+            redistribution[record.query_name] = record.target_name
 
-        for consensusID, consensus in consensus_objects.items():
-            assigned_alignments = [
-                aln
-                for aln in alns
-                if aln.query_name in redistribution
-                and redistribution[aln.query_name] == consensusID
-            ]
-            if len(assigned_alignments) == 0:
-                continue
-            add_cutread_alignments_to_consensus_inplace(
-                alns=assigned_alignments,
-                consensus=consensus,
-            )
+    # coordinate order of the records, as in a sorted BAM
+    target_order = {consensusID: i for i, consensusID in enumerate(consensus_objects)}
+    for consensusID, consensus in consensus_objects.items():
+        # all records of the reads assigned to this consensus (as before, this
+        # includes supplementary records of those reads on other consensuses)
+        assigned = [
+            record
+            for record in records
+            if redistribution.get(record.query_name) == consensusID
+        ]
+        if len(assigned) == 0:
+            continue
+        add_cutread_alignments_to_consensus_inplace(
+            intervals=cutread_intervals_from_paf(assigned, target_order=target_order),
+            consensus=consensus,
+        )
 
 
 # =============================================================================
