@@ -1,0 +1,17 @@
+# --clustering-strategy (branch exp/kmeans-fast-path) for
+# /home/mayv_c/development/svp_improvements, on the trio, SV benchmarks and
+# Mendelian consistency (not stage_reports, which rewrites reports/):
+#   bash run.sh stage_benchmark stage_mendel --configfile <this file>
+samples: [HG002, HG003, HG004]
+variants:
+  cs_accurate:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy accurate"
+    call_flags: ""
+  cs_fast:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy fast"
+    call_flags: ""
+active_variants: [cs_accurate, cs_fast]

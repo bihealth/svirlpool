@@ -1,5 +1,6 @@
-"""The KMeans gate (consensus.kmeans_partition) used by --fast-clustering."""
+"""The KMeans gate (consensus.kmeans_partition) used by --clustering-strategy fast."""
 
+import pytest
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
@@ -43,3 +44,22 @@ def test_a_diffuse_pool_is_rejected():
     indels = {f"r{i}": [i * 40, (i * 97) % 400] for i in range(12)}
     assert _gate(indels) is None
 
+
+
+_REQUIRED = ["-s", "S", "-i", "i.db", "-a", "a.bam", "-cn", "c.bed.gz", "-o", "o.jsonl",
+             "-r", "r.fa"]  # fmt: skip
+
+
+def test_the_clustering_strategy_defaults_to_accurate():
+    parser = consensus.get_consensus_parser()
+    assert parser.parse_args(_REQUIRED).clustering_strategy == "accurate"
+    args = parser.parse_args(_REQUIRED + ["--clustering-strategy", "fast"])
+    assert args.clustering_strategy == "fast"
+
+
+@pytest.mark.parametrize("value", ["off", "kmeans", "kmeans+snv"])
+def test_the_former_fast_clustering_values_are_refused(value):
+    with pytest.raises(SystemExit):
+        consensus.get_consensus_parser().parse_args(
+            _REQUIRED + ["--clustering-strategy", value]
+        )

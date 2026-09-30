@@ -85,7 +85,7 @@ max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
-fast_clustering = config.get("fast_clustering", "off")
+clustering_strategy = config.get("clustering_strategy", "accurate")
 # None = take each container's copy number from the copy-number track.
 cn_override = config.get("cn_override", None)
 
@@ -671,7 +671,7 @@ rule consensus_consensus:
         clustering_mode=consensus_clustering_mode,
         phasing_flank=phasing_flank,
         phasing_fallback=phasing_fallback,
-        fast_clustering=fast_clustering,
+        clustering_strategy=clustering_strategy,
         max_threads=cores,
         escalation=consensus_escalation,
     threads: 1
@@ -709,7 +709,7 @@ rule consensus_consensus:
         --clustering-mode {params.clustering_mode} \
         --phasing-flank {params.phasing_flank} \
         --phasing-fallback {params.phasing_fallback} \
-        --fast-clustering {params.fast_clustering} \
+        --clustering-strategy {params.clustering_strategy} \
         -o {output.container} \
         -t {params.max_threads} \
         --escalation {params.escalation} \

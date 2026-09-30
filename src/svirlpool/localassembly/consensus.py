@@ -3067,14 +3067,13 @@ def print_indel_distribution(read_sum_signals: dict[str, list[int]]) -> None:
         print(f"{readname}: {sum_inss} insertions, {sum_dels} deletions")
 
 
-#: --fast-clustering kmeans: the smallest KMeans cluster's minimum share of the
+#: --clustering-strategy fast: the smallest KMeans cluster's minimum share of the
 #: reads. Lopsided splits were where KMeans lost alleles the phasing finds.
 FAST_KMEANS_MIN_CLUSTER_FRACTION = 0.2
 
 
 def fast_clustering_consensus(
     samplename: str,
-    mode: str,
     dict_summed_indels: dict[str, list[int]],
     alns: dict[int, list[pysam.AlignedSegment]],
     cutreads: dict[str, SeqRecord],
@@ -3088,12 +3087,12 @@ def fast_clustering_consensus(
     timeout: int = 120,
     verbose: bool = False,
 ) -> dict[str, consensus_class.Consensus] | None:
-    """Consensuses without the read phasing, or None when the container needs it.
+    """--clustering-strategy fast: consensuses without the read phasing, or None
+    when the container needs it.
 
-    ``mode`` "kmeans": the KMeans clustering if its gate accepts k >= 2 and
-    every cluster holds >= FAST_KMEANS_MIN_CLUSTER_FRACTION of the reads.
-    "kmeans+snv": otherwise also the two SNV haplotypes of the reads' reference
-    alignments, if they split the reads.
+    The KMeans clustering if its gate accepts k >= 2 and every cluster holds
+    >= FAST_KMEANS_MIN_CLUSTER_FRACTION of the reads; else the two haplotypes of
+    the het SNVs in the reads' reference alignments, if they split the reads.
     """
     partition = kmeans_partition(
         dict_summed_indels=dict_summed_indels,
@@ -3131,7 +3130,7 @@ def fast_clustering_consensus(
                         "min_cluster_fraction": float(min_fraction),
                     }
                 return res
-    if mode != "kmeans+snv" or ref_fasta is None:
+    if ref_fasta is None:
         return None
     crs = sorted(crs_dict.values(), key=lambda cr: (cr.chr, cr.referenceStart))
     chrom = crs[0].chr
@@ -3194,7 +3193,7 @@ def process_consensus_container(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    fast_clustering: str = "off",
+    clustering_strategy: str = "accurate",
     ref_fasta: pysam.FastaFile | None = None,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
@@ -3288,17 +3287,16 @@ def process_consensus_container(
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
 
-    # Experimental fast clustering (--fast-clustering): the phasing's
-    # all-vs-all is the expensive part of the consensus stage. "kmeans" takes
-    # the KMeans clustering when its gate accepts >= 2 clusters that are all
-    # >= FAST_KMEANS_MIN_CLUSTER_FRACTION of the reads; "kmeans+snv" in addition
-    # assembles the two haplotypes of the het SNVs in the reads' reference
-    # alignments (ref_snv_haplotypes) when they split the reads. Everything else
-    # is phased. (experiments/consensus_perf/kmeans_snv_route.py)
-    if clustering_mode == "phased" and fast_clustering != "off":
+    # --clustering-strategy: "accurate" phases every container; "fast" skips the
+    # phasing's all-vs-all, the expensive part of the consensus stage, where a
+    # cheaper clustering suffices: KMeans when its gate accepts >= 2 clusters of
+    # >= FAST_KMEANS_MIN_CLUSTER_FRACTION of the reads each, else the two
+    # haplotypes of the het SNVs in the reads' reference alignments
+    # (ref_snv_haplotypes) when they split the reads. Everything else is phased.
+    # (experiments/consensus_perf/kmeans_snv_route.py)
+    if clustering_mode == "phased" and clustering_strategy == "fast":
         res = fast_clustering_consensus(
             samplename=samplename,
-            mode=fast_clustering,
             dict_summed_indels=dict_summed_indels,
             alns=alns,
             cutreads=cutreads,
@@ -3581,7 +3579,7 @@ def crs_containers_to_consensus(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    fast_clustering: str = "off",
+    clustering_strategy: str = "accurate",
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3707,7 +3705,7 @@ def crs_containers_to_consensus(
                                 clustering_mode=clustering_mode,
                                 phasing_flank=phasing_flank,
                                 phasing_fallback=phasing_fallback,
-                                fast_clustering=fast_clustering,
+                                clustering_strategy=clustering_strategy,
                                 ref_fasta=_ref_fasta,
                             )
                     except tool_timeouts.Escalate:
@@ -3856,7 +3854,7 @@ def run_consensus_script(args, **kwargs):
         clustering_mode=args.clustering_mode,
         phasing_flank=args.phasing_flank,
         phasing_fallback=args.phasing_fallback,
-        fast_clustering=args.fast_clustering,
+        clustering_strategy=args.clustering_strategy,
     )
 
 
@@ -4003,14 +4001,14 @@ def get_consensus_parser(
         "the legacy clustering.",
     )
     parser.add_argument(
-        "--fast-clustering",
-        choices=("off", "kmeans", "kmeans+snv"),
-        default="off",
-        help="Experimental, with --clustering-mode phased: skip the read phasing where a "
-        "cheaper clustering suffices. 'kmeans': KMeans on the reads' summed indels when "
-        "it finds >= 2 clusters of >= 20%% of the reads each. 'kmeans+snv': otherwise "
-        "also the two haplotypes of the het SNVs in the reads' reference alignments "
-        "(needs --reference). Default: off (always phase).",
+        "--clustering-strategy",
+        choices=("accurate", "fast"),
+        default="accurate",
+        help="With --clustering-mode phased: 'accurate' (default) phases the reads of "
+        "every container (with --phasing-fallback). 'fast' skips the read phasing where "
+        "a cheaper clustering suffices: KMeans on the reads' summed indels when it finds "
+        ">= 2 clusters of >= 20%% of the reads each, else the two haplotypes of the het "
+        "SNVs in the reads' reference alignments (needs --reference); the rest is phased.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

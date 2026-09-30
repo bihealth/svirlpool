@@ -274,15 +274,16 @@ def get_parser():
         default="single",
     )
     parser_run_wf.add_argument(
-        "--fast-clustering",
-        help="Experimental, with --consensus-clustering-mode phased: skip the read "
-        "phasing where a cheaper clustering suffices. 'kmeans': KMeans on the reads' "
-        "summed indels when it finds >= 2 clusters of >= 20%% of the reads each. "
-        "'kmeans+snv': otherwise also the two haplotypes of the het SNVs in the reads' "
-        "reference alignments. Default: off (always phase).",
+        "--clustering-strategy",
+        help="With --consensus-clustering-mode phased: 'accurate' (default) phases the "
+        "reads of every container (with --phasing-fallback). 'fast' skips the read "
+        "phasing where a cheaper clustering suffices: KMeans on the reads' summed indels "
+        "when it finds >= 2 clusters of >= 20%% of the reads each, else the two "
+        "haplotypes of the het SNVs in the reads' reference alignments; the rest is "
+        "phased.",
         required=False,
-        choices=("off", "kmeans", "kmeans+snv"),
-        default="off",
+        choices=("accurate", "fast"),
+        default="accurate",
     )
     parser_run_wf.add_argument(
         "--cn-override",
