@@ -1730,35 +1730,23 @@ def consensus_while_clustering(
     return result
 
 
-def consensus_while_clustering_with_kmeans(
-    samplename: str,
+def kmeans_partition(
     dict_summed_indels: dict[str, list[int]],
-    lamassemble_mat: Path | str | None,
     pool: dict[str, SeqRecord],
-    candidate_regions: dict[int, datatypes.CandidateRegion],
     max_k: int,
     variance_threshold: float,
     distance_threshold: float,
-    consensus_method: str,
-    threads: int = 1,
-    tmp_dir_path: Path | None = None,
-    timeout: int = 120,
     verbose: bool = False,
-) -> dict[str, consensus_class.Consensus] | None:
-    """Cluster reads by their summed indel distribution using KMeans and assemble consensus per cluster.
+) -> tuple[list[str], np.ndarray, int] | None:
+    """The acceptance gate of the KMeans clustering, without assembling anything.
 
-    If there is a very clear separation in dict_summed_indels (2 dimensions: sum insertions,
-    sum deletions), the all-vs-all alignment step can be skipped and reads can be directly
-    assembled per cluster.
-
-    The variance within a cluster should be low (below variance_threshold), and the distance
-    between the cluster centroids should be high (above distance_threshold).
-
-    Returns None if no good clustering is found (caller should fall back to
-    consensus_while_clustering).
+    Reads are points (sum of insertions, sum of deletions in the candidate
+    regions). k = 1 is accepted if the pool is homogeneous (mean distance to the
+    centroid <= variance_threshold / 2), k > 1 if every cluster is tight
+    (<= variance_threshold) and the centroids are >= distance_threshold apart;
+    the first accepted k in 1..max_k wins. Returns (readnames, labels, k), or
+    None when no k is accepted.
     """
-    crIDs = [cr.crID for cr in candidate_regions.values()]
-
     # Need at least 2 reads for meaningful clustering
     if len(dict_summed_indels) < 2:
         log.debug("Not enough reads for KMeans clustering. Returning None.")
@@ -1880,6 +1868,52 @@ def consensus_while_clustering_with_kmeans(
                 f"  {rn}: cluster={chosen_labels[i]}, "
                 f"ins={dict_summed_indels[rn][0]}, del={dict_summed_indels[rn][1]}"
             )
+
+    return readnames, chosen_labels, chosen_k
+
+
+def consensus_while_clustering_with_kmeans(
+    samplename: str,
+    dict_summed_indels: dict[str, list[int]],
+    lamassemble_mat: Path | str | None,
+    pool: dict[str, SeqRecord],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    max_k: int,
+    variance_threshold: float,
+    distance_threshold: float,
+    consensus_method: str,
+    threads: int = 1,
+    tmp_dir_path: Path | None = None,
+    timeout: int = 120,
+    verbose: bool = False,
+    partition: tuple[list[str], np.ndarray, int] | None = None,
+) -> dict[str, consensus_class.Consensus] | None:
+    """Cluster reads by their summed indel distribution using KMeans and assemble consensus per cluster.
+
+    If there is a very clear separation in dict_summed_indels (2 dimensions: sum insertions,
+    sum deletions), the all-vs-all alignment step can be skipped and reads can be directly
+    assembled per cluster.
+
+    The variance within a cluster should be low (below variance_threshold), and the distance
+    between the cluster centroids should be high (above distance_threshold).
+
+    Returns None if no good clustering is found (caller should fall back to
+    consensus_while_clustering). ``partition``, a result of ``kmeans_partition``,
+    skips the gate.
+    """
+    crIDs = [cr.crID for cr in candidate_regions.values()]
+    if partition is None:
+        partition = kmeans_partition(
+            dict_summed_indels=dict_summed_indels,
+            pool=pool,
+            max_k=max_k,
+            variance_threshold=variance_threshold,
+            distance_threshold=distance_threshold,
+            verbose=verbose,
+        )
+    if partition is None:
+        return None
+    readnames, chosen_labels, chosen_k = partition
 
     # 2) Assemble consensus for each cluster
     result: dict[str, consensus_class.Consensus] | None = None
@@ -3048,6 +3082,7 @@ def process_consensus_container(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
+    kmeans_fast_path_min_k: int = 0,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3140,7 +3175,42 @@ def process_consensus_container(
     res: dict[str, consensus_class.Consensus] | None = None
     consensus_objects: dict[str, consensus_class.Consensus] = {}
 
-    if clustering_mode == "phased":
+    # Experimental fast path: the KMeans gate is cheap, the phasing's
+    # all-vs-all is not. When the gate accepts k >= kmeans_fast_path_min_k,
+    # its clustering is assembled and the phasing is skipped.
+    if clustering_mode == "phased" and kmeans_fast_path_min_k > 0:
+        partition = kmeans_partition(
+            dict_summed_indels=dict_summed_indels,
+            pool=cutreads,
+            max_k=max_copy_number,
+            variance_threshold=29.0,
+            distance_threshold=29.0,
+            verbose=verbose,
+        )
+        if partition is not None and partition[2] >= kmeans_fast_path_min_k:
+            res = consensus_while_clustering_with_kmeans(
+                samplename=samplename,
+                dict_summed_indels=dict_summed_indels,
+                lamassemble_mat=lamassemble_mat,
+                pool=cutreads,
+                candidate_regions=crs_dict,
+                max_k=max_copy_number,
+                variance_threshold=29.0,
+                distance_threshold=29.0,
+                threads=threads,
+                tmp_dir_path=tmp_dir_path,
+                timeout=timeout,
+                verbose=verbose,
+                consensus_method=consensus_method,
+                partition=partition,
+            )
+            for consensus in (res or {}).values():
+                consensus.clustering_meta_data = {
+                    "method": "kmeans_fast_path",
+                    "kmeans_k": partition[2],
+                }
+
+    if clustering_mode == "phased" and not res:
         res = consensus_while_phasing(
             samplename=samplename,
             alns=alns,
@@ -3408,6 +3478,7 @@ def crs_containers_to_consensus(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
+    kmeans_fast_path_min_k: int = 0,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3533,6 +3604,7 @@ def crs_containers_to_consensus(
                                 clustering_mode=clustering_mode,
                                 phasing_flank=phasing_flank,
                                 phasing_fallback=phasing_fallback,
+                                kmeans_fast_path_min_k=kmeans_fast_path_min_k,
                             )
                     except tool_timeouts.Escalate:
                         pass
@@ -3680,6 +3752,7 @@ def run_consensus_script(args, **kwargs):
         clustering_mode=args.clustering_mode,
         phasing_flank=args.phasing_flank,
         phasing_fallback=args.phasing_fallback,
+        kmeans_fast_path_min_k=args.kmeans_fast_path_min_k,
     )
 
 
@@ -3824,6 +3897,14 @@ def get_consensus_parser(
         help="With --clustering-mode phased, what to do when the phasing finds "
         "fewer than two alleles: 'single' (default) one consensus from all reads, 'legacy' "
         "the legacy clustering.",
+    )
+    parser.add_argument(
+        "--kmeans-fast-path-min-k",
+        type=int,
+        default=0,
+        help="Experimental, with --clustering-mode phased: first cluster the reads by "
+        "KMeans on their summed indels and skip the read phasing when its gate accepts "
+        "k >= this many clusters (default: 0 = off, always phase).",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

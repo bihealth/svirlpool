@@ -274,6 +274,15 @@ def get_parser():
         default="single",
     )
     parser_run_wf.add_argument(
+        "--kmeans-fast-path-min-k",
+        help="Experimental, with --consensus-clustering-mode phased: first cluster the "
+        "reads by KMeans on their summed indels and skip the read phasing when its gate "
+        "accepts k >= this many clusters (default: 0 = off, always phase).",
+        required=False,
+        type=int,
+        default=0,
+    )
+    parser_run_wf.add_argument(
         "--cn-override",
         help="Use this fixed copy number as the maximum number of read clusters (alleles) of "
         "every candidate-region container, instead of the copy-number track estimate "
