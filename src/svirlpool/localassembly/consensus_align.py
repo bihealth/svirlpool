@@ -2191,20 +2191,6 @@ def get_parser():
         help="Maximum gap size for four-relations analysis in SVpattern generation (default: 500000). Controls detection of complex SV patterns like inversions.",
     )
     parser.add_argument(
-        "--distance-scale",
-        type=float,
-        default=None,
-        help="Deprecated and ignored: the per-read size distortions it weighted "
-        "were removed. Accepted so existing command lines keep working.",
-    )
-    parser.add_argument(
-        "--falloff",
-        type=float,
-        default=None,
-        help="Deprecated and ignored: the per-read size distortions it weighted "
-        "were removed. Accepted so existing command lines keep working.",
-    )
-    parser.add_argument(
         "--sqlite-timeout",
         type=int,
         default=30,
@@ -2284,16 +2270,6 @@ def main():
         )
         file_handler.setFormatter(formatter)
         logging.getLogger().addHandler(file_handler)
-
-    for flag, value in (
-        ("--distance-scale", args.distance_scale),
-        ("--falloff", args.falloff),
-    ):
-        if value is not None:
-            log.warning(
-                f"{flag} is deprecated and ignored: the per-read size distortions "
-                "it parametrised were removed."
-            )
 
     svPatterns_from_consensus_sequences(
         samplename=args.samplename,

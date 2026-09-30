@@ -68,7 +68,6 @@ def test_the_sibling_test_uses_the_same_rule(monkeypatch):
 def test_cli_default_fraction_is_one_tenth():
     args = get_parser().parse_args(_REQUIRED)
     assert args.apriori_size_difference_fraction_tolerance == 0.1
-    assert args.max_cohens_d is None
 
 
 @pytest.mark.parametrize(
@@ -77,6 +76,8 @@ def test_cli_default_fraction_is_one_tenth():
         ["--size-tolerance-reference", "hmean"],
         ["--size-tolerance-floor", "5"],
         ["--size-gates", "fraction"],
+        ["--max_cohens_d", "2.0"],
+        ["--scale-by-complexity-factor", "1.0"],
     ],
 )
 def test_removed_options_are_refused(removed):

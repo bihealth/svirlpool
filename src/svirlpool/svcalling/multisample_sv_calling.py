@@ -2792,17 +2792,6 @@ def run(args) -> None:
     # set only the console handler to the requested level.
     if logfile:
         handlers[0].setLevel(log_level)
-    if getattr(args, "scale_by_complexity_factor", None) is not None:
-        log.warning(
-            "--scale-by-complexity-factor is deprecated and ignored: the "
-            "sequence-complexity size allowance of the vertical merge was removed."
-        )
-    if getattr(args, "max_cohens_d", None) is not None:
-        log.warning(
-            "--max_cohens_d is deprecated and ignored: the Cohen's d noise gate of "
-            "the vertical merge was removed; sizes are compared by "
-            "--apriori-size-difference-fraction-tolerance only."
-        )
 
     multisample_sv_calling(
         input=args.input,
@@ -2861,13 +2850,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help=f"List of structural variant types to include. Default: all supported types. Allowed are {SUPPORTED_SV_TYPE_STRINGS_LIST}.",
         nargs="+",
         default=SUPPORTED_SV_TYPE_STRINGS_LIST,
-    )
-    parser.add_argument(
-        "--max_cohens_d",
-        help="Deprecated and ignored: the Cohen's d noise gate of the vertical merge "
-        "was removed. Accepted so existing command lines keep working.",
-        type=float,
-        default=None,
     )
     parser.add_argument(
         "--near",
@@ -2952,16 +2934,6 @@ help="Fraction of the larger of two SV sizes that the sizes may differ by "
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
         help="Set the logging level (default: INFO).",
-    )
-    parser.add_argument(
-        "--scale-by-complexity-factor",
-        help=(
-            "Deprecated and ignored: the sequence-complexity size allowance of the "
-            "vertical merge was removed. Accepted so existing command lines keep "
-            "working."
-        ),
-        type=float,
-        default=None,
     )
     parser.add_argument(
         "--dont-collapse-repeats",

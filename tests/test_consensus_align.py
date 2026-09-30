@@ -343,10 +343,6 @@ def test_svPrimitives_to_svPatterns_inv15():
 # production defaults). Do NOT pair fixtures by consensus ID alone: IDs are
 # "<crID>.<subID>" and are only unique within a run, so two files from
 # different datasets can share an ID while describing loci megabases apart.
-#
-# The consensus record predates the removal of the per-read size distortions
-# and still carries ``cut_read_alignment_signals``; loading it is also the
-# backward-compatibility check for old consensus JSONL.
 # ---------------------------------------------------------------------------
 
 MATCHED_PAIR_FIXTURE = (
@@ -434,29 +430,6 @@ def test_matched_pair_fixture_is_a_coherent_production_object():
         pattern.read_end - padding_left,
     )
     assert 530 == len(consensus.consensus_sequence)
-
-
-def test_an_old_consensus_record_with_read_signals_still_loads():
-    """Consensus JSON written before the size distortions were removed loads.
-
-    The dropped ``cut_read_alignment_signals`` key is ignored; everything else,
-    in particular the cut-read intervals, is kept.
-    """
-    import json
-    from gzip import open as gzip_open
-
-    import cattrs
-
-    with gzip_open(MATCHED_PAIR_FIXTURE, "rt") as f:
-        data = json.load(f)["consensus"]
-    assert data["cut_read_alignment_signals"], "fixture must carry the old field"
-
-    consensus = cattrs.structure(data, consensus_class.Consensus)
-    assert not hasattr(consensus, "cut_read_alignment_signals")
-    assert len(data["intervals_cutread_alignments"]) == len(
-        consensus.intervals_cutread_alignments
-    )
-    assert "cut_read_alignment_signals" not in consensus.unstructure()
 
 
 def test_add_consensus_sequences_sets_the_inserted_sequence():

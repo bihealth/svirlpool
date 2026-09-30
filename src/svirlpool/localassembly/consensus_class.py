@@ -72,13 +72,7 @@ class ConsensusPadding:
 
 @attrs.define
 class Consensus:
-    """A local consensus sequence and the cut reads aligned to it.
-
-    Older records also carry ``cut_read_alignment_signals`` (the
-    per-read CIGAR SV signals that fed the removed size-distortion noise
-    model). cattrs ignores unknown keys when structuring, so such records still
-    load; the field is simply dropped.
-    """
+    """A local consensus sequence and the cut reads aligned to it."""
 
     ID: str
     crIDs: list[int]

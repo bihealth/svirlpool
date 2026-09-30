@@ -25,13 +25,7 @@ log = logging.getLogger(__name__)
 # region SVpattern
 @attrs.define
 class SVpattern(ABC):
-    """Base class for all SV-specific patterns.
-
-    Older svPatterns databases also store ``size_distortions`` (per-read size
-    distortions of the removed noise model). cattrs ignores unknown keys when
-    structuring and attrs' slotted ``__setstate__`` ignores unknown pickled
-    attributes, so such records still load; the field is simply dropped.
-    """
+    """Base class for all SV-specific patterns."""
 
     SVprimitives: list[SVprimitive]
 
