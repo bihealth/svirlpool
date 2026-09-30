@@ -1,0 +1,21 @@
+# --fast-clustering (branch exp/kmeans-fast-path) for
+# /home/mayv_c/development/svp_improvements, passed with
+#   bash run.sh stage_benchmark --configfile <this file>
+# All three from this checkout: phased (the default) vs the two fast routes.
+variants:
+  fc_off:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: ""
+  fc_kmeans:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: "--fast-clustering kmeans"
+    call_flags: ""
+  fc_kmeans_snv:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: "--fast-clustering kmeans+snv"
+    call_flags: ""
+active_variants: [fc_off, fc_kmeans, fc_kmeans_snv]
