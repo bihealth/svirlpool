@@ -228,9 +228,7 @@ def _gap_scores_from_probs(scale, gap_probs):
     gap_open = 1 - (1 - del_open) * (1 - ins_open)
     del_frac = del_open / (1 - del_extend)
     ins_frac = ins_open / (1 - ins_extend)
-    gap_extend = (del_frac * del_extend + ins_frac * ins_extend) / (
-        del_frac + ins_frac
-    )
+    gap_extend = (del_frac * del_extend + ins_frac * ins_extend) / (del_frac + ins_frac)
     gap_close = 1 - gap_extend
     first_gap = gap_open * gap_close
     gap_extend += first_gap
@@ -408,8 +406,8 @@ def consensus_sequence(
 # --------------------------------------------------------------------------
 # Pairwise alignments and their layout
 
-_X_CRAZY = "ACGT" "RYKMBDHV" "U"
-_Y_CRAZY = "PFQE" "YRMKVHDB" "E"
+_X_CRAZY = "ACGTRYKMBDHVU"
+_Y_CRAZY = "PFQEYRMKVHDBE"
 _CRAZY_TABLE = str.maketrans(_X_CRAZY, _Y_CRAZY)
 _UNCRAZY_TABLE = str.maketrans("EQFP", "acgt")
 
@@ -438,9 +436,7 @@ def _maf_alignments(lines):
             seq_end = seq_beg + int(fields[3])
             strand = fields[4]
             seq_len = int(fields[5])
-            seq_records.append(
-                (seq_num, seq_len, strand, seq_beg, seq_end, fields[6])
-            )
+            seq_records.append((seq_num, seq_len, strand, seq_beg, seq_end, fields[6]))
         elif line[0] == "p":
             ref, qry = seq_records
             if ref[0] != qry[0]:
@@ -632,7 +628,9 @@ def _pairwise_alignments(params, scores, sequences, tmpdir, threads, deadline):
 # One-strand mode (not in lamassemble): orient the reads first, then align
 # them on the forward strand only.
 
-_COMPLEMENT = str.maketrans("ACGTUMRWSYKVHDBNacgtumrwsykvhdbn", "TGCAAKYWSRMBDHVNtgcaakywsrmbdhvn")
+_COMPLEMENT = str.maketrans(
+    "ACGTUMRWSYKVHDBNacgtumrwsykvhdbn", "TGCAAKYWSRMBDHVNtgcaakywsrmbdhvn"
+)
 
 
 def _reverse_complement(seq: str) -> str:
@@ -798,7 +796,9 @@ def _mafft_alignment(tmpdir, fasta_text, tree_text, anchors_text, scores,
         out = _run_disttbfast(binary, tmpdir, fasta_text, tree_text,
                               anchors_text, mtx_text, gap_options, deadline)  # fmt: skip
     else:
-        paths = _write_mafft_inputs(tmpdir, fasta_text, tree_text, anchors_text, mtx_text)
+        paths = _write_mafft_inputs(
+            tmpdir, fasta_text, tree_text, anchors_text, mtx_text
+        )
         out = _run_mafft_driver(paths, gap_options, deadline)
     return _aligned_rows(out)
 
@@ -982,7 +982,9 @@ def direct_mafft_available() -> bool:
         direct = multiple_alignment(seqs, "promethion-2019", params, direct=True)
         driver = multiple_alignment(seqs, "promethion-2019", params, direct=False)
     except (OSError, subprocess.CalledProcessError, RuntimeError) as e:
-        log.warning(f"lamassemble: direct MAFFT self-check failed ({e}); using the mafft driver")
+        log.warning(
+            f"lamassemble: direct MAFFT self-check failed ({e}); using the mafft driver"
+        )
         return False
     if direct != driver:
         log.warning(

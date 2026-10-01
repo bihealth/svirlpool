@@ -1,0 +1,33 @@
+# In-process lamassemble (branch perf/lamassemble-direct) for
+# /home/mayv_c/development/svp_improvements, on the trio, SV benchmarks and
+# Mendelian consistency (not stage_reports, which rewrites reports/):
+#   bash run.sh stage_benchmark stage_mendel --configfile <this file>
+#
+# lam_base       the lamassemble command (exp/kmeans-fast-path 5b94f0d)
+# lam_direct     the in-process port: must give the same calls
+# lam_onestrand  --consensus-method lamassemble-onestrand
+# All three run --clustering-strategy accurate (the default), one svirlpool
+# run at a time with all 24 cores, so their times are comparable.
+samples: [HG002, HG003, HG004]
+resources:
+  svirlpool_run:  {threads: 24, mem_mb: 32000}
+  svirlpool_call: {threads: 8,  mem_mb: 12000}
+  svirlpool_family: {threads: 8, mem_mb: 22000}
+  truvari:        {threads: 4,  mem_mb: 6000}
+variants:
+  lam_base:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy accurate"
+    call_flags: ""
+  lam_direct:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/lamassemble-direct/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy accurate"
+    call_flags: ""
+  lam_onestrand:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/lamassemble-direct/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy accurate --consensus-method lamassemble-onestrand"
+    call_flags: ""
+active_variants: [lam_base, lam_direct, lam_onestrand]

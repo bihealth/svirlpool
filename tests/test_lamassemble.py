@@ -13,7 +13,9 @@ from svirlpool.localassembly import lamassemble as lm
 
 ROOT = Path(__file__).parent.parent
 MAT = ROOT / "data" / "lamassemble-mats" / "promethion.mat"
-TANDEM_REPEAT = Path(__file__).parent / "data" / "consensus" / "lamassemble_tandem_repeat.fasta"
+TANDEM_REPEAT = (
+    Path(__file__).parent / "data" / "consensus" / "lamassemble_tandem_repeat.fasta"
+)
 PARAMS = consensus.lamassemble_params()
 
 needs_tools = pytest.mark.skipif(
@@ -49,7 +51,9 @@ def test_direct_and_driver_agree_for_few_sequences(n):
 
 
 @needs_tools
-@pytest.mark.skipif(shutil.which("lamassemble") is None, reason="lamassemble command not installed")
+@pytest.mark.skipif(
+    shutil.which("lamassemble") is None, reason="lamassemble command not installed"
+)
 @pytest.mark.parametrize("which", ["fixture", "tandem_repeat"])
 def test_same_consensus_as_lamassemble_command(tmp_path, which):
     if which == "fixture":
