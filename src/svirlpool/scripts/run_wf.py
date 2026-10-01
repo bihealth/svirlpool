@@ -74,11 +74,11 @@ def validate_input(args) -> None:
         input=Path(args.mononucleotides), reference_fai=reference_fai
     )
     if (
-        getattr(args, "consensus_method", "lamassemble") == "lamassemble"
+        getattr(args, "consensus_method", "lamassemble").startswith("lamassemble")
         and args.lamassemble_mat is None
     ):
         raise ValueError(
-            "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+            "--lamassemble-mat is required when --consensus-method is a lamassemble method."
         )
 
 

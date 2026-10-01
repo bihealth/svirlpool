@@ -91,10 +91,12 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--consensus-method",
-        help="Method for consensus assembly: 'lamassemble' (default) or 'racon'.",
+        help="Method for consensus assembly: 'lamassemble' (default), "
+        "'lamassemble-onestrand' (reads oriented first, LAST aligns one strand: "
+        "faster, nearly the same consensus) or 'racon'.",
         required=False,
         type=str,
-        choices=["lamassemble", "racon"],
+        choices=["lamassemble", "lamassemble-onestrand", "racon"],
         default="lamassemble",
     )
     parser_run_wf.add_argument(

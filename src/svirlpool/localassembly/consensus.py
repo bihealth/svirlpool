@@ -43,6 +43,7 @@ from ..util.signal_loss_logger import get_signal_loss_logger
 from . import (
     consensus_class,
     consensus_lib,
+    lamassemble,
     read_phasing,
     ref_snv_haplotypes,
     tool_timeouts,
@@ -788,6 +789,24 @@ LAMASSEMBLE_MAX_INITIAL_MATCHES = 50
 CR_CUT_FLANK = 200
 
 
+#: The consensus methods that assemble with lamassemble (svirlpool's in-process
+#: port of it, ``lamassemble.py``). "lamassemble" gives the same consensus as the
+#: lamassemble command; "lamassemble-onestrand" orients the reads first and lets
+#: LAST align them on one strand only (about half of LAST's work).
+LAMASSEMBLE_METHODS = ("lamassemble", "lamassemble-onestrand")
+CONSENSUS_METHODS = (*LAMASSEMBLE_METHODS, "racon")
+
+
+def lamassemble_params(both_strands: bool = True) -> lamassemble.LamassembleParams:
+    """lamassemble options of svirlpool: -s 2 -g 67 -m 50."""
+    return lamassemble.LamassembleParams(
+        seq_min="2",
+        gap_max=67,
+        m=LAMASSEMBLE_MAX_INITIAL_MATCHES,
+        both_strands=both_strands,
+    )
+
+
 def make_consensus_with_lamassemble(
     lamassemble_mat: Path,
     reads_file: Path,
@@ -796,47 +815,44 @@ def make_consensus_with_lamassemble(
     threads: int,
     timeout: int,
     verbose: bool = False,
+    both_strands: bool = True,
 ) -> str | None:
-    """Assemble reads with lamassemble and return the consensus sequence as a string."""
-    # try to run lamassemble. if it fails or the output is empty, return None.
-    # lamassemble writes its output to the command line, so the output should be caught from there.
-    # cmd_lamassemble = f"lamassemble --name {consensus_name} --all -P {threads} -f fa -s 0 {str(lamassemble_mat)} {str(reads_file)}"
-    cmd_lamassemble = f"lamassemble --name {consensus_name} -P {threads} -f fa -s 2 -g 67 -m {LAMASSEMBLE_MAX_INITIAL_MATCHES} {str(lamassemble_mat)} {str(reads_file)}"
+    """Assemble reads with lamassemble and return the consensus sequence as a string.
+
+    Same as ``lamassemble --name NAME -P THREADS -f fa -s 2 -g 67 -m 50 MAT
+    READS > OUTPUT``, run in-process (see ``lamassemble.py``). Returns None
+    if the assembly fails, times out or is empty.
+    """
     log.info(
-        f"Running lamassemble with command:\n{cmd_lamassemble}\nwith timeout of {timeout} seconds"
+        f"Running lamassemble on {reads_file} for {consensus_name} "
+        f"(both strands: {both_strands}) with timeout of {timeout} seconds"
     )
-    result: str = ""
     try:
-        with open(output, "w") as f:
-            subprocess.check_call(
-                shlex.split(cmd_lamassemble), stdout=f, timeout=timeout
-            )
-        # read the output file and return the sequence as a string
-        try:
-            consensus_sequence = next(SeqIO.parse(output, "fasta"))
-            if len(consensus_sequence.seq) == 0:
-                log.warning(
-                    f"lamassemble produced an empty consensus for {consensus_name}"
-                )
-                return None
-            result = str(consensus_sequence.seq)
-        except StopIteration:
-            log.warning(
-                f"lamassemble failed to produce a consensus for {consensus_name}"
-            )
-            return None
+        sequences = lamassemble.read_sequences(reads_file)
+        consensus_sequence = lamassemble.assemble(
+            sequences,
+            train_file=lamassemble_mat,
+            params=lamassemble_params(both_strands),
+            threads=threads,
+            timeout=timeout,
+        )
     # Always logged: a wall-clock timeout on a loaded node otherwise drops the
     # cluster, and with it often the whole container, without a trace.
-    except subprocess.TimeoutExpired:
+    except lamassemble.LamassembleTimeout:
         tool_timeouts.record("lamassemble")
         log.warning(
             f"lamassemble timed out for {consensus_name} after {timeout} seconds"
         )
         return None
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, RuntimeError, OSError) as e:
         log.warning(f"lamassemble failed for {consensus_name} with error: {e}")
         return None
-    return result
+    with open(output, "w") as f:
+        f.write(f">{consensus_name}\n{consensus_sequence}\n")
+    if len(consensus_sequence) == 0:
+        log.warning(f"lamassemble produced an empty consensus for {consensus_name}")
+        return None
+    return consensus_sequence
 
 
 # =============================================================================
@@ -1226,9 +1242,9 @@ def assemble_consensus(
     tmp_dir_path: Path | None = None,
     verbose: bool = False,
 ) -> str | None:
-    if method not in ("lamassemble", "racon"):
+    if method not in CONSENSUS_METHODS:
         raise ValueError(
-            f"Unknown consensus method '{method}'. Choose 'lamassemble' or 'racon'."
+            f"Unknown consensus method '{method}'. Choose one of {CONSENSUS_METHODS}."
         )
 
     with tempfile.TemporaryDirectory():
@@ -1253,6 +1269,7 @@ def assemble_consensus(
                 timeout=timeout,
                 threads=threads,
                 verbose=verbose,
+                both_strands=method == "lamassemble",
             )
             if consensus_sequence is not None:
                 return consensus_sequence
@@ -3819,11 +3836,11 @@ def crs_containers_to_consensus(
 
 
 def run_consensus_script(args, **kwargs):
-    if args.consensus_method == "lamassemble" and args.lamassemble_mat is None:
+    if args.consensus_method in LAMASSEMBLE_METHODS and args.lamassemble_mat is None:
         raise ValueError(
-            "--lamassemble-mat is required when --consensus-method is 'lamassemble'."
+            f"--lamassemble-mat is required when --consensus-method is '{args.consensus_method}'."
         )
-    if args.consensus_method == "lamassemble":
+    if args.consensus_method in LAMASSEMBLE_METHODS:
         require_avx2_for_lamassemble()
     crIDs = args.crIDs
     if getattr(args, "batch_tsv", None) is not None:
@@ -3922,9 +3939,11 @@ def get_consensus_parser(
     parser.add_argument(
         "--consensus-method",
         type=str,
-        choices=["lamassemble", "racon"],
+        choices=list(CONSENSUS_METHODS),
         default="lamassemble",
-        help="Method used for consensus assembly: 'lamassemble' (default) or 'racon'.",
+        help="Method used for consensus assembly: 'lamassemble' (default), "
+        "'lamassemble-onestrand' (reads oriented first, LAST aligns one strand) "
+        "or 'racon'.",
     )
     parser.add_argument(
         "-t",
