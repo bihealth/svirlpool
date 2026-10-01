@@ -795,6 +795,10 @@ CR_CUT_FLANK = 200
 #: LAST align them on one strand only (about half of LAST's work).
 LAMASSEMBLE_METHODS = ("lamassemble", "lamassemble-onestrand")
 CONSENSUS_METHODS = (*LAMASSEMBLE_METHODS, "racon")
+#: The default: on the HG002/3/4 trio at 20x, 11% less CPU per svirlpool run
+#: than "lamassemble" for 0.001 lower non-TRF F1 and 0.003 lower Mendelian
+#: consistency.
+DEFAULT_CONSENSUS_METHOD = "lamassemble-onestrand"
 
 
 def lamassemble_params(both_strands: bool = True) -> lamassemble.LamassembleParams:
@@ -3952,16 +3956,16 @@ def get_consensus_parser(
         type=Path,
         required=False,
         default=None,
-        help="Path to the lamassemble mat file. Required when --consensus-method is 'lamassemble'.",
+        help="Path to the lamassemble mat file. Required when --consensus-method is a lamassemble method (the default).",
     )
     parser.add_argument(
         "--consensus-method",
         type=str,
         choices=list(CONSENSUS_METHODS),
-        default="lamassemble",
-        help="Method used for consensus assembly: 'lamassemble' (default), "
-        "'lamassemble-onestrand' (reads oriented first, LAST aligns one strand) "
-        "or 'racon'.",
+        default=DEFAULT_CONSENSUS_METHOD,
+        help="Method used for consensus assembly: 'lamassemble-onestrand' "
+        "(default; reads oriented first, LAST aligns one strand), 'lamassemble' "
+        "(LAST aligns both strands, as the lamassemble command) or 'racon'.",
     )
     parser.add_argument(
         "-t",

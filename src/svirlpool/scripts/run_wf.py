@@ -74,7 +74,9 @@ def validate_input(args) -> None:
         input=Path(args.mononucleotides), reference_fai=reference_fai
     )
     if (
-        getattr(args, "consensus_method", "lamassemble").startswith("lamassemble")
+        getattr(args, "consensus_method", "lamassemble-onestrand").startswith(
+            "lamassemble"
+        )
         and args.lamassemble_mat is None
     ):
         raise ValueError(

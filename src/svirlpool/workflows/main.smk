@@ -78,7 +78,7 @@ cutoff_median_readcount_per_region=config.get("cutoff_median_readcount_per_regio
 
 # consensus
 lamassemble_mat = config.get("lamassemble_mat", None)
-consensus_method = config.get("consensus_method", "lamassemble")
+consensus_method = config.get("consensus_method", "lamassemble-onestrand")
 max_padding_size = config.get("max_padding_size", 100000)
 max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 # allele separation by read phasing (see localassembly/read_phasing.py)

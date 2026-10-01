@@ -148,3 +148,24 @@ def test_disttbfast_args_follow_the_mafft_driver():
     op = gap[gap.index("--op") + 1]
     assert args[args.index("-f") + 1] == "-" + op
     assert args[args.index("-V") + 1] == "-" + op
+
+
+def _default(parser, dest):
+    for action in parser._actions:
+        if action.dest == dest:
+            return action.default
+        for sub in getattr(action, "choices", None) or {}:
+            if isinstance(action.choices, dict):
+                found = _default(action.choices[sub], dest)
+                if found is not None:
+                    return found
+    return None
+
+
+def test_one_strand_is_the_default_consensus_method():
+    from svirlpool.__main__ import get_parser
+
+    assert consensus.DEFAULT_CONSENSUS_METHOD == "lamassemble-onestrand"
+    assert _default(get_parser(), "consensus_method") == "lamassemble-onestrand"
+    parser = consensus.get_consensus_parser()
+    assert _default(parser, "consensus_method") == "lamassemble-onestrand"

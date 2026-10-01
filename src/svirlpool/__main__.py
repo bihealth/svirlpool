@@ -84,20 +84,21 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--lamassemble-mat",
-        help="lamassamble matrix file used for the final consensus assembly. Required when --consensus-method is 'lamassemble'.",
+        help="lamassamble matrix file used for the final consensus assembly. Required when --consensus-method is a lamassemble method (the default).",
         required=False,
         default=None,
         type=os.path.abspath,
     )
     parser_run_wf.add_argument(
         "--consensus-method",
-        help="Method for consensus assembly: 'lamassemble' (default), "
-        "'lamassemble-onestrand' (reads oriented first, LAST aligns one strand: "
-        "faster, nearly the same consensus) or 'racon'.",
+        help="Method for consensus assembly: 'lamassemble-onestrand' (default; "
+        "reads oriented first, LAST aligns one strand), 'lamassemble' (LAST "
+        "aligns both strands, as the lamassemble command: ~11%% more CPU, "
+        "slightly more accurate) or 'racon'.",
         required=False,
         type=str,
         choices=["lamassemble", "lamassemble-onestrand", "racon"],
-        default="lamassemble",
+        default="lamassemble-onestrand",
     )
     parser_run_wf.add_argument(
         "--threads", help="number of threads to use", required=True, type=int
