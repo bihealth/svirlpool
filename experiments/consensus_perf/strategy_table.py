@@ -3,7 +3,7 @@ refined F1 / precision / recall of HG002, Mendelian consistency of the family
 call, svirlpool run and consensus-stage times per sample, and the clustering
 route of every container.
 
-usage: strategy_table.py [variant ...]   (default: cs_accurate cs_fast)
+usage: strategy_table.py [variant ...]   (default: cs_accurate cs_balanced cs_fast)
 """
 
 import glob
@@ -16,7 +16,7 @@ import pandas as pd
 R = "/home/mayv_c/development/svp_improvements/results"
 B = "/home/mayv_c/development/svp_improvements/benchmarks/svirlpool"
 SAMPLES = ("HG002", "HG003", "HG004")
-variants = sys.argv[1:] or ["cs_accurate", "cs_fast"]
+variants = sys.argv[1:] or ["cs_accurate", "cs_balanced", "cs_fast"]
 
 
 def bench_s(path):
