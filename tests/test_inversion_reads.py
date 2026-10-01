@@ -229,28 +229,47 @@ def test_unphased_cluster_follows_its_majority_haplotype(inversion, method):
     assert_contains_inversion(tmp, ref, alt, assemble(tmp, cut, method))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="orient_reads_to_reference takes the strand of a read's first alignment; "
-    "a read whose flanks are too short to align has only its inverted fragment "
-    "and is put on the other strand than the reads oriented by a flank",
-)
-def test_orient_reads_to_reference_puts_inversion_reads_on_one_strand(tmp_path):
+def oriented_strands(tmp: Path, hap: str, reads: dict) -> dict[str, str]:
+    """Strand of each read's longest hit on its haplotype."""
+    return {n: longest(hits(tmp, hap, str(r.seq)))["strand"] for n, r in reads.items()}
+
+
+@pytest.mark.parametrize("seed", [3, 5])
+def test_orient_reads_to_reference_puts_inversion_reads_on_one_strand(tmp_path, seed):
     ref, alt = haplotypes()
-    rng = random.Random(3)
+    rng = random.Random(seed)
     reads = simulate(rng, alt, "alt", 8, BP1, BP2)
-    # two reads whose flanks (300-400 bp) are too short to align on their own
+    # two reads whose flanks (300-400 bp) are too short to align on their own:
+    # their only alignment is the inverted fragment
     reads += [
         (f"short{i}", s)
         for i, (_, s) in enumerate(simulate(rng, alt, "x", 2, BP1, BP2, (300, 400)))
     ]
     bam = align(tmp_path, ref, reads)
     alns, cut = retrieve(bam, crs_for("one_cr"))
-    strands = {}
-    for name, rec in consensus.orient_reads_to_reference(cut, alns).items():
-        strands[name] = longest(hits(tmp_path, alt, str(rec.seq)))["strand"]
-    assert len(set(strands.values())) == 1, strands
+    assert all(
+        len({a.is_reverse for c in alns for a in alns[c] if a.query_name == n}) == 1
+        for n in ("short0", "short1")
+    )
+    oriented = consensus.orient_reads_to_reference(cut, alns)
+    # one strand, and that of the flanks on the reference
+    assert set(oriented_strands(tmp_path, alt, oriented).values()) == {"+"}
+
+
+def test_orient_reads_to_reference_by_alignment_without_inversion(tmp_path):
+    # no read aligns on both strands: the strand of the alignment, unchanged
+    ref, _alt = haplotypes()
+    reads = simulate(random.Random(6), ref, "ref", 6, BP1, BP2)
+    bam = align(tmp_path, ref, reads)
+    alns, cut = retrieve(bam, crs_for("one_cr"))
+    oriented = consensus.orient_reads_to_reference(cut, alns)
+    assert set(oriented_strands(tmp_path, ref, oriented).values()) == {"+"}
+    for n, r in oriented.items():
+        is_reverse = next(
+            a.is_reverse for c in alns for a in alns[c] if a.query_name == n
+        )
+        expected = cut[n].seq.reverse_complement() if is_reverse else cut[n].seq
+        assert str(r.seq) == str(expected), n
 
 
 @pytest.mark.xfail(

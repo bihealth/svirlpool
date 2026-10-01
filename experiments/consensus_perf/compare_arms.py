@@ -55,11 +55,13 @@ for smp in SAMPLES:
         differ += 1
         ca, cb = containers(f), containers(g)
         diff_containers += [k for k in ca.keys() | cb.keys() if ca.get(k) != cb.get(k)]
+    print(f"{smp}: consensus batches identical {same}/{same + differ}; "
+          f"differing containers {len(diff_containers)} {sorted(diff_containers)[:10]}")
+    if not os.path.exists(f"{R}/{a}/20x/{smp}/variants.vcf.gz"):
+        continue  # parents: only in the family VCF
     va = vcf_records(f"{R}/{a}/20x/{smp}/variants.vcf.gz")
     vb = vcf_records(f"{R}/{b}/20x/{smp}/variants.vcf.gz")
     sa, sb = set(va), set(vb)
-    print(f"{smp}: consensus batches identical {same}/{same + differ}; "
-          f"differing containers {len(diff_containers)} {sorted(diff_containers)[:10]}")
     print(f"       VCF records {len(va)} vs {len(vb)}: identical={va == vb}, "
           f"only {a} {len(sa - sb)}, only {b} {len(sb - sa)}")
 fa = vcf_records(f"{R}/{a}/20x/family.vcf.gz")

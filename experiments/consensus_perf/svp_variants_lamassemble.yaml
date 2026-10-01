@@ -6,6 +6,9 @@
 # lam_base       the lamassemble command (exp/kmeans-fast-path 5b94f0d)
 # lam_direct     the in-process port: must give the same calls
 # lam_onestrand  --consensus-method lamassemble-onestrand
+# lam_orient     lam_direct + reads oriented by k-mers for phasing where a read
+#                aligns on both strands (inversions); same worktree as
+#                lam_direct, so lam_direct was run before this change
 # All three run --clustering-strategy accurate (the default), one svirlpool
 # run at a time with all 24 cores, so their times are comparable.
 samples: [HG002, HG003, HG004]
@@ -30,4 +33,9 @@ variants:
     pixi_env: dev
     run_flags: "--clustering-strategy accurate --consensus-method lamassemble-onestrand"
     call_flags: ""
-active_variants: [lam_base, lam_direct, lam_onestrand]
+  lam_orient:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/lamassemble-direct/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy accurate"
+    call_flags: ""
+active_variants: [lam_orient]

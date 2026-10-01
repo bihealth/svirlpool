@@ -2186,18 +2186,36 @@ def orient_reads_to_reference(
     regions (the one ``trim_reads`` cuts it by). With all reads on one strand
     every all-vs-all pair aligns forward, so alignment gaps in ambiguous
     sequence (homopolymers) are placed consistently across the reads.
+
+    When a read aligns on both strands (an inversion), the first alignment can
+    be the inverted fragment, and a read whose flanks are too short to align
+    has only that one. Then the reads are oriented by shared k-mers instead,
+    and the strand most reads' first alignments agree with is kept.
     """
     reverse: dict[str, bool] = {}
+    strands: dict[str, set[bool]] = {}
     for crID in alns:
         for aln in alns[crID]:
             reverse.setdefault(aln.query_name, aln.is_reverse)
+            strands.setdefault(aln.query_name, set()).add(aln.is_reverse)
+    names = list(reads)
+    flip = [reverse.get(rn, False) for rn in names]
+    if any(len(strands.get(rn, ())) > 1 for rn in names):
+        seqs = [
+            str(reads[rn].seq.reverse_complement() if f else reads[rn].seq)
+            for rn, f in zip(names, flip, strict=True)
+        ]
+        by_kmers = lamassemble.orient_by_kmers(seqs)
+        if 2 * sum(by_kmers) > len(by_kmers):
+            by_kmers = [not k for k in by_kmers]
+        flip = [f != k for f, k in zip(flip, by_kmers, strict=True)]
     return {
         rn: (
-            rec.reverse_complement(id=True, name=True, description=True)
-            if reverse.get(rn, False)
-            else rec
+            reads[rn].reverse_complement(id=True, name=True, description=True)
+            if f
+            else reads[rn]
         )
-        for rn, rec in reads.items()
+        for rn, f in zip(names, flip, strict=True)
     }
 
 
