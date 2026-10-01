@@ -276,13 +276,13 @@ def get_parser():
     parser_run_wf.add_argument(
         "--clustering-strategy",
         help="With --consensus-clustering-mode phased: 'accurate' (default) phases the "
-        "reads of every container (with --phasing-fallback). 'fast' skips the read "
-        "phasing where a cheaper clustering suffices: KMeans on the reads' summed indels "
-        "when it finds >= 2 clusters of >= 20%% of the reads each, else the two "
-        "haplotypes of the het SNVs in the reads' reference alignments; the rest is "
-        "phased.",
+        "reads of every container (with --phasing-fallback). 'balanced' skips the read "
+        "phasing where KMeans on the reads' summed indels finds >= 2 clusters of >= 20%% "
+        "of the reads each. 'fast' in addition uses the two haplotypes of the het SNVs "
+        "in the reads' reference alignments where they split the reads (costs "
+        "accuracy). The rest is phased.",
         required=False,
-        choices=("accurate", "fast"),
+        choices=("accurate", "balanced", "fast"),
         default="accurate",
     )
     parser_run_wf.add_argument(

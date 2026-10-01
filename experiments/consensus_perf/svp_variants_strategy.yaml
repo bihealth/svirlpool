@@ -9,9 +9,14 @@ variants:
     pixi_env: dev
     run_flags: "--clustering-strategy accurate"
     call_flags: ""
+  cs_balanced:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
+    pixi_env: dev
+    run_flags: "--clustering-strategy balanced"
+    call_flags: ""
   cs_fast:
     manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/size-floor/pyproject.toml
     pixi_env: dev
     run_flags: "--clustering-strategy fast"
     call_flags: ""
-active_variants: [cs_accurate, cs_fast]
+active_variants: [cs_accurate, cs_balanced, cs_fast]

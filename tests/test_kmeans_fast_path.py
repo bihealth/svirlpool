@@ -1,4 +1,4 @@
-"""The KMeans gate (consensus.kmeans_partition) used by --clustering-strategy fast."""
+"""The KMeans gate (consensus.kmeans_partition) of --clustering-strategy balanced / fast."""
 
 import pytest
 from Bio.Seq import Seq
@@ -53,8 +53,9 @@ _REQUIRED = ["-s", "S", "-i", "i.db", "-a", "a.bam", "-cn", "c.bed.gz", "-o", "o
 def test_the_clustering_strategy_defaults_to_accurate():
     parser = consensus.get_consensus_parser()
     assert parser.parse_args(_REQUIRED).clustering_strategy == "accurate"
-    args = parser.parse_args(_REQUIRED + ["--clustering-strategy", "fast"])
-    assert args.clustering_strategy == "fast"
+    for strategy in ("balanced", "fast"):
+        args = parser.parse_args(_REQUIRED + ["--clustering-strategy", strategy])
+        assert args.clustering_strategy == strategy
 
 
 @pytest.mark.parametrize("value", ["off", "kmeans", "kmeans+snv"])
