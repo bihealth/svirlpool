@@ -207,17 +207,10 @@ def snv_sites_ref(
                 continue
             agree = [names[i] for i in np.flatnonzero(C[:, c] == b)]
             disagree = [names[i] for i in np.flatnonzero(C[:, c] == alt)]
+            # the targets of a column share its read lists (read_phasing
+            # indexes a shared list once)
             for t in agree:
-                sites.append(
-                    Site(
-                        t,
-                        w0 + int(c),
-                        "snv",
-                        [t] + [q for q in agree if q != t],
-                        disagree,
-                        n_b + n_alt,
-                    )
-                )
+                sites.append(Site(t, w0 + int(c), "snv", agree, disagree, n_b + n_alt))
     return sites
 
 
