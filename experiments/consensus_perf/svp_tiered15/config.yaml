@@ -1,0 +1,134 @@
+# ---------------------------------------------------------------------------
+# svp_tiered15 (copy of svp_improvements): the trio over a representative 15%
+# of the autosomes (config/regions15.bed, make_regions15.py of svirlpool
+# exp/ref-vs-ava-phasing), truvari --pctsize 0.9, to test --phasing-sites.
+# Original header: svirlpool locally on HG002 over the param_sweep v2
+# blocks (22 contiguous blocks, one per autosome, 5% of hg38, ~5% of the truth
+# SVs), benchmark it, and break the errors down so they can be inspected.
+#
+# Modelled on the cluster workflow in
+#   /data/cephfs-1/work/groups/cubi/projects/2022-10-18_May_LRSV-detection/param_sweep
+# with everything slurm- and scratch-specific removed and the sweep grid
+# replaced by named VARIANTS (see below), which is what an A/B comparison of
+# svirlpool changes needs.
+#
+# Everything list-valued can be narrowed on the command line, e.g.
+#   bash run.sh --config active_variants=flank200 active_truthsets=V5
+# ---------------------------------------------------------------------------
+
+samples: [HG002, HG003, HG004]
+coverages: [20x]           # the only coverage on this machine
+
+# {sample} and {coverage} are filled in. `.bai` is implied.
+alignments: /home/mayv_c/biodata/local/alignments/{sample}.minimap2.{coverage}.softclipped.bam
+
+reference:
+  fasta: /home/mayv_c/biodata/local/references/GRCh38/GRCh38.fa
+  # Byte-identical to the evaluation workflow's
+  # human_GRCh38_no_alt_analysis_set.trf.filtered.bed (same size, same fai).
+  trf: /home/mayv_c/biodata/local/references/GRCh38/GRCh38.trf.bed
+  mononucleotides: /home/mayv_c/biodata/local/references/GRCh38/GRCh38.mononucleotides_gt5.bed
+
+# The genome the whole workflow runs on. Copied verbatim from
+# param_sweep/config/sweep_regions.v2.bed; the .tsv beside it has the per-block
+# truth-SV counts. chrX is deliberately absent (hemizygous in HG002).
+regions: config/regions15.bed
+
+lamassemble_mat: resources/promethion.mat
+pedigree: resources/giab.ped
+
+# The order of the family VCF's sample columns, and the order
+# mendelian_consistency requires: child, father, mother.
+family_order: [HG002, HG003, HG004]
+bench_sample: HG002
+
+# ---------------------------------------------------------------------------
+# Variants: named svirlpool configurations. Every result lives under
+# results/<variant>/, so two variants never share a file.
+#
+#   manifest   pyproject.toml of the svirlpool checkout to run. Point a variant
+#              at a git worktree to A/B a code change against `defaults`.
+#   pixi_env   pixi environment in that checkout (must already be installed:
+#              `pixi install -e <env> --manifest-path <manifest>`).
+#   run_flags  extra flags for `svirlpool run`.
+#   call_flags extra flags for `svirlpool sv-calling`.
+#   db_from    re-use another variant's svirltile.db instead of running
+#              `svirlpool run` again. Only valid when this variant changes
+#              nothing the run stage sees (call-stage flags only, same
+#              checkout for the run stage) -- that is what makes a call-only
+#              experiment cost minutes instead of an hour.
+#
+# The checkout's HEAD and dirty state are recorded next to every DB and VCF
+# (provenance.txt), because rerun-triggers is mtime-only and editing the
+# checkout does NOT re-run anything by itself: use --forcerun, or better, a
+# new variant name.
+# ---------------------------------------------------------------------------
+variants:
+  # svirlpool exp/ref-vs-ava-phasing (worktree ref-vs-ava): the read phasing
+  # with its sites from the all-vs-all alignments (default), from the reads'
+  # reference alignments, and tiered (reference sites where they pass the
+  # check, else all-vs-all).
+  ps_ava:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ref-vs-ava/pyproject.toml
+    pixi_env: dev
+    run_flags: "--phasing-sites ava"
+    call_flags: ""
+  ps_tiered:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ref-vs-ava/pyproject.toml
+    pixi_env: dev
+    run_flags: "--phasing-sites tiered"
+    call_flags: ""
+  ps_ref:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ref-vs-ava/pyproject.toml
+    pixi_env: dev
+    run_flags: "--phasing-sites reference"
+    call_flags: ""
+
+# Which of the above to run.
+active_variants: [ps_ava, ps_tiered, ps_ref]
+
+# The same size asymmetry the evaluation workflow and the sweep use, so the
+# numbers here can be laid beside theirs.
+min_sv_size_run: 30
+min_sv_size_individual: 30
+min_sv_size_family: 50
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+truthsets:
+  V5:
+    variants: resources/truthsets/HG002_GRCh38_v5.0q_stvar.filtered.collapsed.vcf.gz
+    regions: resources/truthsets/HG002_GRCh38_v5.0q_stvar.benchmark.bed
+  T2TQ100:
+    variants: resources/truthsets/GRCh38_HG2-T2TQ100-V1.1_stvar.vcf.gz
+    regions: resources/truthsets/GRCh38_HG2-T2TQ100-V1.1_stvar.benchmark.bed
+
+active_truthsets: [V5, T2TQ100]
+
+# `all` = truth regions clipped to the blocks; `non_trf` = that minus TRF.
+regionsets: [all, non_trf]
+
+# Identical to the evaluation workflow and the sweep: truvari 5.4.0, these
+# flags, then `truvari refine --align mafft`, reporting the refined summary.
+truvari:
+  sizemin: 50
+  extra: "--passonly --pick ac --dup-to-ins --pctsize 0.9"
+truvari_refine: true
+
+mendel:
+  min_size: 50
+  passonly: true
+
+# ---------------------------------------------------------------------------
+# Local resources. `svirlpool run` is the long pole; this machine has 24 cores
+# and ~120 GB. run.sh caps the whole workflow at --cores 24 and
+# --resources mem_mb=90000.
+# ---------------------------------------------------------------------------
+resources:
+  # the three variants of one sample run together, 8 threads each (24 cores):
+  # same load for every variant, no idle cores in the long consensus tails
+  svirlpool_run:  {threads: 8, mem_mb: 28000}
+  svirlpool_call: {threads: 8,  mem_mb: 12000}
+  svirlpool_family: {threads: 8, mem_mb: 22000}
+  truvari:        {threads: 4,  mem_mb: 6000}

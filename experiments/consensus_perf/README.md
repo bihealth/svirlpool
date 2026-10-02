@@ -407,10 +407,10 @@ on balance and not lose read-level containers beyond a budget.
   routed, ~60% of A's time avoided, accuracy -0.001 to -0.002, alleles
   neutral (8 / 15, 12 / 16) -- more churn; not adopted.
 * Net saving: B runs for every container in tiered mode. Its mean cost on
-  the 30% set is 0.12 s (median 21 ms; a tail of high-read containers takes
-  up to 10 s, the Python loops of the SNV and SV sites -- vectorising them
-  is open), so the simple rule saves ~27% of the phasing time net on the 30%
-  set and ~47% on the 5% set.
+  the 30% set was 0.12 s (median 21 ms; a tail of high-read containers took
+  up to 10 s), so the simple rule saved ~27% of the phasing time net on the
+  30% set and ~47% on the 5% set. The tail is gone since b411f8c (below):
+  >= ~31% net on the 30% set.
 
 `--phasing-sites tiered` implements the simple rule
 (`ref_read_phasing.accept_reference`, `TIERED_MAX_DISCORDANCE` /
@@ -419,3 +419,115 @@ passes, the all-vs-all phasing otherwise. Its decisions match the rule of the
 feature table on 2002 of 2004 containers of the 5% set (the two differ by the
 de-duplication of alignments listed under several CRs). End to end:
 `svp_variants_phasing_sites.yaml` (ps_ava / ps_ref / ps_tiered).
+
+### B's slow tail (b411f8c)
+
+Profile of the 10 slowest containers (57 s): 81% in `recurrent_sites`, which
+multiplied int32 site x read matrices -- NumPy has no BLAS path for integer
+products. Then `discriminating_positions` (11%, set intersections per site
+for every cluster pair) and `pair_weights` (4%). The reference arm made it
+worse by giving every target read its own copy of a column's read lists.
+Changes (shared with arm A):
+
+* float32 products (exact for counts < 2^24), the ratio in float64 as before;
+* the site x read memberships built once, a list shared by several sites
+  indexed once; the reference arm shares a column's lists between targets;
+* `discriminating_positions` as matrix products over those memberships;
+* `pair_weights` sums with `bincount`, which adds in the loop's order.
+
+`ref_b_bench.py` freezes B's inputs (150 slowest + 350 random containers of
+the 30% set) and compares old and new code: **every result identical**
+(status, groups, low-quality reads, discordance, digests of the SNV / SV
+sites), total 480 -> 121 s (4.0x), slowest 9.6 -> 1.8 s. Arm A on 120 of
+them: identical (its time is the minimap2 all-vs-all).
+
+### End to end on a representative 15% (svp_tiered15)
+
+`make_regions15.py`: 5 Mb tiles, 15% of every autosome (410 Mb, 72 blocks,
+`results/regions15.bed`), disjoint from the 5% blocks +- 1 Mb where the
+tiered rule was fitted; of 5000 random draws the one closest to the whole
+autosomal genome (largest relative deviation 0.9%):
+
+| | genome | 15% set |
+|---|---|---|
+| TRF share | 0.0624 | 0.0623 |
+| GC | 0.4095 | 0.4060 |
+| T2TQ100 SVs / Mb | 15.37 | 15.42 |
+| V5 SVs / Mb | 13.54 | 13.67 |
+| benchmark-region share | 0.942 | 0.937 |
+
+`~/development/svp_tiered15` is a copy of svp_improvements (own results/,
+shared resources and truvari env) with these regions, the trio and truvari
+`--pctsize 0.9`; variants ps_ava, ps_tiered, ps_ref at b411f8c.
+`consensus_q100.py` scores every HG002 core consensus against the Q100 v1.1
+assembly (located with minimap2 asm20 via the padded consensus, the core
+alone aligned with edlib in infix mode to each haplotype);
+`tiered15_report.py` collects SV benchmarks, Mendelian consistency, run time
+and the consensus identities, paired by container.
+
+Run (2026-10-02): the three variants of a sample together, 8 threads each
+(`run_grouped.sh` / `run_rest.sh` in svp_tiered15), so every variant sees
+the same load -- the consensus timeouts are wall-clock, and the machine ran
+at load 50-100 throughout. One run at a time on 24 threads (tried first)
+left 22 cores idle for an hour per run: the 15% set includes the chr19
+pericentromere (modelled alpha-satellite sequence passes the non-N filter),
+whose containers escalate to the last level and time out by the dozen (one
+batch of 100 containers ran > 2 h). The last escalation level is capped at
+8 threads instead of 12 by this setup, for all variants alike. Report:
+`results/tiered15_report.txt`.
+
+SV benchmark (HG002, truvari --pctsize 0.9, refined F1) and trio Mendelian
+consistency:
+
+| | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | MC |
+|---|---|---|---|---|---|
+| ps_ava | 0.8487 | 0.9342 | 0.8520 | 0.9295 | 93.36% |
+| **ps_tiered** | **0.8505** | **0.9359** | **0.8541** | **0.9311** | **93.52%** |
+| ps_ref | 0.8462 | 0.9319 | 0.8467 | 0.9267 | 93.06% |
+
+(T2TQ100 all: tiered TP 2704 / FP 285 / FN 613 vs ava 2697 / 293 / 617; ref
+loses recall, 2639 TP.)
+
+HG002 core consensuses vs Q100 (per container `repr` = mean over the two
+haplotypes of the best consensus' identity, recall-like; `prec` = mean
+identity of the container's consensuses, precision-like):
+
+* ps_tiered routes 1961 of 4528 phased containers (43%) to the reference
+  sites, as offline (42.9%). Paired vs ps_ava: repr +0.00013 (10 better / 7
+  worse by > 0.005), prec +0.00003. Without the 57 containers with a
+  last-level timeout in either run, every container phased on the all-vs-all
+  sites is identical in both runs; all differences are in the routed ones
+  (repr 7 better / 2 worse).
+* ps_ref: per consensus worse (identity >= 0.99: 85.4% vs 90.9%; 2.01
+  consensuses per container vs 1.87), per container apparently better (repr
+  +0.005) -- but all of that is the chr19 pericentromere: there the
+  all-vs-all phasing fails in the satellite arrays (no_information -> one
+  consensus at ~0.51 identity to Q100) and the reference sites split the
+  reads into 4 groups at ~0.97. Outside chr19 24-30 Mb ps_ref is worse (repr
+  -0.00076, 58 better / 81 worse; prec -0.00019), ps_tiered is +0.00008
+  (7 / 3). `tiered15_q100_diff.py`.
+
+Time (sum over the trio; wall clock per run is not comparable, the variants
+shared the machine):
+
+| | all-vs-all phasing | consensus batches | CPU of `svirlpool run` |
+|---|---|---|---|
+| ps_ava | 16.74 h (14253 phasings) | 58.6 h | 62.9 h |
+| ps_tiered | 12.78 h (8046) | 55.0 h (-6%) | 63.0 h |
+| ps_ref | -- | 43.2 h (-26%) | 48.4 h |
+
+The tiered mode avoids 24% of the all-vs-all phasing time (`phase_time.py`,
+from the log timestamps, measured under load), but the all-vs-all phasing is
+only ~28% of the consensus time on this set: -6% consensus time, and no
+difference in total CPU within its noise (escalations, contention). Most of
+the consensus time here is lamassemble, much of it timing out in satellites
+and repeats.
+
+Conclusions: (1) the tiered mode is safe -- SV F1, Mendelian consistency
+and consensus accuracy equal to or slightly better than all-vs-all only;
+(2) its saving is small end to end, because the phasing is a minority of the
+consensus cost on a genome-representative set; (3) reference-site phasing
+alone is worse (recall, MC, consensus precision) except in centromeric
+satellites, where the all-vs-all phasing fails -- a candidate for a
+satellite-specific route (tiered accepts only 2-allele results, so it does
+not take these).
