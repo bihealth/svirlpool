@@ -31,9 +31,9 @@ logging.disable(logging.WARNING)
 TRIO = Path(__file__).parent.parent / "ava_phasing" / "data" / "trio_read_labels.tsv.gz"
 
 
-def load_trio() -> dict[int, dict[str, str]]:
+def load_trio(path: Path = TRIO) -> dict[int, dict[str, str]]:
     out: dict[int, dict[str, str]] = {}
-    with gzip.open(TRIO, "rt") as f:
+    with gzip.open(path, "rt") as f:
         h = f.readline().rstrip("\n").split("\t")
         ic, ir, il = h.index("crID"), h.index("read_name"), h.index("label")
         for line in f:

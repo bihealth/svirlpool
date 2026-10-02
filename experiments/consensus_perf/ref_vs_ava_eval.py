@@ -10,6 +10,7 @@ all reads but the low-quality ones; allele level vs T2TQ100, as
 ../ava_phasing/allele_eval.py).
 
 usage: ref_vs_ava_eval.py <workdir> <out.tsv> [--procs 8] [--timeout 300] [--limit N]
+                          [--truth container_truth.tsv] [--trio trio_read_labels.tsv.gz]
 """
 
 from __future__ import annotations
@@ -150,6 +151,8 @@ def main():
     p.add_argument("--procs", type=int, default=8)
     p.add_argument("--timeout", type=int, default=300)
     p.add_argument("--limit", type=int, default=0, help="first N batches only")
+    p.add_argument("--truth", type=Path, default=TRUTH)
+    p.add_argument("--trio", type=Path, default=None)
     a = p.parse_args()
     cfg = json.load(open(a.workdir / "config.json"))
     jobs = []
@@ -167,8 +170,8 @@ def main():
     print(f"wall {time.perf_counter() - t0:.0f} s, {len(rows)} containers")
 
     d = pd.DataFrame(rows).sort_values("crID")
-    truth = pd.read_csv(TRUTH, sep="\t").set_index("crID")
-    trio = load_trio()
+    truth = pd.read_csv(a.truth, sep="\t").set_index("crID")
+    trio = load_trio(a.trio) if a.trio else load_trio()
     ev = []
     for r in d.itertuples():
         out = {"crID": r.crID}
