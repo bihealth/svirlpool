@@ -35,8 +35,9 @@ import pandas as pd
 import pysam
 from kmeans_gate import BUFFER_CLIPPED, MAX_CN, PHASING_FLANK
 
-from svirlpool.localassembly import consensus, read_phasing, ref_read_phasing as rrp
+from svirlpool.localassembly import consensus, read_phasing
 from svirlpool.localassembly import read_cache as read_cache_mod
+from svirlpool.localassembly import ref_read_phasing as rrp
 from svirlpool.signalprocessing import copynumber_tracks
 
 logging.disable(logging.WARNING)

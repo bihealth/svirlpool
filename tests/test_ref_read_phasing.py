@@ -56,8 +56,12 @@ def _setup(tmp_path, hap2_snvs_every, hap2_deletion, seed=1, n_per_hap=8):
     rfa.write_text("".join(f">{n}\n{r.seq}\n" for n, r in reads.items()))
     sam = tmp_path / "aln.sam"
     with open(sam, "w") as f:
-        subprocess.run(["minimap2", "-a", "-x", "map-ont", str(fa), str(rfa)],
-                       stdout=f, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(
+            ["minimap2", "-a", "-x", "map-ont", str(fa), str(rfa)],
+            stdout=f,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
     with pysam.AlignmentFile(str(sam)) as f:
         alns = [a for a in f if not a.is_unmapped]
     return reads, alns, pysam.FastaFile(str(fa))
@@ -93,3 +97,24 @@ def test_a_deletion_alone_separates_the_haplotypes(tmp_path):
     assert res.status == "phased"
     for members in res.clusters().values():
         assert len({m.split("_")[0] for m in members}) == 1
+
+
+def test_tiered_accepts_a_clean_two_haplotype_split(tmp_path):
+    res = _phase(*_setup(tmp_path, hap2_snvs_every=500, hap2_deletion=False))
+    assert res.discordance is not None and res.discordance <= 0.02
+    assert ref_read_phasing.accept_reference(res)
+
+
+def test_tiered_rejects_single_and_lopsided_results(tmp_path):
+    res = _phase(*_setup(tmp_path, hap2_snvs_every=None, hap2_deletion=False))
+    assert not ref_read_phasing.accept_reference(res)
+    # 8 vs 3 reads: the smaller group holds < 30% of the reads
+    reads, alns, ref = _setup(tmp_path, hap2_snvs_every=500, hap2_deletion=False)
+    drop = {f"h2_{i}" for i in range(3, 8)}
+    lop = _phase(
+        {k: v for k, v in reads.items() if k not in drop},
+        [a for a in alns if a.query_name not in drop],
+        ref,
+    )
+    assert lop.status == "phased"
+    assert not ref_read_phasing.accept_reference(lop)

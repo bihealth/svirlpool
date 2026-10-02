@@ -352,3 +352,70 @@ hets in TRF (A only 9, B only 4) and hets in TRF (3 / 0).
 * Both arms merge a het SV without a het SNV within the window: one SV is one
   discriminating position, `min_discriminating` is 2
   (`tests/test_ref_read_phasing.py::test_a_deletion_alone_separates_the_haplotypes`).
+
+### Larger set (30%) and a tiered phasing
+
+5% was too small to fit routing rules safely, so a second, disjoint set was
+built: `make_regions30.py` (seed 30) draws 5 Mb tiles over 31.6% of the
+autosomes' non-N sequence (871 Mb, 128 blocks, `results/regions30.bed`),
+avoiding the 5% blocks +- 1 Mb. Upstream stages only (snakemake targets
+`crs_containers.db consensus_batches.tsv copy_number_tracks.bed.gz`, 12
+threads, in `~/development/phasing_ablation_30pct/`): 8957 containers. Trio
+read labels with `../ava_phasing/trio_read_labels.py` (208,785 informative
+SNVs; 61.7% of reads labelled vs 77.3% on the 5% set, minority votes 0.85%
+vs 0.77% -- random tiles include more repeat-rich and duplicated sequence;
+two containers spanning two chromosomes have no labels), truth columns with
+`../ava_phasing/container_truth_light.py` (same categories as
+container_truth.tsv on the 5% set for all 2004 containers).
+
+A vs B on the 30% set (`results/ref_vs_ava_30pct.tsv.gz`):
+
+| | A: all-vs-all | B: reference |
+|---|---|---|
+| phasing time (sum) | 10368 s | 1062 s |
+| pair accuracy (7142 paired containers) | **0.9688** | 0.9572 |
+| containers perfect | **0.921** | 0.897 |
+| containers better than the other arm | **412** | 242 |
+| allele set recovered (6615) | **0.965** | 0.961 |
+| ... by this arm only | **50** | 25 (p = 0.005) |
+| containers with 3-4 alleles | 391 | 726 |
+
+The 30% set confirms the 5% result and makes the allele-level difference
+significant (mostly compound hets in TRF, 29 vs 11). B over-splits more.
+
+**Routing** (`ref_route_features.py`, `ref_route_rules.py`): when can B stand
+in for A? B's own partition is the best guide -- its *discordance* (share of
+the grouped reads' bases at the kept SNV columns that differ from their
+group's majority; AUC 0.81 for B failing on the 5% set), then allele
+imbalance at those columns (0.78), read divergence (0.70); MAPQ is weak
+(0.65; most failures have MAPQ 60). Rule grid over allele count, discordance,
+imbalance, smallest group share and divergence; a rule must not lose alleles
+on balance and not lose read-level containers beyond a budget.
+
+* Rules fitted on the 5% set and tested on the disjoint 30% set: the simple
+  rule **B finds 2 alleles, discordance <= 0.02, smallest group >= 30%**
+  (also the rule leave-one-chromosome-out picks in 13 of 22 folds on the 5%)
+  holds: 30% set routed 42.9%, 37.4% of A's time avoided, pair accuracy
+  0.9694 vs 0.9688 always-A (95% bootstrap CI of the difference
+  [-0.00002, +0.0012]), containers worse / better 15 / 32, alleles lost /
+  gained 2 / 5. Per chromosome the accuracy change is within +-0.003, no
+  chromosome loses more than 1 allele set; routed share 13% (chr21) to 56%.
+* Looser rules that the 5% set favoured do not transfer: at a 0.2% budget
+  the 5%-fitted rule loses 26 alleles and gains 6 on the 30% set. Leave-one-
+  chromosome-out on the 30% set (and on both, 10961 containers) picks
+  "2 alleles, smallest group >= 30%" without the discordance limit: ~70%
+  routed, ~60% of A's time avoided, accuracy -0.001 to -0.002, alleles
+  neutral (8 / 15, 12 / 16) -- more churn; not adopted.
+* Net saving: B runs for every container in tiered mode. Its mean cost on
+  the 30% set is 0.12 s (median 21 ms; a tail of high-read containers takes
+  up to 10 s, the Python loops of the SNV and SV sites -- vectorising them
+  is open), so the simple rule saves ~27% of the phasing time net on the 30%
+  set and ~47% on the 5% set.
+
+`--phasing-sites tiered` implements the simple rule
+(`ref_read_phasing.accept_reference`, `TIERED_MAX_DISCORDANCE` /
+`TIERED_MIN_GROUP_FRACTION`): the reference-site phasing first, kept when it
+passes, the all-vs-all phasing otherwise. Its decisions match the rule of the
+feature table on 2002 of 2004 containers of the 5% set (the two differ by the
+de-duplication of alignments listed under several CRs). End to end:
+`svp_variants_phasing_sites.yaml` (ps_ava / ps_ref / ps_tiered).

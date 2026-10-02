@@ -2254,7 +2254,9 @@ def consensus_while_phasing(
 
     ``phasing_sites`` "reference" (ablation, needs ``ref_fasta``) takes the
     phasing's sites from the reads' reference alignments instead of their
-    all-vs-all alignments (``ref_read_phasing``).
+    all-vs-all alignments (``ref_read_phasing``); "tiered" keeps that result
+    when ``ref_read_phasing.accept_reference`` does and phases the rest by
+    the all-vs-all alignments.
     """
     intervals = get_read_alignment_intervals_in_cr(
         crs=list(candidate_regions.values()),
@@ -2268,9 +2270,11 @@ def consensus_while_phasing(
         read_records=read_records,
     )
     phasing_reads = {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}
-    if phasing_sites == "reference":
+    phasing = None
+    used_sites = "ava"
+    if phasing_sites in ("reference", "tiered"):
         if ref_fasta is None:
-            raise ValueError("--phasing-sites reference needs the reference FASTA")
+            raise ValueError(f"--phasing-sites {phasing_sites} needs the reference FASTA")
         crs = sorted(candidate_regions.values(), key=lambda cr: (cr.chr, cr.referenceStart))
         chrom = crs[0].chr
         on_chr = [cr for cr in crs if cr.chr == chrom]
@@ -2283,7 +2287,11 @@ def consensus_while_phasing(
             end=max(cr.referenceEnd for cr in on_chr),
             flank=phasing_flank,
         )
-    else:
+        used_sites = "reference"
+        if phasing_sites == "tiered" and not ref_read_phasing.accept_reference(phasing):
+            phasing = None
+    if phasing is None:
+        used_sites = "ava"
         phasing = read_phasing.phase_reads(
             reads=orient_reads_to_reference(phasing_reads, alns),
             threads=threads,
@@ -2300,7 +2308,7 @@ def consensus_while_phasing(
         "n_unassigned": len(phasing.unassigned),
     }
     if phasing_sites != "ava":
-        base_meta["phasing_sites"] = phasing_sites
+        base_meta["phasing_sites"] = used_sites
     if phasing.status == "phased":
         clusters = phasing.clusters()
     elif phasing_fallback == "single":
@@ -4076,12 +4084,13 @@ def get_consensus_parser(
     )
     parser.add_argument(
         "--phasing-sites",
-        choices=("ava", "reference"),
+        choices=("ava", "reference", "tiered"),
         default="ava",
         help="With --clustering-mode phased: where the read phasing takes its SNV and SV "
         "sites from. 'ava' (default): the reads' all-vs-all alignments. 'reference' "
         "(ablation): the reads' alignments to the reference; the rest of the phasing is "
-        "the same.",
+        "the same. 'tiered': the reference sites first, kept when they give two balanced, "
+        "self-consistent alleles; the all-vs-all alignments for the rest.",
     )
     parser.add_argument(
         "--clustering-strategy",

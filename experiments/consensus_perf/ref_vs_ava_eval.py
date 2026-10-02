@@ -153,6 +153,7 @@ def main():
     p.add_argument("--limit", type=int, default=0, help="first N batches only")
     p.add_argument("--truth", type=Path, default=TRUTH)
     p.add_argument("--trio", type=Path, default=None)
+    p.add_argument("--from-raw", action="store_true", help="score <out>.raw.tsv again")
     a = p.parse_args()
     cfg = json.load(open(a.workdir / "config.json"))
     jobs = []
@@ -164,12 +165,17 @@ def main():
     if a.limit:
         jobs = jobs[: a.limit]
     jobs = [(wd, c[i : i + 10], cf, t) for wd, c, cf, t in jobs for i in range(0, len(c), 10)]
+    if a.from_raw:
+        rows = pd.read_csv(a.out.with_suffix(".raw.tsv"), sep="\t").to_dict("records")
+        jobs = []
     t0 = time.perf_counter()
-    with Pool(a.procs) as pool:
-        rows = [r for rs in pool.imap_unordered(one_batch, jobs) for r in rs]
+    if jobs:
+        with Pool(a.procs) as pool:
+            rows = [r for rs in pool.imap_unordered(one_batch, jobs) for r in rs]
     print(f"wall {time.perf_counter() - t0:.0f} s, {len(rows)} containers")
 
     d = pd.DataFrame(rows).sort_values("crID")
+    d.to_csv(a.out.with_suffix(".raw.tsv"), sep="\t", index=False)
     truth = pd.read_csv(a.truth, sep="\t").set_index("crID")
     trio = load_trio(a.trio) if a.trio else load_trio()
     ev = []

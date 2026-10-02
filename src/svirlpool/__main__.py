@@ -280,9 +280,11 @@ def get_parser():
         "--phasing-sites",
         help="With --consensus-clustering-mode phased: where the read phasing takes its "
         "SNV and SV sites from. 'ava' (default): the reads' all-vs-all alignments. "
-        "'reference' (ablation): the reads' alignments to the reference.",
+        "'reference' (ablation): the reads' alignments to the reference. 'tiered': the "
+        "reference sites first, kept when they give two balanced, self-consistent "
+        "alleles; the all-vs-all alignments for the rest.",
         required=False,
-        choices=("ava", "reference"),
+        choices=("ava", "reference", "tiered"),
         default="ava",
     )
     parser_run_wf.add_argument(

@@ -29,13 +29,13 @@ import itertools
 import numpy as np
 import pandas as pd
 
-GRID = dict(
-    al=[(2,), (1, 2)],
-    disc=[0.02, 0.03, 0.04, 0.05, 0.07, 1.0],
-    afd=[0.15, 0.2, 0.25, 1.0],
-    minf=[0.0, 0.2, 0.3],
-    div=[0.02, 0.03, 1.0],
-)
+GRID = {
+    "al": [(2,), (1, 2)],
+    "disc": [0.02, 0.03, 0.04, 0.05, 0.07, 1.0],
+    "afd": [0.15, 0.2, 0.25, 1.0],
+    "minf": [0.0, 0.2, 0.3],
+    "div": [0.02, 0.03, 1.0],
+}
 COMBOS = list(itertools.product(*GRID.values()))
 SIMPLE = ((2,), 0.02, 1.0, 0.3, 1.0)
 
@@ -71,12 +71,12 @@ def evaluate(x, route):
     acc = np.where(route, xb, xa)[p]
     h = x.has_allele.to_numpy()
     ra, rb = x.A_rec_b.to_numpy(), x.B_rec_b.to_numpy()
-    return dict(
-        n=len(x), paired=int(p.sum()), routed=route.mean(),
-        saved=x.A_secs.to_numpy()[route].sum() / max(x.A_secs.sum(), 1e-9),
-        acc=acc.mean(), accA=xa[p].mean(), bad=int(bad.sum()), better=int(better.sum()),
-        lost=int((ra & ~rb & route & h).sum()), gained=int((~ra & rb & route & h).sum()),
-    )
+    return {
+        "n": len(x), "paired": int(p.sum()), "routed": route.mean(),
+        "saved": x.A_secs.to_numpy()[route].sum() / max(x.A_secs.sum(), 1e-9),
+        "acc": acc.mean(), "accA": xa[p].mean(), "bad": int(bad.sum()), "better": int(better.sum()),
+        "lost": int((ra & ~rb & route & h).sum()), "gained": int((~ra & rb & route & h).sum()),
+    }
 
 
 def select(x, rules, budget):

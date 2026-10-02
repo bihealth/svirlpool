@@ -105,6 +105,9 @@ class PhasingResult:
     low_quality: list[str] = field(default_factory=list)
     n_snv_sites: int = 0
     n_sv_sites: int = 0
+    # reference-site phasing only (ref_read_phasing): share of the reads'
+    # observations at the kept SNV columns that disagree with their group
+    discordance: float | None = None
 
     def clusters(self) -> dict[int, list[str]]:
         out: dict[int, list[str]] = defaultdict(list)

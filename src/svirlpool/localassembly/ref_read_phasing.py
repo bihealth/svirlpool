@@ -150,15 +150,15 @@ def low_quality_reads_ref(
     return {r for r, v in pair.items() if v > cut}
 
 
-def snv_sites_ref(
+def column_matrix(
     by_read: dict[str, list[RefAln]],
     names: list[str],
-    refseq: str,
+    n_col: int,
     w0: int,
     params: PhasingParams,
-) -> list[Site]:
-    n_col = len(refseq)
-    # C[i, c]: read i's usable base code at window column c (-1: none)
+) -> np.ndarray:
+    """C[i, c]: read i's usable base code (0-3) at window column c, -1: none
+    (not covered, not A/C/G/T, next to an indel, or covered twice)."""
     C = np.full((len(names), n_col), -1, dtype=np.int8)
     for i, r in enumerate(names):
         seen = np.zeros(n_col, dtype=bool)
@@ -169,6 +169,19 @@ def snv_sites_ref(
             C[i, c[ok & ~twice]] = a.col_code[ok & ~twice]
             C[i, c[twice]] = -1
             seen[c] = True
+    return C
+
+
+def snv_sites_ref(
+    by_read: dict[str, list[RefAln]],
+    names: list[str],
+    refseq: str,
+    w0: int,
+    params: PhasingParams,
+    C: np.ndarray | None = None,
+) -> list[Site]:
+    if C is None:
+        C = column_matrix(by_read, names, len(refseq), w0, params)
     counts = np.stack([(C == b).sum(axis=0) for b in range(4)], axis=1)  # col x base
     srt = np.sort(counts, axis=1)
     cand = np.flatnonzero(
@@ -323,8 +336,64 @@ def phase_reads_reference(
         by_read[r] = [uniq[k] for k in sorted(uniq)]
     lowq = low_quality_reads_ref(by_read, params)
     names = sorted(r for r in reads if r not in lowq)
-    s_snv = snv_sites_ref(by_read, names, refseq, w0, params)
+    C = column_matrix(by_read, names, len(refseq), w0, params)
+    s_snv = snv_sites_ref(by_read, names, refseq, w0, params, C=C)
     if params.recurrence > 0:
         s_snv = recurrent_sites(s_snv, min_support=params.recurrence)
     s_sv = sv_sites_ref(by_read, names, w0, w1, params) if params.use_sv_sites else []
-    return phase_from_sites(all_reads, reads, s_snv, s_sv, lowq, params)
+    res = phase_from_sites(all_reads, reads, s_snv, s_sv, lowq, params)
+    res.discordance = discordance(
+        C, names, sorted({s.pos - w0 for s in s_snv}), res.groups
+    )
+    return res
+
+
+def discordance(
+    C: np.ndarray, names: list[str], cols: list[int], groups: dict[str, int]
+) -> float | None:
+    """Share of the grouped reads' observations at ``cols`` that differ from
+    their group's majority base (columns with >= 2 observations in a group).
+    A clean haplotype split gives ~ the sequencing error rate; reads of
+    paralogs or a wrong split give more. None without columns."""
+    if not cols or not groups:
+        return None
+    idx = {r: i for i, r in enumerate(names)}
+    kc = np.asarray(cols)
+    dis = tot = 0
+    for lab in sorted(set(groups.values())):
+        rows = [idx[r] for r, g in groups.items() if g == lab and r in idx]
+        if not rows:
+            continue
+        M = C[np.ix_(rows, kc)]
+        for j in range(M.shape[1]):
+            col = M[:, j]
+            col = col[col >= 0]
+            if len(col) < 2:
+                continue
+            dis += len(col) - int(np.bincount(col, minlength=4).max())
+            tot += len(col)
+    return dis / tot if tot else None
+
+
+#: --phasing-sites tiered: the reference-site phasing is kept when it finds
+#: exactly two alleles, its groups are consistent at the SNV columns and the
+#: smaller group holds a fair share of the reads (fitted on the HG002 5% set,
+#: validated on a disjoint 30% set: experiments/consensus_perf/README.md)
+TIERED_MAX_DISCORDANCE = 0.02
+TIERED_MIN_GROUP_FRACTION = 0.3
+
+
+def accept_reference(
+    res: PhasingResult,
+    max_discordance: float = TIERED_MAX_DISCORDANCE,
+    min_group_fraction: float = TIERED_MIN_GROUP_FRACTION,
+) -> bool:
+    """Whether a reference-site phasing result can stand in for the all-vs-all
+    phasing (--phasing-sites tiered). Without SNV columns (discordance None)
+    only the allele count and group balance decide, as in the validation."""
+    if res.status != "phased" or res.n_alleles != 2:
+        return False
+    sizes = np.bincount(list(res.groups.values()))
+    if sizes.min() / sizes.sum() < min_group_fraction:
+        return False
+    return res.discordance is None or res.discordance <= max_discordance
