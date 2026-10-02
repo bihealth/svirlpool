@@ -45,6 +45,7 @@ from . import (
     consensus_lib,
     lamassemble,
     read_phasing,
+    ref_read_phasing,
     ref_snv_haplotypes,
     tool_timeouts,
 )
@@ -2238,6 +2239,8 @@ def consensus_while_phasing(
     tmp_dir_path: Path | str | None = None,
     timeout: int = 120,
     verbose: bool = False,
+    phasing_sites: str = "ava",
+    ref_fasta: pysam.FastaFile | None = None,
 ) -> dict[str, consensus_class.Consensus] | None:
     """Experimental: one consensus per haplotype found by read phasing.
 
@@ -2248,6 +2251,10 @@ def consensus_while_phasing(
     When the phasing finds fewer than two alleles, ``phasing_fallback``
     decides: "single" assembles one consensus from all reads, "legacy" returns
     None so that the caller runs the legacy clustering.
+
+    ``phasing_sites`` "reference" (ablation, needs ``ref_fasta``) takes the
+    phasing's sites from the reads' reference alignments instead of their
+    all-vs-all alignments (``ref_read_phasing``).
     """
     intervals = get_read_alignment_intervals_in_cr(
         crs=list(candidate_regions.values()),
@@ -2260,15 +2267,29 @@ def consensus_while_phasing(
         intervals=get_max_extents_of_read_alignments_on_cr(intervals),
         read_records=read_records,
     )
-    phasing_reads = orient_reads_to_reference(
-        {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}, alns
-    )
-    phasing = read_phasing.phase_reads(
-        reads=phasing_reads,
-        threads=threads,
-        timeout=timeout,
-        tmp_dir_path=tmp_dir_path,
-    )
+    phasing_reads = {rn: rec for rn, rec in phasing_reads.items() if rn in cutreads}
+    if phasing_sites == "reference":
+        if ref_fasta is None:
+            raise ValueError("--phasing-sites reference needs the reference FASTA")
+        crs = sorted(candidate_regions.values(), key=lambda cr: (cr.chr, cr.referenceStart))
+        chrom = crs[0].chr
+        on_chr = [cr for cr in crs if cr.chr == chrom]
+        phasing = ref_read_phasing.phase_reads_reference(
+            reads=phasing_reads,
+            alns=[a for alnlist in alns.values() for a in alnlist],
+            ref=ref_fasta,
+            chrom=chrom,
+            start=min(cr.referenceStart for cr in on_chr),
+            end=max(cr.referenceEnd for cr in on_chr),
+            flank=phasing_flank,
+        )
+    else:
+        phasing = read_phasing.phase_reads(
+            reads=orient_reads_to_reference(phasing_reads, alns),
+            threads=threads,
+            timeout=timeout,
+            tmp_dir_path=tmp_dir_path,
+        )
     base_meta: dict[str, str | int | float] = {
         "method": "phased",
         "phasing_status": phasing.status,
@@ -2278,6 +2299,8 @@ def consensus_while_phasing(
         "n_low_quality": len(phasing.low_quality),
         "n_unassigned": len(phasing.unassigned),
     }
+    if phasing_sites != "ava":
+        base_meta["phasing_sites"] = phasing_sites
     if phasing.status == "phased":
         clusters = phasing.clusters()
     elif phasing_fallback == "single":
@@ -3236,6 +3259,7 @@ def process_consensus_container(
     phasing_fallback: str = "single",
     clustering_strategy: str = "accurate",
     ref_fasta: pysam.FastaFile | None = None,
+    phasing_sites: str = "ava",
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3370,6 +3394,8 @@ def process_consensus_container(
             tmp_dir_path=tmp_dir_path,
             timeout=timeout,
             verbose=verbose,
+            phasing_sites=phasing_sites,
+            ref_fasta=ref_fasta,
         )
     if not res:
         res = consensus_while_clustering_with_kmeans(
@@ -3623,6 +3649,7 @@ def crs_containers_to_consensus(
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
     clustering_strategy: str = "accurate",
+    phasing_sites: str = "ava",
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3750,6 +3777,7 @@ def crs_containers_to_consensus(
                                 phasing_fallback=phasing_fallback,
                                 clustering_strategy=clustering_strategy,
                                 ref_fasta=_ref_fasta,
+                                phasing_sites=phasing_sites,
                             )
                     except tool_timeouts.Escalate:
                         pass
@@ -3898,6 +3926,7 @@ def run_consensus_script(args, **kwargs):
         phasing_flank=args.phasing_flank,
         phasing_fallback=args.phasing_fallback,
         clustering_strategy=args.clustering_strategy,
+        phasing_sites=args.phasing_sites,
     )
 
 
@@ -4044,6 +4073,15 @@ def get_consensus_parser(
         help="With --clustering-mode phased, what to do when the phasing finds "
         "fewer than two alleles: 'single' (default) one consensus from all reads, 'legacy' "
         "the legacy clustering.",
+    )
+    parser.add_argument(
+        "--phasing-sites",
+        choices=("ava", "reference"),
+        default="ava",
+        help="With --clustering-mode phased: where the read phasing takes its SNV and SV "
+        "sites from. 'ava' (default): the reads' all-vs-all alignments. 'reference' "
+        "(ablation): the reads' alignments to the reference; the rest of the phasing is "
+        "the same.",
     )
     parser.add_argument(
         "--clustering-strategy",

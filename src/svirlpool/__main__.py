@@ -277,6 +277,15 @@ def get_parser():
         default="single",
     )
     parser_run_wf.add_argument(
+        "--phasing-sites",
+        help="With --consensus-clustering-mode phased: where the read phasing takes its "
+        "SNV and SV sites from. 'ava' (default): the reads' all-vs-all alignments. "
+        "'reference' (ablation): the reads' alignments to the reference.",
+        required=False,
+        choices=("ava", "reference"),
+        default="ava",
+    )
+    parser_run_wf.add_argument(
         "--clustering-strategy",
         help="With --consensus-clustering-mode phased: 'accurate' (default) phases the "
         "reads of every container (with --phasing-fallback). 'balanced' skips the read "

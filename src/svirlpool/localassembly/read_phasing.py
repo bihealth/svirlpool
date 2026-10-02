@@ -723,9 +723,7 @@ def phase_reads(
     if len(reads) < 2 * params.min_group:
         return PhasingResult(status="no_information", unassigned=sorted(reads))
     all_reads = reads
-    if params.max_reads and len(reads) > params.max_reads:
-        keep = sorted(reads, key=lambda n: (-len(reads[n].seq), n))[: params.max_reads]
-        reads = {n: reads[n] for n in sorted(keep)}
+    reads = select_reads(reads, params)
     seqs = {n: str(r.seq) for n, r in reads.items()}
     try:
         with tempfile.TemporaryDirectory(dir=tmp_dir_path) as tmp:
@@ -751,8 +749,24 @@ def phase_reads(
     if params.recurrence > 0:
         s_snv = recurrent_sites(s_snv, min_support=params.recurrence)
     s_sv = sv_sites(by_t, seqs, params) if params.use_sv_sites else []
-    sites = s_snv + s_sv
+    return phase_from_sites(all_reads, reads, s_snv, s_sv, lowq, params)
 
+
+def select_reads(reads: dict, params: PhasingParams) -> dict:
+    """The reads that are phased: at most ``max_reads``, the longest first."""
+    if params.max_reads and len(reads) > params.max_reads:
+        keep = sorted(reads, key=lambda n: (-len(reads[n].seq), n))[: params.max_reads]
+        return {n: reads[n] for n in sorted(keep)}
+    return reads
+
+
+def phase_from_sites(
+    all_reads, reads, s_snv: list[Site], s_sv: list[Site], lowq: set[str], params
+) -> PhasingResult:
+    """Pair weights, correlation clustering and refinement of the sites found
+    on ``reads`` (the phased subset of ``all_reads``): the part of the phasing
+    that does not depend on where the sites come from."""
+    sites = s_snv + s_sv
     names = sorted(r for r in reads if r not in lowq)
     W = pair_weights(sites, names, params.error_rate)
     labels = refine_clusters(correlation_cluster(W), names, sites, W, params)
