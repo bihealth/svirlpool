@@ -302,3 +302,53 @@ svp_improvements variants `perf_legacy` / `perf_phased`, `e2e_table.py` F1 and
 consensus time per variant, `compare_consensus.py` / `fp_containers.py`
 consensus and FP differences between two variants per container, `py.sh`
 runner.
+
+## Ablation: phasing sites from all-vs-all vs reference alignments
+
+Branch `exp/ref-vs-ava-phasing` (baba158, on a4a8558). Does aligning the reads
+to each other beat reading the same variants off their reference alignments?
+`ref_read_phasing.phase_reads_reference` (arm B, `--phasing-sites reference`)
+builds the same per-target-read SNV and SV sites from the BAM alignments and
+the reference FASTA; everything after the sites (`read_phasing.phase_from_sites`:
+weights, correlation clustering, refinement), the read set (`select_reads`, 50
+longest), the window (CR +- 10 kb) and the low-quality rule (read divergence to
+the reference put on the pairwise scale) are shared with arm A (`phase_reads`).
+
+`ref_vs_ava_eval.py` (lam_orient workdir, 8 processes, 217 s wall) +
+`ref_vs_ava_summary.py`; per-container table `results/ref_vs_ava_all.tsv.gz`.
+All 2004 HG002 containers:
+
+| | A: all-vs-all | B: reference |
+|---|---|---|
+| phasing time (sum) | 1547 s | **48 s** |
+| status phased / single / no info | 1792 / 124 / 88 | 1787 / 91 / 126 |
+| pair accuracy, assigned trio reads (1768 paired containers) | **0.9838** | 0.9707 |
+| containers perfect | **0.958** | 0.926 |
+| trio reads assigned | 0.844 | 0.855 |
+| containers better than the other arm | **93** | 27 (sign test p = 1e-9) |
+| pair errors: split / joined | 641 / 901 | 1632 / 2382 |
+| T2TQ100 allele set recovered (1747) | 0.974 | 0.969 |
+| ... recovered by this arm only | 13 | 5 (p = 0.10) |
+| purity | 0.9947 | 0.9923 |
+
+By trio-label coverage (labelled / all reads of the container; the labels
+come from reference alignments, so low coverage marks reads the reference
+handles badly), pair accuracy A / B: < 0.6: 0.868 / 0.773 (148 containers);
+0.6-0.8: 0.978 / 0.942 (145); >= 0.8: 0.993 / 0.987 (672). TR 0.987 / 0.972,
+non-TR 0.977 / 0.968. At the allele level, the difference is in compound
+hets in TRF (A only 9, B only 4) and hets in TRF (3 / 0).
+
+* Most containers are partitioned identically (median difference 0); the gap
+  is a tail of containers where B collapses, almost all with low label
+  coverage. Two kinds: B sees far more SNV sites than A (crIDs 258, 2002,
+  22: 844 vs 170, 980 vs 83, 2672 vs 1329; mismapped / paralogous reads
+  differ from the reference, not from each other), or far fewer (995, 508,
+  1614: 0 vs 13, 0 vs 4, 4 vs 59; het SNVs the reference alignments miss).
+* The read-level truth is itself reference-based (trio SNVs in the reads'
+  reference alignments), so it is evaluated only where reference alignments
+  work, which favours B; A wins anyway. The allele-level difference is not
+  significant; the end-to-end trio benchmark decides
+  (`svp_variants_phasing_sites.yaml`: ps_ava / ps_ref).
+* Both arms merge a het SV without a het SNV within the window: one SV is one
+  discriminating position, `min_discriminating` is 2
+  (`tests/test_ref_read_phasing.py::test_a_deletion_alone_separates_the_haplotypes`).
