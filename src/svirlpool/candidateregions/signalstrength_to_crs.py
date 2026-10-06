@@ -402,21 +402,40 @@ def signal_support(
         idx = np.where(type_class == tc)[0]
         idx = idx[np.argsort(starts[idx], kind="stable")]
         pos, size, rep, read = starts[idx], abs_sizes[idx], repeat_ids[idx], reads[idx]
-        same_repeat: dict[int, npt.NDArray] = {}
+        # A tandem repeat can hold tens of thousands of signals but only as many
+        # reads as the depth, so the reads confirming each signal of a repeat
+        # are found per read: (reads of the repeat, signal x read matrix, row).
+        repeat_reads: dict[int, tuple[npt.NDArray, npt.NDArray]] = {}
+        row_in_repeat = np.zeros(len(idx), dtype=np.int64)
         for r in np.unique(rep[rep >= 0]):
-            same_repeat[int(r)] = np.where(rep == r)[0]
+            members = np.where(rep == r)[0]
+            row_in_repeat[members] = np.arange(len(members))
+            member_size = size[members]
+            names, read_of = np.unique(read[members], return_inverse=True)
+            confirms = np.zeros((len(members), len(names)), dtype=bool)
+            for k in range(len(names)):
+                other = np.sort(member_size[read_of == k])
+                lo = np.searchsorted(other, member_size / 2)
+                hi = np.searchsorted(other, member_size * 2, side="right")
+                confirms[:, k] = hi > lo
+            confirms[np.arange(len(members)), read_of] = False  # not by itself
+            confirms[member_size == 0] = False
+            repeat_reads[int(r)] = (names, confirms)
         for i in range(len(idx)):
             radius = max(100.0, size[i] / 2)
             a = np.searchsorted(pos, pos[i] - radius)
             b = np.searchsorted(pos, pos[i] + radius, side="right")
             j = np.arange(a, b)
             if rep[i] >= 0:
-                j = np.union1d(j, same_repeat[int(rep[i])])
+                j = j[rep[j] != rep[i]]  # the repeat's own signals are counted below
             j = j[read[j] != read[i]]
-            similar = np.minimum(size[j], size[i]) / np.maximum(
-                np.maximum(size[j], size[i]), 1
-            )
-            support[idx[i]] = len(np.unique(read[j[similar >= 0.5]]))
+            # smaller / larger >= 0.5
+            similar = (size[j] <= 2 * size[i]) & (size[i] <= 2 * size[j]) & (size[i] > 0)
+            confirming = np.unique(read[j[similar]])
+            if rep[i] >= 0:
+                names, confirms = repeat_reads[int(rep[i])]
+                confirming = np.union1d(confirming, names[confirms[row_in_repeat[i]]])
+            support[idx[i]] = len(confirming)
     return support
 
 
