@@ -1,0 +1,26 @@
+# Candidate-region formation (branch perf/assembly-tail): signals confirmed by
+# >= 1 other read only (--min-signal-support 1), merge buffer 600 instead of
+# 1200, and optionally satellite arrays dropped (--satellite-depth-factor 1.5).
+# Offline (job-tmp cr_validate.py) these cut the heavy assembly cost (depth x
+# span of the regions >= 100 kbp) by 27-36% / 40-44% at a loss of 0.2-0.7% of
+# the trio's calls. On the trio over the representative 15% set, in svp_tiered15:
+#   bash run_grouped_cr.sh   (the variants of one sample together, 8 threads each)
+#   python tiered15_report.py <svp_tiered15> --variants cr_base,cr_s1,cr_s1_sat --ref cr_base
+samples: [HG002, HG003, HG004]
+variants:
+  cr_base:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: ""
+  cr_s1:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--min-signal-support 1 --cr-merge-buffer 600"
+    call_flags: ""
+  cr_s1_sat:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--min-signal-support 1 --cr-merge-buffer 600 --satellite-depth-factor 1.5"
+    call_flags: ""
+active_variants: [cr_base, cr_s1, cr_s1_sat]
