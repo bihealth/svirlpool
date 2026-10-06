@@ -86,6 +86,8 @@ consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
 clustering_strategy = config.get("clustering_strategy", "balanced")
+assembly_max_reads = config.get("assembly_max_reads", 0)
+heavy_container_bp = config.get("heavy_container_bp", 0)
 # None = take each container's copy number from the copy-number track.
 cn_override = config.get("cn_override", None)
 
@@ -672,6 +674,8 @@ rule consensus_consensus:
         phasing_flank=phasing_flank,
         phasing_fallback=phasing_fallback,
         clustering_strategy=clustering_strategy,
+        assembly_max_reads=assembly_max_reads,
+        heavy_container_bp=heavy_container_bp,
         max_threads=cores,
         escalation=consensus_escalation,
     threads: 1
@@ -710,6 +714,8 @@ rule consensus_consensus:
         --phasing-flank {params.phasing_flank} \
         --phasing-fallback {params.phasing_fallback} \
         --clustering-strategy {params.clustering_strategy} \
+        --assembly-max-reads {params.assembly_max_reads} \
+        --heavy-container-bp {params.heavy_container_bp} \
         -o {output.container} \
         -t {params.max_threads} \
         --escalation {params.escalation} \

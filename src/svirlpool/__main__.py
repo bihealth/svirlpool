@@ -289,6 +289,25 @@ def get_parser():
         default="balanced",
     )
     parser_run_wf.add_argument(
+        "--assembly-max-reads",
+        help="Assemble each allele from at most about this many reads over every "
+        "100 bp of the reference (reads covering more of it first; all reads are "
+        "still aligned to the consensus). Bounds lamassemble, whose time grows with "
+        "the square of the read count (default: 0, all reads).",
+        required=False,
+        type=int,
+        default=0,
+    )
+    parser_run_wf.add_argument(
+        "--heavy-container-bp",
+        help="A candidate-region container with at least this many bp of cut reads "
+        "starts at the last --consensus-escalation level instead of timing out below "
+        "it (default: 0, off).",
+        required=False,
+        type=int,
+        default=0,
+    )
+    parser_run_wf.add_argument(
         "--cn-override",
         help="Use this fixed copy number as the maximum number of read clusters (alleles) of "
         "every candidate-region container, instead of the copy-number track estimate "

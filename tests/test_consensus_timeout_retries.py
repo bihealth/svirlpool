@@ -148,3 +148,57 @@ def test_single_level_does_not_escalate(tmp_path, monkeypatch):
         tmp_path, monkeypatch, timing_out_attempts=99, escalation=[(1, 20)]
     )
     assert calls == [(1, 1, 20), (2, 1, 20)]
+
+
+def test_heavy_container_starts_at_the_last_level(tmp_path, monkeypatch):
+    containers = {
+        crID: {"crs": [SimpleNamespace(crID=crID, chr="chr1", referenceStart=start)]}
+        for crID, start in ((1, 100), (2, 5000))
+    }
+    monkeypatch.setattr(
+        consensus, "load_crs_containers_from_db", lambda path_db, crIDs: containers
+    )
+    monkeypatch.setattr(consensus.read_cache_mod, "ReadSequenceCache", _Cache)
+    monkeypatch.setattr(consensus, "available_cpus", lambda: 24)
+    calls, caches = [], []
+
+    def process(crs_dict, threads, timeout, heavy_container_bp, phasing_cache, **kw):
+        crID = next(iter(crs_dict))
+        calls.append((crID, threads, timeout))
+        caches.append(id(phasing_cache))
+        if crID == 1 and heavy_container_bp:
+            tool_timeouts.skip_to_last("200000 bp of cut reads")
+        return {}, {}
+
+    monkeypatch.setattr(consensus, "process_consensus_container", process)
+    db = tmp_path / "containers.db"
+    db.write_text("")
+    consensus.crs_containers_to_consensus(
+        samplename="s",
+        input=db,
+        copy_number_tracks=tmp_path / "cn.bed.gz",
+        output=tmp_path / "consensus.jsonl",
+        lamassemble_mat=None,
+        path_alignments=tmp_path / "reads.bam",
+        threads=16,
+        buffer_clipped_sequence=500,
+        consensus_method="lamassemble",
+        reference=None,
+        escalation=[(1, 20), (4, 60), (12, 120)],
+        heavy_container_bp=100_000,
+    )
+    # skip_to_last is a no-op at the last level, so container 1 finishes there
+    assert calls == [(1, 1, 20), (1, 12, 120), (2, 1, 20)]
+    # one phasing cache per container, kept across its levels
+    assert caches[0] == caches[1] != caches[2]
+
+
+def test_skip_to_last_is_a_no_op_outside_escalation():
+    tool_timeouts.skip_to_last("big")
+    with tool_timeouts.watch(escalate=False) as hits:
+        tool_timeouts.skip_to_last("big")
+    assert hits == []
+    with tool_timeouts.watch(escalate=True) as hits:
+        with pytest.raises(tool_timeouts.EscalateToLast):
+            tool_timeouts.skip_to_last("big")
+    assert hits == ["big"]

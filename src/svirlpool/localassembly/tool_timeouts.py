@@ -24,6 +24,19 @@ class Escalate(BaseException):
     first, let it through."""
 
 
+class EscalateToLast(Escalate):
+    """Raised by `skip_to_last` inside `watch(escalate=True)`: the container
+    is predicted to time out below the last level, so it goes there directly."""
+
+
+def skip_to_last(reason: str) -> None:
+    """Send the container straight to the last level (a no-op at the last
+    level and outside `watch()`)."""
+    if _hits is not None and _escalate:
+        _hits.append(reason)
+        raise EscalateToLast(reason)
+
+
 def record(tool: str) -> None:
     """Note that `tool` timed out (a no-op outside `watch()`)."""
     if _hits is not None:

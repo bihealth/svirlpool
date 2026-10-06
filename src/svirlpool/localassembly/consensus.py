@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -1280,6 +1281,101 @@ def assemble_consensus(
     return None
 
 
+#: Bin (bp) of the reference coverage that ``assembly_reads`` caps.
+ASSEMBLY_COVERAGE_BIN = 100
+
+
+def read_reference_spans(
+    alns: dict[int, list[pysam.AlignedSegment]],
+    crs: list[datatypes.CandidateRegion],
+    flank: int = CR_CUT_FLANK,
+) -> dict[str, list[tuple[str, int, int]]]:
+    """The reference intervals the alignments of each read cover, clipped to
+    the extent of the candidate regions +- `flank` on each chromosome."""
+    extent: dict[str, tuple[int, int]] = {}
+    for cr in crs:
+        lo, hi = extent.get(cr.chr, (cr.referenceStart, cr.referenceEnd))
+        extent[cr.chr] = (min(lo, cr.referenceStart), max(hi, cr.referenceEnd))
+    spans: dict[str, list[tuple[str, int, int]]] = {}
+    for alnlist in alns.values():
+        for aln in alnlist:
+            if aln.reference_name not in extent:
+                continue
+            lo, hi = extent[aln.reference_name]
+            start = max(aln.reference_start, lo - flank)
+            end = min(aln.reference_end, hi + flank)
+            if start < end:
+                spans.setdefault(aln.query_name, []).append(
+                    (aln.reference_name, start, end)
+                )
+    return spans
+
+
+def assembly_reads(
+    readnames: list[str],
+    spans: dict[str, list[tuple[str, int, int]]],
+    max_reads: int,
+    bin_size: int = ASSEMBLY_COVERAGE_BIN,
+) -> list[str]:
+    """The reads of an allele to assemble: at most about `max_reads` over every
+    `bin_size` bin of the reference they cover (0: all reads).
+
+    lamassemble aligns every read pair, so its time grows with the square of
+    the read count, and repeats multiply the alignments of each pair. Reads
+    covering more of the reference are taken first (ties by name, i.e. at
+    random for UUIDs); a read is taken while one of its bins has fewer than
+    `max_reads` reads. A short region thus gets `max_reads` spanning reads, a
+    long one a tiling of reads with that depth. Reads without a span are left
+    out unless no read has one. The order of `readnames` is kept.
+    """
+    if max_reads <= 0 or len(readnames) <= max_reads:
+        return list(readnames)
+    bins = {
+        rn: {
+            (chrom, b)
+            for chrom, start, end in spans.get(rn, ())
+            for b in range(start // bin_size, (end - 1) // bin_size + 1)
+        }
+        for rn in readnames
+    }
+    depth: dict[tuple[str, int], int] = {}
+    keep: set[str] = set()
+    for rn in sorted(readnames, key=lambda rn: (-len(bins[rn]), rn)):
+        if any(depth.get(b, 0) < max_reads for b in bins[rn]):
+            keep.add(rn)
+            for b in bins[rn]:
+                depth[b] = depth.get(b, 0) + 1
+    if not keep:
+        return list(readnames)
+    return [rn for rn in readnames if rn in keep]
+
+
+@attrs.frozen
+class AssemblyReadCap:
+    """``--assembly-max-reads``: the cap and the reads' reference spans."""
+
+    max_reads: int
+    spans: dict[str, list[tuple[str, int, int]]]
+
+    def write_reads(
+        self, reads_fasta: Path, chosen: list[str], pool: dict[str, SeqRecord], name: str
+    ) -> Path:
+        """The FASTA to assemble the reads `chosen` (all written to
+        `reads_fasta`) from: `reads_fasta` itself, or the capped subset
+        written next to it. All reads still go to ``final_consensus``."""
+        subset = assembly_reads(chosen, self.spans, self.max_reads)
+        if len(subset) == len(chosen):
+            return reads_fasta
+        log.info(
+            f"assembling {name} from {len(subset)} of {len(chosen)} reads "
+            f"(--assembly-max-reads {self.max_reads})"
+        )
+        path = reads_fasta.with_name(reads_fasta.stem + ".assembly.fasta")
+        with open(path, "w") as f:
+            SeqIO.write([pool[rn] for rn in subset], f, "fasta")
+        return path
+
+
 def partition_reads_spectral(
     similarity_matrix: np.ndarray, read_names: list[str], n_clusters: int
 ) -> dict[str, int]:
@@ -1914,6 +2010,7 @@ def consensus_while_clustering_with_kmeans(
     timeout: int = 120,
     verbose: bool = False,
     partition: tuple[list[str], np.ndarray, int] | None = None,
+    read_cap: AssemblyReadCap | None = None,
 ) -> dict[str, consensus_class.Consensus] | None:
     """Cluster reads by their summed indel distribution using KMeans and assemble consensus per cluster.
 
@@ -1981,11 +2078,16 @@ def consensus_while_clustering_with_kmeans(
                         [pool[readname] for readname in chosen_reads], f, "fasta"
                     )
                 consensus_name = f"{min(crIDs)}.{cluster_id}"
+                assembly_fasta = Path(reads_fasta.name)
+                if read_cap is not None:
+                    assembly_fasta = read_cap.write_reads(
+                        assembly_fasta, chosen_reads, pool, consensus_name
+                    )
 
                 consensus_sequence: str | None = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
                     name=consensus_name,
-                    reads_fasta=Path(reads_fasta.name),
+                    reads_fasta=assembly_fasta,
                     consensus_fasta_path=Path(consensus_fasta.name),
                     threads=threads,
                     timeout=timeout,
@@ -2051,11 +2153,16 @@ def consensus_while_clustering_with_kmeans(
                         [pool[readname] for readname in rescue_reads], f, "fasta"
                     )
                 consensus_name = f"{min(crIDs)}.rescue"
+                assembly_fasta = Path(reads_fasta.name)
+                if read_cap is not None:
+                    assembly_fasta = read_cap.write_reads(
+                        assembly_fasta, rescue_reads, pool, consensus_name
+                    )
 
                 consensus_sequence = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
                     name=consensus_name,
-                    reads_fasta=Path(reads_fasta.name),
+                    reads_fasta=assembly_fasta,
                     consensus_fasta_path=Path(consensus_fasta.name),
                     threads=threads,
                     timeout=timeout,
@@ -2114,6 +2221,7 @@ def consensus_from_clusters(
     tmp_dir_path: Path | str | None = None,
     timeout: int = 120,
     verbose: bool = False,
+    read_cap: AssemblyReadCap | None = None,
 ) -> dict[str, consensus_class.Consensus] | None:
     """Assemble one consensus per given read cluster.
 
@@ -2138,10 +2246,15 @@ def consensus_from_clusters(
                 with open(reads_fasta, "w") as f:
                     SeqIO.write([pool[rn] for rn in chosen], f, "fasta")
                 consensus_name = f"{min(crIDs)}.{cluster_id}"
+                assembly_fasta = reads_fasta
+                if read_cap is not None:
+                    assembly_fasta = read_cap.write_reads(
+                        reads_fasta, chosen, pool, consensus_name
+                    )
                 consensus_sequence = assemble_consensus(
                     lamassemble_mat=lamassemble_mat,
                     name=consensus_name,
-                    reads_fasta=reads_fasta,
+                    reads_fasta=assembly_fasta,
                     consensus_fasta_path=consensus_fasta,
                     threads=threads,
                     timeout=timeout,
@@ -2238,6 +2351,8 @@ def consensus_while_phasing(
     tmp_dir_path: Path | str | None = None,
     timeout: int = 120,
     verbose: bool = False,
+    read_cap: AssemblyReadCap | None = None,
+    phasing_cache: dict | None = None,
 ) -> dict[str, consensus_class.Consensus] | None:
     """Experimental: one consensus per haplotype found by read phasing.
 
@@ -2248,7 +2363,20 @@ def consensus_while_phasing(
     When the phasing finds fewer than two alleles, ``phasing_fallback``
     decides: "single" assembles one consensus from all reads, "legacy" returns
     None so that the caller runs the legacy clustering.
+
+    ``phasing_cache`` (one dict per container, kept across its escalation
+    levels) holds the phasing of a level whose assembly then timed out, so the
+    next level does not phase the same reads again.
     """
+    if phasing_cache is not None and "phasing" in phasing_cache:
+        phasing, seconds = phasing_cache["phasing"]
+        log.info(f"read phasing: reused from the previous level ({seconds:.1f} s saved)")
+        return _consensus_from_phasing(
+            phasing, samplename, cutreads, candidate_regions, lamassemble_mat,
+            consensus_method, phasing_fallback, threads, tmp_dir_path, timeout,
+            verbose, read_cap,
+        )  # fmt: skip
+    started = time.monotonic()
     intervals = get_read_alignment_intervals_in_cr(
         crs=list(candidate_regions.values()),
         dict_alignments=alns,
@@ -2269,6 +2397,30 @@ def consensus_while_phasing(
         timeout=timeout,
         tmp_dir_path=tmp_dir_path,
     )
+    if phasing_cache is not None:
+        phasing_cache["phasing"] = (phasing, time.monotonic() - started)
+    return _consensus_from_phasing(
+        phasing, samplename, cutreads, candidate_regions, lamassemble_mat,
+        consensus_method, phasing_fallback, threads, tmp_dir_path, timeout,
+        verbose, read_cap,
+    )  # fmt: skip
+
+
+def _consensus_from_phasing(
+    phasing: read_phasing.PhasingResult,
+    samplename: str,
+    cutreads: dict[str, SeqRecord],
+    candidate_regions: dict[int, datatypes.CandidateRegion],
+    lamassemble_mat: Path | str | None,
+    consensus_method: str,
+    phasing_fallback: str,
+    threads: int,
+    tmp_dir_path: Path | str | None,
+    timeout: int,
+    verbose: bool,
+    read_cap: AssemblyReadCap | None,
+) -> dict[str, consensus_class.Consensus] | None:
+    """The consensuses of `consensus_while_phasing` from its phasing."""
     base_meta: dict[str, str | int | float] = {
         "method": "phased",
         "phasing_status": phasing.status,
@@ -2306,6 +2458,7 @@ def consensus_while_phasing(
         tmp_dir_path=tmp_dir_path,
         timeout=timeout,
         verbose=verbose,
+        read_cap=read_cap,
     )
 
 
@@ -3126,6 +3279,7 @@ def fast_clustering_consensus(
     tmp_dir_path: Path | str | None = None,
     timeout: int = 120,
     verbose: bool = False,
+    read_cap: AssemblyReadCap | None = None,
 ) -> dict[str, consensus_class.Consensus] | None:
     """--clustering-strategy balanced / fast: consensuses without the read
     phasing, or None when the container needs it.
@@ -3162,6 +3316,7 @@ def fast_clustering_consensus(
                 verbose=verbose,
                 consensus_method=consensus_method,
                 partition=partition,
+                read_cap=read_cap,
             )
             if res:
                 for consensus in res.values():
@@ -3210,6 +3365,7 @@ def fast_clustering_consensus(
         tmp_dir_path=tmp_dir_path,
         timeout=timeout,
         verbose=verbose,
+        read_cap=read_cap,
     )
 
 
@@ -3236,6 +3392,9 @@ def process_consensus_container(
     phasing_fallback: str = "single",
     clustering_strategy: str = "balanced",
     ref_fasta: pysam.FastaFile | None = None,
+    assembly_max_reads: int = 0,
+    heavy_container_bp: int = 0,
+    phasing_cache: dict | None = None,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3313,8 +3472,19 @@ def process_consensus_container(
         dict_alignments=alns, intervals=max_intervals, read_records=read_records
     )
     log.info(f"number of reads: {len(cutreads)}")
-    log.info(
-        f"summed trimmed reads bp: {sum(len(read.seq) for read in cutreads.values())}"
+    summed_bp = sum(len(read.seq) for read in cutreads.values())
+    log.info(f"summed trimmed reads bp: {summed_bp}")
+    # --heavy-container-bp: below the last escalation level, such a container
+    # mostly times out (lamassemble in repeats), so it goes there directly.
+    if heavy_container_bp > 0 and summed_bp >= heavy_container_bp:
+        tool_timeouts.skip_to_last(f"{summed_bp} bp of cut reads")
+    read_cap = (
+        AssemblyReadCap(
+            max_reads=assembly_max_reads,
+            spans=read_reference_spans(alns, list(crs_dict.values())),
+        )
+        if assembly_max_reads > 0
+        else None
     )
 
     dict_summed_indels: dict[str, list[int]] = summed_indel_distribution(
@@ -3353,6 +3523,7 @@ def process_consensus_container(
             tmp_dir_path=tmp_dir_path,
             timeout=timeout,
             verbose=verbose,
+            read_cap=read_cap,
         )
 
     if clustering_mode == "phased" and not res:
@@ -3371,6 +3542,8 @@ def process_consensus_container(
             tmp_dir_path=tmp_dir_path,
             timeout=timeout,
             verbose=verbose,
+            read_cap=read_cap,
+            phasing_cache=phasing_cache,
         )
     if not res:
         res = consensus_while_clustering_with_kmeans(
@@ -3387,6 +3560,7 @@ def process_consensus_container(
             timeout=timeout,
             verbose=verbose,
             consensus_method=consensus_method,
+            read_cap=read_cap,
         )
     if not res:
         res = consensus_while_clustering(
@@ -3624,6 +3798,8 @@ def crs_containers_to_consensus(
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
     clustering_strategy: str = "balanced",
+    assembly_max_reads: int = 0,
+    heavy_container_bp: int = 0,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3641,7 +3817,9 @@ def crs_containers_to_consensus(
     away and processed again at the next level, until one finishes or the
     last level, the hard ceiling, is reached; there the tools' own fallbacks
     run and the degraded result is kept. `threads` caps the
-    threads of every level (0: the CPUs this process may use).
+    threads of every level (0: the CPUs this process may use). A container
+    with at least `heavy_container_bp` bp of cut reads (0: off) starts at the
+    last level. A phasing that finished is reused at the next level.
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -3713,6 +3891,7 @@ def crs_containers_to_consensus(
     n_written = 0
     n_escalated = 0  # containers processed again after a tool timeout
     n_unresolved = 0  # of them, still timed out at the last level
+    n_heavy = 0  # containers sent straight to the last level (heavy_container_bp)
     try:
         with open(output, "w") as out_f:
             for idx, (rep_crID, container) in enumerate(sorted_containers):
@@ -3720,12 +3899,14 @@ def crs_containers_to_consensus(
                     f"PROGRESS [{idx + 1}/{n_containers}] Processing container (representative crID {rep_crID})."
                 )
                 crs_dict = {cr.crID: cr for cr in container["crs"]}
-                for attempt, (attempt_threads, attempt_timeout) in enumerate(
-                    attempts
-                ):
+                phasing_cache: dict = {}
+                attempt = 0
+                while True:
+                    attempt_threads, attempt_timeout = attempts[attempt]
                     # below the last level, a container is abandoned at its first
                     # timeout instead of finishing a degraded result first
                     last_level = attempt + 1 == len(attempts)
+                    heavy = False
                     try:
                         with tool_timeouts.watch(escalate=not last_level) as timed_out:
                             consensuses, _unused = process_consensus_container(
@@ -3751,29 +3932,44 @@ def crs_containers_to_consensus(
                                 phasing_fallback=phasing_fallback,
                                 clustering_strategy=clustering_strategy,
                                 ref_fasta=_ref_fasta,
+                                assembly_max_reads=assembly_max_reads,
+                                heavy_container_bp=heavy_container_bp,
+                                phasing_cache=phasing_cache,
                             )
+                    except tool_timeouts.EscalateToLast:
+                        heavy = True
                     except tool_timeouts.Escalate:
                         pass
                     if not timed_out:
                         break
                     tools = ", ".join(sorted(set(timed_out)))
+                    if heavy:
+                        n_heavy += 1
+                        attempt = len(attempts) - 1
+                        log.info(
+                            f"Container {rep_crID}: heavy ({tools}); straight to "
+                            f"the last level ({attempts[attempt][0]} thread(s), "
+                            f"{attempts[attempt][1]} s)."
+                        )
+                        continue
                     if attempt == 0:
                         n_escalated += 1
-                    if not last_level:
-                        next_threads, next_timeout = attempts[attempt + 1]
-                        log.warning(
-                            f"Container {rep_crID}: {tools} timed out "
-                            f"({attempt_threads} thread(s), {attempt_timeout} s); "
-                            f"escalating to {next_threads} thread(s), "
-                            f"{next_timeout} s."
-                        )
-                    else:
+                    if last_level:
                         n_unresolved += 1
                         log.warning(
                             f"Container {rep_crID}: {tools} timed out at the last "
                             f"level ({attempt_threads} thread(s), {attempt_timeout} s); "
                             "keeping its degraded result."
                         )
+                        break
+                    next_threads, next_timeout = attempts[attempt + 1]
+                    log.warning(
+                        f"Container {rep_crID}: {tools} timed out "
+                        f"({attempt_threads} thread(s), {attempt_timeout} s); "
+                        f"escalating to {next_threads} thread(s), "
+                        f"{next_timeout} s."
+                    )
+                    attempt += 1
 
                 # Validate consensuses immediately so the offending container
                 # is identified in the log if validation fails.
@@ -3853,7 +4049,8 @@ def crs_containers_to_consensus(
     )
     log.info(
         f"{n_escalated} container(s) escalated after a tool timeout; "
-        f"{n_unresolved} of them timed out at the last level too."
+        f"{n_unresolved} of them timed out at the last level too; "
+        f"{n_heavy} heavy container(s) started at the last level."
     )
     log.info("done")
 
@@ -3899,6 +4096,8 @@ def run_consensus_script(args, **kwargs):
         phasing_flank=args.phasing_flank,
         phasing_fallback=args.phasing_fallback,
         clustering_strategy=args.clustering_strategy,
+        assembly_max_reads=args.assembly_max_reads,
+        heavy_container_bp=args.heavy_container_bp,
     )
 
 
@@ -4056,6 +4255,22 @@ def get_consensus_parser(
         "--phasing-fallback). 'fast' in addition to 'balanced' uses the two haplotypes "
         "of the het SNVs in the reads' reference alignments where they split the reads "
         "(needs --reference; costs accuracy). The rest is phased.",
+    )
+    parser.add_argument(
+        "--assembly-max-reads",
+        type=int,
+        default=0,
+        help="Assemble each allele from at most about this many reads over every "
+        "100 bp of the reference (reads covering more of it first; all reads are "
+        "still aligned to the consensus). Bounds lamassemble, whose time grows with "
+        "the square of the read count (default: 0, all reads).",
+    )
+    parser.add_argument(
+        "--heavy-container-bp",
+        type=int,
+        default=0,
+        help="A container with at least this many bp of cut reads starts at the last "
+        "--escalation level instead of timing out below it (default: 0, off).",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

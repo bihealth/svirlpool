@@ -1,0 +1,26 @@
+# The assembly tail (branch perf/assembly-tail): containers whose lamassemble
+# times out below the last escalation level go there directly
+# (--heavy-container-bp), and each allele is assembled from at most ~15 reads
+# per 100 bp of the reference (--assembly-max-reads). A finished phasing is
+# reused at the next escalation level in all three variants (output-identical).
+# On the trio over the representative 15% set, in svp_tiered15:
+#   bash run_grouped_tail.sh   (the variants of one sample together, 8 threads each)
+#   python tiered15_report.py <svp_tiered15> --variants at_base,at_esc,at_esc_cap --ref at_base
+samples: [HG002, HG003, HG004]
+variants:
+  at_base:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: ""
+  at_esc:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--heavy-container-bp 100000"
+    call_flags: ""
+  at_esc_cap:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--heavy-container-bp 100000 --assembly-max-reads 15"
+    call_flags: ""
+active_variants: [at_base, at_esc, at_esc_cap]
