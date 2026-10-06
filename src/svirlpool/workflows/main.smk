@@ -85,7 +85,7 @@ max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
-clustering_strategy = config.get("clustering_strategy", "accurate")
+clustering_strategy = config.get("clustering_strategy", "balanced")
 # None = take each container's copy number from the copy-number track.
 cn_override = config.get("cn_override", None)
 

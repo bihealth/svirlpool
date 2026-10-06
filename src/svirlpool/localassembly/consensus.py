@@ -3234,7 +3234,7 @@ def process_consensus_container(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    clustering_strategy: str = "accurate",
+    clustering_strategy: str = "balanced",
     ref_fasta: pysam.FastaFile | None = None,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
@@ -3334,7 +3334,8 @@ def process_consensus_container(
     # its gate accepts >= 2 clusters of >= FAST_KMEANS_MIN_CLUSTER_FRACTION of
     # the reads each; "fast" otherwise also the two haplotypes of the het SNVs in
     # the reads' reference alignments (ref_snv_haplotypes) when they split the
-    # reads. Everything else is phased. On the HG002 trio "fast" cost accuracy
+    # reads. Everything else is phased. On the HG002 trio "fast" cost accuracy,
+    # "balanced" (the default) did not and saved ~17% CPU
     # (experiments/consensus_perf/strategy_table.py).
     if clustering_mode == "phased" and clustering_strategy in ("balanced", "fast"):
         res = fast_clustering_consensus(
@@ -3622,7 +3623,7 @@ def crs_containers_to_consensus(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    clustering_strategy: str = "accurate",
+    clustering_strategy: str = "balanced",
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -4048,13 +4049,13 @@ def get_consensus_parser(
     parser.add_argument(
         "--clustering-strategy",
         choices=("accurate", "balanced", "fast"),
-        default="accurate",
-        help="With --clustering-mode phased: 'accurate' (default) phases the reads of "
-        "every container (with --phasing-fallback). 'balanced' skips the read phasing "
-        "where KMeans on the reads' summed indels finds >= 2 clusters of >= 20%% of the "
-        "reads each. 'fast' in addition uses the two haplotypes of the het SNVs in the "
-        "reads' reference alignments where they split the reads (needs --reference; "
-        "costs accuracy). The rest is phased.",
+        default="balanced",
+        help="With --clustering-mode phased: 'balanced' (default) skips the read "
+        "phasing where KMeans on the reads' summed indels finds >= 2 clusters of >= 20%% "
+        "of the reads each. 'accurate' phases the reads of every container (with "
+        "--phasing-fallback). 'fast' in addition to 'balanced' uses the two haplotypes "
+        "of the het SNVs in the reads' reference alignments where they split the reads "
+        "(needs --reference; costs accuracy). The rest is phased.",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

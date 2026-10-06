@@ -50,10 +50,10 @@ _REQUIRED = ["-s", "S", "-i", "i.db", "-a", "a.bam", "-cn", "c.bed.gz", "-o", "o
              "-r", "r.fa"]  # fmt: skip
 
 
-def test_the_clustering_strategy_defaults_to_accurate():
+def test_the_clustering_strategy_defaults_to_balanced():
     parser = consensus.get_consensus_parser()
-    assert parser.parse_args(_REQUIRED).clustering_strategy == "accurate"
-    for strategy in ("balanced", "fast"):
+    assert parser.parse_args(_REQUIRED).clustering_strategy == "balanced"
+    for strategy in ("accurate", "fast"):
         args = parser.parse_args(_REQUIRED + ["--clustering-strategy", strategy])
         assert args.clustering_strategy == strategy
 
