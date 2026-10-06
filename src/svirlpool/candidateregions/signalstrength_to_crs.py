@@ -327,6 +327,45 @@ def has_similar_sv_signals(
     return _sizes_similar(dels_this, dels_other) or _sizes_similar(ins_this, ins_other)
 
 
+SATELLITE_TR_FRACTION = 0.9
+
+
+def cr_depth(cr: datatypes.CandidateRegion) -> float:
+    """The read depth of a candidate region: the median coverage of its signals."""
+    return float(np.median([s.coverage for s in cr.sv_signals]))
+
+
+def load_long_tandem_repeats(
+    repeats_file: Path, min_length: int
+) -> npt.NDArray[np.int64]:
+    """The merged (start, end) intervals of the tandem repeats in a bed file that
+    are at least min_length bp long, sorted by start."""
+    intervals = []
+    if repeats_file.exists():
+        with open(repeats_file) as f:
+            for line in f:
+                parts = line.split("\t")
+                start, end = int(parts[1]), int(parts[2])
+                if end - start >= min_length:
+                    intervals.append((start, end))
+    merged: list[list[int]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return np.array(merged, dtype=np.int64).reshape(-1, 2)
+
+
+def covered_fraction(start: int, end: int, intervals: npt.NDArray[np.int64]) -> float:
+    """The fraction of [start, end) covered by sorted, disjoint intervals."""
+    if end <= start or len(intervals) == 0:
+        return 0.0
+    overlapping = intervals[(intervals[:, 1] > start) & (intervals[:, 0] < end)]
+    clipped = np.clip(overlapping, start, end)
+    return float((clipped[:, 1] - clipped[:, 0]).sum() / (end - start))
+
+
 def ensure_min_cr_size(
     cr: datatypes.CandidateRegion, min_cr_size: int
 ) -> datatypes.CandidateRegion:
@@ -339,13 +378,59 @@ def ensure_min_cr_size(
     return cr
 
 
+def signal_support(
+    starts: npt.NDArray[np.int64],
+    sizes: npt.NDArray[np.int64],
+    sv_types: npt.NDArray[np.int64],
+    repeat_ids: npt.NDArray[np.int64],
+    reads: npt.NDArray[np.int64],
+) -> npt.NDArray[np.int32]:
+    """The number of OTHER reads confirming each signal of one chromosome.
+
+    A signal of another read confirms when it is of the same type (both ends of
+    a deletion, types 1 and 2, count as one type, as do the BND types 3 and 4),
+    lies within max(100, size / 2) bp or in the same tandem repeat, and has a
+    similar size (smaller / larger >= 0.5). Unlike the signal strength, which
+    sums all signals nearby, this counts reads that agree on one SV.
+    """
+    support = np.zeros(len(starts), dtype=np.int32)
+    type_class = np.where(
+        np.isin(sv_types, (1, 2)), 1, np.where(np.isin(sv_types, (3, 4)), 3, sv_types)
+    )
+    abs_sizes = np.abs(sizes).astype(float)
+    for tc in np.unique(type_class):
+        idx = np.where(type_class == tc)[0]
+        idx = idx[np.argsort(starts[idx], kind="stable")]
+        pos, size, rep, read = starts[idx], abs_sizes[idx], repeat_ids[idx], reads[idx]
+        same_repeat: dict[int, npt.NDArray] = {}
+        for r in np.unique(rep[rep >= 0]):
+            same_repeat[int(r)] = np.where(rep == r)[0]
+        for i in range(len(idx)):
+            radius = max(100.0, size[i] / 2)
+            a = np.searchsorted(pos, pos[i] - radius)
+            b = np.searchsorted(pos, pos[i] + radius, side="right")
+            j = np.arange(a, b)
+            if rep[i] >= 0:
+                j = np.union1d(j, same_repeat[int(rep[i])])
+            j = j[read[j] != read[i]]
+            similar = np.minimum(size[j], size[i]) / np.maximum(
+                np.maximum(size[j], size[i]), 1
+            )
+            support[idx[i]] = len(np.unique(read[j[similar >= 0.5]]))
+    return support
+
+
 def split_signals_by_chromosome(
     signalstrengths: Path,
     tmp_dir: Path,
     filter_absolute: float,
     filter_normalized: float,
+    min_signal_support: int = 0,
 ) -> dict[str, Path]:
     """Split signals into chromosome-specific files and filter them.
+
+    With min_signal_support > 0, signals confirmed by fewer other reads
+    (see signal_support, counted over all signals) are dropped too.
 
     Returns dict mapping chromosome -> path to filtered signals file.
     """
@@ -353,10 +438,23 @@ def split_signals_by_chromosome(
 
     # First pass: collect all signals and filter
     signals_by_chr: dict[str, list[datatypes.ExtendedSVsignal]] = {}
+    # per chromosome: (start, size, type, repeatID, readname) of ALL signals and
+    # the positions of the kept ones among them, for signal_support
+    all_by_chr: dict[str, list[tuple]] = {}
+    kept_by_chr: dict[str, list[int]] = {}
 
     for svsignal in util.yield_from_extendedSVsignal(
         input=signalstrengths, description="Loading and filtering signals"
     ):
+        if min_signal_support > 0:
+            all_signals = all_by_chr.setdefault(svsignal.chr, [])
+            all_signals.append((
+                svsignal.ref_start,
+                svsignal.size,
+                svsignal.sv_type,
+                svsignal.repeatID,
+                svsignal.readname,
+            ))
         # Apply filters
         signal_normalized = (
             svsignal.strength / svsignal.coverage if svsignal.coverage > 0 else 0.0
@@ -368,6 +466,29 @@ def split_signals_by_chromosome(
             if svsignal.chr not in signals_by_chr:
                 signals_by_chr[svsignal.chr] = []
             signals_by_chr[svsignal.chr].append(svsignal)
+            if min_signal_support > 0:
+                kept_by_chr.setdefault(svsignal.chr, []).append(len(all_signals) - 1)
+
+    if min_signal_support > 0:
+        n_before = sum(len(s) for s in signals_by_chr.values())
+        for chr_name, signals in list(signals_by_chr.items()):
+            starts, sizes, types, repeats, readnames = zip(*all_by_chr[chr_name], strict=True)
+            support = signal_support(
+                starts=np.array(starts, dtype=np.int64),
+                sizes=np.array(sizes, dtype=np.int64),
+                sv_types=np.array(types, dtype=np.int64),
+                repeat_ids=np.array(repeats, dtype=np.int64),
+                reads=np.unique(readnames, return_inverse=True)[1],
+            )
+            kept = support[kept_by_chr[chr_name]] >= min_signal_support
+            signals_by_chr[chr_name] = [s for s, k in zip(signals, kept, strict=True) if k]
+            if not signals_by_chr[chr_name]:
+                del signals_by_chr[chr_name]
+        n_after = sum(len(s) for s in signals_by_chr.values())
+        logger.info(
+            f"  {n_before - n_after} of {n_before} filtered signals are confirmed by "
+            f"fewer than {min_signal_support} other reads and dropped"
+        )
 
     # Write chromosome-specific files
     chr_signal_files = {}
@@ -463,7 +584,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
         return (
             chr_name,
             proto_crs_file,
-            {"chr": chr_name, "n_proto_crs": 0, "read_counts": []},
+            {"chr": chr_name, "n_proto_crs": 0, "read_counts": [], "depths": []},
         )
 
     # Write signals to BED file with margins
@@ -518,6 +639,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
     # Create proto-CRs from merged regions
     proto_crs_file = tmp_dir / f"{chr_name}_proto_crs.tsv"
     read_counts = []
+    depths = []
 
     with open(merged_file, "r") as mf, open(proto_crs_file, "w") as pcf:
         reader = csv.reader(mf, delimiter="\t")
@@ -549,6 +671,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
                         f"{csv.field_size_limit()}"
                     )
                 read_counts.append(len(cr.get_read_names()))
+                depths.append(cr_depth(cr))
                 writer.writerow([
                     cr.chr,
                     cr.referenceStart,
@@ -566,6 +689,7 @@ def process_chromosome_to_proto_crs(args_tuple) -> tuple[str, Path, dict]:
         "chr": chr_name,
         "n_proto_crs": len(read_counts),
         "read_counts": read_counts,
+        "depths": depths,
     }
 
     stats_file = tmp_dir / f"{chr_name}_stats.json"
@@ -610,7 +734,12 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
 
     Args:
         args_tuple: (chr_name, proto_crs_file, tmp_dir, median_read_count,
-                     cutoff_multiplier, min_cr_size)
+                     cutoff_multiplier, min_cr_size, repeats_file,
+                     satellite_min_tr_length, satellite_max_depth)
+
+    A CR that lies >= SATELLITE_TR_FRACTION in tandem repeats of at least
+    satellite_min_tr_length bp and whose depth exceeds satellite_max_depth
+    (None: never) is dropped as a satellite array.
 
     Returns:
         (chr_name, final_crs_file, dropped_crs_file, stats_dict)
@@ -622,6 +751,9 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
         median_read_count,
         cutoff_multiplier,
         min_cr_size,
+        repeats_file,
+        satellite_min_tr_length,
+        satellite_max_depth,
     ) = args_tuple
 
     logger.info(f"Filtering and merging chromosome {chr_name}...")
@@ -634,6 +766,12 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
     n_filtered = 0
     n_kept = 0
     n_merged = 0
+    n_satellite = 0
+    satellite_repeats = (
+        load_long_tandem_repeats(repeats_file, satellite_min_tr_length)
+        if satellite_max_depth is not None
+        else None
+    )
 
     # Check if proto_crs file is empty
     if proto_crs_file.stat().st_size == 0:
@@ -644,7 +782,13 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
             chr_name,
             final_crs_file,
             dropped_crs_file,
-            {"chr": chr_name, "n_kept": 0, "n_filtered": 0, "n_merged": 0},
+            {
+                "chr": chr_name,
+                "n_kept": 0,
+                "n_filtered": 0,
+                "n_merged": 0,
+                "n_satellite": 0,
+            },
         )
 
     # Handle both gzipped and non-gzipped files
@@ -660,6 +804,31 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
         reader = csv.reader(line_tracker, delimiter="\t", quotechar='"')
         writer_final = csv.writer(fcf, delimiter="\t", quotechar='"')
         writer_dropped = csv.writer(dcf, delimiter="\t", quotechar='"')
+
+        def write_cr(cr: datatypes.CandidateRegion) -> None:
+            nonlocal n_kept, n_satellite
+            cr = ensure_min_cr_size(cr, min_cr_size)
+            row = [
+                cr.chr,
+                cr.referenceStart,
+                cr.referenceEnd,
+                json.dumps(cr.unstructure()),
+            ]
+            if (
+                satellite_repeats is not None
+                and cr_depth(cr) > satellite_max_depth
+                and covered_fraction(
+                    cr.referenceStart, cr.referenceEnd, satellite_repeats
+                )
+                >= SATELLITE_TR_FRACTION
+            ):
+                writer_dropped.writerow(row)
+                n_satellite += 1
+                logger.debug(f"Dropped satellite CR at {cr.region_string()}")
+                return
+            writer_final.writerow(row)
+            n_kept += 1
+            logger.debug(f"Wrote CR at {cr.region_string()}")
 
         previous_cr: datatypes.CandidateRegion | None = None
 
@@ -715,43 +884,24 @@ def filter_and_merge_chromosome(args_tuple) -> tuple[str, Path, Path, dict]:
                     )
                     continue
                 else:
-                    # Write previous CR
-                    previous_cr = ensure_min_cr_size(previous_cr, min_cr_size)
-                    writer_final.writerow([
-                        previous_cr.chr,
-                        previous_cr.referenceStart,
-                        previous_cr.referenceEnd,
-                        json.dumps(previous_cr.unstructure()),
-                    ])
-                    n_kept += 1
-                    logger.debug(
-                        f"Wrote CR at {previous_cr.chr}:{previous_cr.referenceStart}-{previous_cr.referenceEnd}"
-                    )
+                    write_cr(previous_cr)
 
             previous_cr = cr
 
         # Write last CR
         if previous_cr is not None:
-            previous_cr = ensure_min_cr_size(previous_cr, min_cr_size)
-            writer_final.writerow([
-                previous_cr.chr,
-                previous_cr.referenceStart,
-                previous_cr.referenceEnd,
-                json.dumps(previous_cr.unstructure()),
-            ])
-            n_kept += 1
-            logger.debug(
-                f"Wrote CR at {previous_cr.chr}:{previous_cr.referenceStart}-{previous_cr.referenceEnd}"
-            )
+            write_cr(previous_cr)
     stats = {
         "chr": chr_name,
         "n_kept": n_kept,
         "n_filtered": n_filtered,
         "n_merged": n_merged,
+        "n_satellite": n_satellite,
     }
 
     logger.info(
-        f"Chromosome {chr_name}: kept={n_kept}, filtered={n_filtered}, merged={n_merged}"
+        f"Chromosome {chr_name}: kept={n_kept}, filtered={n_filtered}, merged={n_merged}, "
+        f"satellite={n_satellite}"
     )
 
     return chr_name, final_crs_file, dropped_crs_file, stats
@@ -849,7 +999,13 @@ def create_candidate_regions(
     bedgraph: Path | None = None,
     tmp_dir_path: Path | None = None,
     bnd_region_radius: int = 300,
+    min_signal_support: int = 0,
+    satellite_depth_factor: float = 0.0,
+    satellite_min_tr_length: int = 10_000,
 ) -> None:
+    """satellite_depth_factor > 0 drops CRs that lie >= SATELLITE_TR_FRACTION in
+    tandem repeats of >= satellite_min_tr_length bp and are deeper than this
+    factor times the median depth of the CRs that pass the read-count filter."""
     csv.field_size_limit(sys.maxsize)
 
     with tempfile.TemporaryDirectory(dir=tmp_dir_path) as tdir:
@@ -870,6 +1026,7 @@ def create_candidate_regions(
             tmp_dir=tmp_dir,
             filter_absolute=filter_absolute,
             filter_normalized=filter_normalized,
+            min_signal_support=min_signal_support,
         )
 
         chr_repeat_files = split_tandem_repeats_by_chromosome(
@@ -963,6 +1120,21 @@ def create_candidate_regions(
         logger.info("Phase 3: Computing global statistics...")
         global_stats = compute_global_statistics(chr_stats)
         median_read_count = global_stats["median_read_count"]
+        satellite_max_depth = None
+        if satellite_depth_factor > 0:
+            depths = [
+                depth
+                for stats in chr_stats
+                for count, depth in zip(stats["read_counts"], stats["depths"], strict=True)
+                if count <= cutoff_median_readcount_per_region * median_read_count
+            ]
+            median_depth = float(np.median(depths)) if depths else 0.0
+            satellite_max_depth = satellite_depth_factor * median_depth
+            logger.info(
+                f"Median CR depth {median_depth:.1f}: CRs in tandem repeats of >= "
+                f"{satellite_min_tr_length} bp deeper than {satellite_max_depth:.1f} "
+                "are dropped as satellites"
+            )
 
         # PHASE 4: Filter and merge each chromosome in parallel
         logger.info(
@@ -980,6 +1152,9 @@ def create_candidate_regions(
                 median_read_count,
                 cutoff_median_readcount_per_region,
                 min_cr_size,
+                chr_repeat_files.get(chr_name, tmp_dir / f"{chr_name}_repeats.bed"),
+                satellite_min_tr_length,
+                satellite_max_depth,
             ))
 
         logger.info("Filtering and merging candidate regions...")
@@ -1002,9 +1177,11 @@ def create_candidate_regions(
         total_kept = sum(s["n_kept"] for s in filter_stats)
         total_filtered = sum(s["n_filtered"] for s in filter_stats)
         total_merged = sum(s["n_merged"] for s in filter_stats)
+        total_satellite = sum(s["n_satellite"] for s in filter_stats)
 
         logger.info(
-            f"Summary: kept={total_kept}, filtered={total_filtered}, merged={total_merged}"
+            f"Summary: kept={total_kept}, filtered={total_filtered}, merged={total_merged}, "
+            f"satellite={total_satellite}"
         )
 
         if total_kept == 0:
@@ -1048,6 +1225,9 @@ def run(args, **kwargs):
         dropped=args.dropped,
         tmp_dir_path=getattr(args, "tmp_dir", None),
         bnd_region_radius=args.bnd_region_radius,
+        min_signal_support=args.min_signal_support,
+        satellite_depth_factor=args.satellite_depth_factor,
+        satellite_min_tr_length=args.satellite_min_tr_length,
     )
 
 
@@ -1146,6 +1326,31 @@ def get_parser():
         required=False,
         default=1200,
         help="Minimum size of candidate region.",
+    )
+    parser.add_argument(
+        "--min-signal-support",
+        type=int,
+        required=False,
+        default=0,
+        help="Drop signals that fewer than this many other reads confirm (same type, "
+        "within max(100, size/2) bp or in the same tandem repeat, size ratio >= 0.5). "
+        "0: off.",
+    )
+    parser.add_argument(
+        "--satellite-depth-factor",
+        type=float,
+        required=False,
+        default=0.0,
+        help="Drop candidate regions that lie >= 90%% in tandem repeats of at least "
+        "--satellite-min-tr-length bp and are deeper than this factor times the "
+        "median candidate region depth (satellite arrays). 0: off.",
+    )
+    parser.add_argument(
+        "--satellite-min-tr-length",
+        type=int,
+        required=False,
+        default=10_000,
+        help="Minimum tandem repeat length for --satellite-depth-factor.",
     )
     parser.add_argument(
         "--tmp-dir",

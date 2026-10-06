@@ -172,6 +172,24 @@ def get_parser():
         default=6.0,
     )
     parser_run_wf.add_argument(
+        "--min-signal-support",
+        help="drop SV signals that fewer than this many other reads confirm (same type, "
+        "within max(100, size/2) bp or in the same tandem repeat, size ratio >= 0.5) "
+        "before forming candidate regions (default: 0, off)",
+        required=False,
+        type=int,
+        default=0,
+    )
+    parser_run_wf.add_argument(
+        "--satellite-depth-factor",
+        help="drop candidate regions that lie >= 90%% in tandem repeats of >= 10 kb and "
+        "are deeper than this factor times the median candidate region depth "
+        "(satellite arrays; default: 0, off)",
+        required=False,
+        type=float,
+        default=0.0,
+    )
+    parser_run_wf.add_argument(
         "--min-mapq",
         help="minimum mapping quality",
         required=False,

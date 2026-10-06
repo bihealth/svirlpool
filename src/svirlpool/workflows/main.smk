@@ -75,6 +75,8 @@ filter_normalized=config["filter_normalized"]
 min_cr_size=config["min_cr_size"]
 cr_merge_buffer=config["cr_merge_buffer"]
 cutoff_median_readcount_per_region=config.get("cutoff_median_readcount_per_region", 6.0)
+min_signal_support = config.get("min_signal_support", 0)
+satellite_depth_factor = config.get("satellite_depth_factor", 0.0)
 
 # consensus
 lamassemble_mat = config.get("lamassemble_mat", None)
@@ -514,6 +516,8 @@ rule candidate_regions_signalstrength_to_crs:
         filter_normalized=filter_normalized,
         min_cr_size=min_cr_size,
         cutoff_median_readcount_per_region=cutoff_median_readcount_per_region,
+        min_signal_support=min_signal_support,
+        satellite_depth_factor=satellite_depth_factor,
         bedgraph='QC/crs',
         buffer=cr_merge_buffer,
         dropped='crs.dropped.tsv.gz',
@@ -544,6 +548,8 @@ rule candidate_regions_signalstrength_to_crs:
         --filter-normalized {params.filter_normalized} \
         --min-cr-size {params.min_cr_size} \
         --cutoff-median-readcount-per-region {params.cutoff_median_readcount_per_region} \
+        --min-signal-support {params.min_signal_support} \
+        --satellite-depth-factor {params.satellite_depth_factor} \
         --log-level {params.log_level} 2>&1 | tee -a {log}"""
 
 rule candidate_regions_QC_crs_to_bed:
