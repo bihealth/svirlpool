@@ -90,7 +90,6 @@ class PhasingParams:
     lowq_factor: float = 3.0
     lowq_min_excess: float = 0.05
     # clustering
-    error_rate: float = 0.1
     min_group: int = 3
     min_discriminating: int = 2
     max_alleles: int = 4
@@ -584,8 +583,13 @@ def sv_sites(
 # --------------------------------------------------------------------------- #
 # clustering
 # --------------------------------------------------------------------------- #
-def pair_weights(sites: list[Site], names: list[str], error_rate: float) -> np.ndarray:
-    """Signed log-likelihood-ratio weights (same vs different haplotype)."""
+def pair_weights(sites: list[Site], names: list[str]) -> np.ndarray:
+    """Signed pair weights: weighted agreements minus disagreements.
+
+    Positive favours the same haplotype, negative different haplotypes. Only
+    the signs and the ranking of the weights matter downstream (greedy merge
+    while positive, reassignment to the best positive group), so the weights
+    carry no scale such as a per-site log-likelihood ratio."""
     idx = {n: i for i, n in enumerate(names)}
     n = len(names)
     A = np.zeros((n, n))
@@ -602,7 +606,7 @@ def pair_weights(sites: list[Site], names: list[str], error_rate: float) -> np.n
             D[ti, idx[q]] += 1.0
     A = A + A.T
     D = D + D.T
-    return np.log((1 - error_rate) / error_rate) * (A - D)
+    return A - D
 
 
 def correlation_cluster(W: np.ndarray) -> list[int]:
@@ -754,7 +758,7 @@ def phase_reads(
     sites = s_snv + s_sv
 
     names = sorted(r for r in reads if r not in lowq)
-    W = pair_weights(sites, names, params.error_rate)
+    W = pair_weights(sites, names)
     labels = refine_clusters(correlation_cluster(W), names, sites, W, params)
 
     groups = {n: lb for n, lb in zip(names, labels, strict=True) if lb >= 0}
