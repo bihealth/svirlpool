@@ -82,3 +82,25 @@ Conclusions:
   selection rule should only bite when a CR has more than k candidate reads.
 
 `readsel_consensus.py` (not yet run) runs the pipeline's consensus on only the top-k reads.
+
+## 5. Trio test: read selection + 240 s container limit (svp_rs10, 2026-10-07)
+
+`--read-selection-factor 2 --container-time-limit 240` (rs_sel240) against the defaults (rs_base).
+The data are the trio on the 10% region set (disjoint from the 15% tuning set), 8 threads per run,
+three runs at a time. `report.py` is the cluster harness's (evaluation/tuning/workflow/scripts).
+
+| | rs_base | rs_sel240 |
+|---|---|---|
+| CPU, trio (h) | 62.0 | 34.2 (−45%) |
+| consensus batch time (h) | 45.7 | 31.4 (−31%) |
+| wall, sum of runs (min; depends on load) | 456 | 379 |
+| containers dropped at 240 s / CRs read-selected / CRs dropped (no crossing read) | – | 87 / 1,638 / 31 |
+| V5 all P / R / F1 | 0.8752 / 0.7785 / 0.8240 | 0.8788 / 0.7788 / 0.8258 |
+| V5 non_trf F1 | 0.9243 | 0.9263 |
+| T2TQ100 all P / R / F1 | 0.8782 / 0.7841 / 0.8285 | 0.8827 / 0.7834 / 0.8301 |
+| T2TQ100 non_trf F1 | 0.9176 | 0.9196 |
+| Mendelian consistency | 0.9321 (5,622 sites) | 0.9336 (5,508 sites) |
+| Q100 identity: mean / aggregate / share ≥ 0.99 | 0.9861 / 0.9682 / 0.869 | 0.9879 / 0.9756 / 0.880 |
+| Q100 representation, paired by container | – | +0.00013 (68 better, 49 worse; 40 containers without consensus) |
+
+The effect of each option alone is not yet separated.
