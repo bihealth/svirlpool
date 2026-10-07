@@ -92,6 +92,8 @@ assembly_max_reads = config.get("assembly_max_reads", 0)
 heavy_container_bp = config.get("heavy_container_bp", 0)
 # seconds of wall clock after which a container is dropped (0: no limit)
 container_time_limit = config.get("container_time_limit", 0)
+# k = this x the median depth: reads per crowded CR (0: all reads)
+read_selection_factor = config.get("read_selection_factor", 0)
 # None = take each container's copy number from the copy-number track.
 cn_override = config.get("cn_override", None)
 
@@ -657,12 +659,33 @@ def get_batch_outputs(wildcards):
 # # CONSENSUS
 # # -----------------------------------------------------------------------------
 
+# the median depth for --read-selection-factor (only built when it is on, so
+# workdirs of earlier runs are not invalidated)
+rule consensus_median_depth:
+    input:
+        containers='crs_containers.db'
+    output:
+        depth='consensus_median_depth.txt'
+    threads: 1
+    resources:
+        mem_mb=4*1024,
+        runtime=20
+    conda:
+        "envs/svirlpool.yml"
+    log:
+        "logs/consensus_median_depth.log"
+    shell:
+        """python3 -u -m svirlpool.candidateregions.container_depth \
+        -i {input.containers} -o {output.depth} 2>&1 | tee -a {log}"""
+
+
 # # assemble the cut reads (one job per batch of adjacent containers)
 rule consensus_consensus:
     input:
         containers='crs_containers.db',
         batches='consensus_batches.tsv',
         copynumbertracks='copy_number_tracks.bed.gz',
+        depth=['consensus_median_depth.txt'] if read_selection_factor > 0 else [],
     output:
         container="consensus/{batchdir}/consensus.batch_{batch_id}.jsonl",
     log:
@@ -685,6 +708,11 @@ rule consensus_consensus:
         assembly_max_reads=assembly_max_reads,
         heavy_container_bp=heavy_container_bp,
         container_time_limit=container_time_limit,
+        read_selection_arg=(
+            f"--read-selection-factor {read_selection_factor} "
+            "--median-depth-file consensus_median_depth.txt"
+            if read_selection_factor > 0 else ""
+        ),
         max_threads=cores,
         escalation=consensus_escalation,
     threads: 1
@@ -725,7 +753,7 @@ rule consensus_consensus:
         --clustering-strategy {params.clustering_strategy} \
         --assembly-max-reads {params.assembly_max_reads} \
         --heavy-container-bp {params.heavy_container_bp} \
-        --container-time-limit {params.container_time_limit} \
+        --container-time-limit {params.container_time_limit} {params.read_selection_arg} \
         -o {output.container} \
         -t {params.max_threads} \
         --escalation {params.escalation} \

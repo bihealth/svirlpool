@@ -335,6 +335,16 @@ def get_parser():
         default=0,
     )
     parser_run_wf.add_argument(
+        "--read-selection-factor",
+        help="In a candidate region with more than k = this x the median depth reads, "
+        "assemble only the k reads crossing it that reach farthest beyond it, filled up "
+        "with reads anchored on one side; drop such a region if no read crosses it "
+        "(default: 0, off).",
+        required=False,
+        type=float,
+        default=0,
+    )
+    parser_run_wf.add_argument(
         "--cn-override",
         help="Use this fixed copy number as the maximum number of read clusters (alleles) of "
         "every candidate-region container, instead of the copy-number track estimate "

@@ -46,6 +46,7 @@ from . import (
     consensus_lib,
     lamassemble,
     read_phasing,
+    read_selection,
     ref_snv_haplotypes,
     tool_timeouts,
 )
@@ -3395,6 +3396,7 @@ def process_consensus_container(
     assembly_max_reads: int = 0,
     heavy_container_bp: int = 0,
     phasing_cache: dict | None = None,
+    read_selection_k: int = 0,
 ) -> tuple[
     dict[str, consensus_class.Consensus], dict[int, list[datatypes.SequenceObject]]
 ]:
@@ -3440,6 +3442,35 @@ def process_consensus_container(
             cr_alns, cr_seqs = read_cache.fetch_for_cr(cr)
         alns[cr.crID] = cr_alns
         read_records.update(cr_seqs)
+    # --read-selection-factor: in a CR crowded with reads, only the reads
+    # crossing it (and one-sided ones) that reach farthest beyond it
+    if read_selection_k > 0:
+        for cr in list(crs_dict.values()):
+            keep, n = read_selection.select_reads(
+                alns[cr.crID],
+                cr.chr,
+                cr.referenceStart,
+                cr.referenceEnd,
+                read_selection_k,
+            )
+            if keep is None:
+                continue
+            alns[cr.crID] = [a for a in alns[cr.crID] if a.query_name in keep]
+            log.info(
+                f"read selection in CR {cr.crID}: kept {n['kept']} of {n['reads']} reads "
+                f"({n['crossing']} crossing, {n['one_sided']} one-sided, k={read_selection_k})"
+            )
+            if not keep:
+                log.warning(
+                    f"read selection: CR {cr.crID} dropped, none of its {n['reads']} "
+                    "reads crosses it"
+                )
+                del alns[cr.crID]
+                crs_dict = {i: c for i, c in crs_dict.items() if i != cr.crID}
+        if not crs_dict:
+            return {}, {}
+        kept_reads = {a.query_name for al in alns.values() for a in al}
+        read_records = {r: s for r, s in read_records.items() if r in kept_reads}
     if verbose:
         # print the qname and reference intervals of the alignments in alns for each alignment
         for crID, alnlist in alns.items():
@@ -3802,6 +3833,7 @@ def crs_containers_to_consensus(
     assembly_max_reads: int = 0,
     heavy_container_bp: int = 0,
     container_time_limit: float = 0,
+    read_selection_k: int = 0,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3824,6 +3856,8 @@ def crs_containers_to_consensus(
     last level. A phasing that finished is reused at the next level.
     A container unfinished after `container_time_limit` seconds of wall clock
     over all its levels (0: off) is dropped: its result is empty.
+    A CR with more than `read_selection_k` reads (0: off) is assembled from its
+    best-anchored reads only (read_selection.select_reads).
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -3945,6 +3979,7 @@ def crs_containers_to_consensus(
                                         assembly_max_reads=assembly_max_reads,
                                         heavy_container_bp=heavy_container_bp,
                                         phasing_cache=phasing_cache,
+                                        read_selection_k=read_selection_k,
                                     )
                             except tool_timeouts.EscalateToLast:
                                 heavy = True
@@ -4119,7 +4154,23 @@ def run_consensus_script(args, **kwargs):
         assembly_max_reads=args.assembly_max_reads,
         heavy_container_bp=args.heavy_container_bp,
         container_time_limit=args.container_time_limit,
+        read_selection_k=read_selection_k_from_args(args),
     )
+
+
+def read_selection_k_from_args(args) -> int:
+    """k of --read-selection-factor: the factor x the median depth, from
+    --median-depth-file (written by candidateregions.container_depth)."""
+    if args.read_selection_factor <= 0:
+        return 0
+    if args.median_depth_file is None:
+        raise ValueError("--read-selection-factor needs --median-depth-file.")
+    depth = float(Path(args.median_depth_file).read_text().strip())
+    k = max(1, round(args.read_selection_factor * depth))
+    log.info(
+        f"read selection: k = {k} ({args.read_selection_factor} x median depth {depth:g})"
+    )
+    return k
 
 
 # =============================================================================
@@ -4299,6 +4350,20 @@ def get_consensus_parser(
         default=0,
         help="Drop a container still unfinished after this many seconds of wall "
         "clock over all --escalation levels (default: 0, no limit).",
+    )
+    parser.add_argument(
+        "--read-selection-factor",
+        type=float,
+        default=0,
+        help="In a CR with more than k = this x the median depth reads, assemble "
+        "only the k reads crossing it that reach farthest beyond it, filled up with "
+        "reads anchored on one side; drop such a CR without a crossing read "
+        "(default: 0, off).",
+    )
+    parser.add_argument(
+        "--median-depth-file",
+        default=None,
+        help="File holding the sample's median depth (for --read-selection-factor).",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",
