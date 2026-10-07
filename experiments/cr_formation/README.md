@@ -156,6 +156,20 @@ applied.
 * The calls lost are mostly outside the T2TQ100 benchmark: 303 calls but 2
   TPs at 120 s. Most of the slow containers lie outside the benchmark
   bed, so truth cannot tell whether those calls were real.
+* Is this an artefact of the region subset? Containers join CRs only through
+  split reads, and a subset cuts links to partners outside its regions.
+  `container_sizes.py` compares the whole-genome HG002 20x run of the paper
+  rerun (hg38, `svirltiles/fix/giab/hg38/20x/HG002`). The whole genome gives
+  31,288 containers for 31,430 CRs (1.00 per container). 0.34% of containers
+  hold more than one CR, the largest holds 7, and 24 span more than one
+  chromosome. Restricted to the containers that touch the 15% regions, the
+  whole genome gives 1.01 CRs per container, with 1.6% of CRs in
+  multi-CR containers (subset: 1.0%). So containers are not larger
+  genome-wide. The consensus batch jobs are, though: batches take up to 100
+  containers within 20 Mb (`crs_to_batches`). In the subset, the gaps between
+  regions cut them to a median of 52 containers (76 batches); in the whole
+  genome they are full (median 100, 357 batches). A time limit belongs on the
+  container, not on the batch job.
 * A limit is a hard drop. The escalation timeouts inside a job (20/60/120 s per
   tool call) instead keep a degraded result. Moving those per-call limits
   changes quality, not the call count, and needs a rerun to measure.
