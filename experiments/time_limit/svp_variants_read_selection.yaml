@@ -1,0 +1,18 @@
+# Read selection in crowded CRs (--read-selection-factor 2: k = 2 x median
+# depth best-anchored reads) together with a 240 s wall-clock limit per
+# consensus container (--container-time-limit), against the defaults. The trio
+# over a 10% region set disjoint from the 15% set, in svp_rs10:
+#   bash run_rs10.sh
+samples: [HG002, HG003, HG004]
+variants:
+  rs_base:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: ""
+  rs_sel240:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--read-selection-factor 2 --container-time-limit 240"
+    call_flags: ""
+active_variants: [rs_base, rs_sel240]
