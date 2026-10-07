@@ -160,6 +160,9 @@ def test_settings_are_on_by_default():
     )
     assert run.read_selection_factor == 2
     assert run.container_time_limit == 240
+    # the cascade: KMeans, else reference-SNV phasing, else all-vs-all phasing
+    assert run.clustering_strategy == "balanced"
+    assert run.phasing_sites == "tiered"
     cons = consensus.get_consensus_parser().parse_args(
         [
             "-s",
@@ -178,3 +181,5 @@ def test_settings_are_on_by_default():
     )
     assert cons.read_selection_factor == 2
     assert cons.container_time_limit == 240
+    assert cons.clustering_strategy == "balanced"
+    assert cons.phasing_sites == "tiered"

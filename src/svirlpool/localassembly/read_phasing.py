@@ -104,6 +104,9 @@ class PhasingResult:
     low_quality: list[str] = field(default_factory=list)
     n_snv_sites: int = 0
     n_sv_sites: int = 0
+    # reference-site phasing only (ref_read_phasing): share of the reads'
+    # observations at the kept SNV columns that disagree with their group
+    discordance: float | None = None
 
     def clusters(self) -> dict[int, list[str]]:
         out: dict[int, list[str]] = defaultdict(list)
@@ -490,30 +493,77 @@ def snv_sites(
     return sites
 
 
+def _flat_reads(
+    sites: list[Site], field: str, idx: dict[str, int], grow: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """The reads of every site's <field> list, in order, as (site index, read
+    index) arrays. A list object shared by several sites is indexed once;
+    with ``grow`` new reads are added to idx."""
+    row_of: dict[int, int] = {}
+    flat: list[int] = []
+    lens: list[int] = []
+    srow = np.empty(len(sites), dtype=np.int64)
+    for i, s in enumerate(sites):
+        lst = getattr(s, field)
+        r = row_of.get(id(lst))
+        if r is None:
+            r = row_of[id(lst)] = len(lens)
+            if grow:
+                flat.extend(idx.setdefault(q, len(idx)) for q in lst)
+            else:
+                flat.extend(idx[q] for q in lst)
+            lens.append(len(lst))
+        srow[i] = r
+    ln = np.array(lens, dtype=np.int64)
+    off = np.cumsum(ln) - ln
+    n_site = ln[srow] if len(sites) else np.zeros(0, dtype=np.int64)
+    site_of = np.repeat(np.arange(len(sites)), n_site)
+    cols = np.array(flat, dtype=np.int64)[_expand(off[srow], n_site)]
+    return site_of, cols
+
+
+def _membership(
+    sites: list[Site], field: str, idx: dict[str, int] | None = None
+) -> tuple[np.ndarray, dict[str, int]]:
+    """M[i, idx[r]] = 1 for the reads r in sites[i].<field> (float32); idx is
+    extended by new reads."""
+    idx = {} if idx is None else idx
+    rows, cols = _flat_reads(sites, field, idx, grow=True)
+    M = np.zeros((len(sites), len(idx)), dtype=np.float32)
+    M[rows, cols] = 1
+    return M, idx
+
+
+def _pad(*ms: np.ndarray) -> list[np.ndarray]:
+    n = max(m.shape[1] for m in ms)
+    return [np.pad(m, ((0, 0), (0, n - m.shape[1]))) for m in ms]
+
+
 def recurrent_sites(
     sites: list[Site], min_support: int, min_conc: float = 0.9, min_dist: int = 20
 ) -> list[Site]:
     """Sites whose read split recurs at >= min_support other positions of the
     same target read."""
-    by_t: dict[str, list[Site]] = defaultdict(list)
-    for s in sites:
-        by_t[s.t].append(s)
+    by_t: dict[str, list[int]] = defaultdict(list)
+    for i, s in enumerate(sites):
+        by_t[s.t].append(i)
+    if not by_t:
+        return []
+    # 1: read has t's / the alternative allele at the site
+    P, idx = _membership(sites, "agree")
+    N, idx = _membership(sites, "disagree", idx)
+    P, N = _pad(P, N)
     keep_ids: set[int] = set()
-    for sl in by_t.values():
-        if len(sl) < 2:
+    for rows in by_t.values():
+        if len(rows) < 2:
             continue
-        # +1 / -1: read has t's / the alternative allele at the site
-        idx = {
-            r: k for k, r in enumerate({r for s in sl for r in s.agree + s.disagree})
-        }
-        pos_m = np.zeros((len(sl), len(idx)), dtype=np.int32)
-        neg_m = np.zeros((len(sl), len(idx)), dtype=np.int32)
-        for i, s in enumerate(sl):
-            pos_m[i, [idx[r] for r in s.agree]] = 1
-            neg_m[i, [idx[r] for r in s.disagree]] = 1
+        sl = [sites[i] for i in rows]
+        pos_m, neg_m = P[rows], N[rows]
+        # float32 products go through BLAS (integer ones do not) and are exact
+        # for counts < 2**24; the ratio is taken in float64 as before
         seen = pos_m + neg_m
-        shared = seen @ seen.T
-        same = pos_m @ pos_m.T + neg_m @ neg_m.T
+        shared = (seen @ seen.T).astype(np.float64)
+        same = (pos_m @ pos_m.T + neg_m @ neg_m.T).astype(np.float64)
         p = np.array([s.pos for s in sl])
         far = np.abs(p[:, None] - p[None, :]) >= min_dist
         np.fill_diagonal(far, False)
@@ -592,18 +642,23 @@ def pair_weights(sites: list[Site], names: list[str]) -> np.ndarray:
     carry no scale such as a per-site log-likelihood ratio."""
     idx = {n: i for i, n in enumerate(names)}
     n = len(names)
-    A = np.zeros((n, n))
-    D = np.zeros((n, n))
-    for s in sites:
-        ti = idx[s.t]
-        # agreement is informative only at a balanced split: where 2 of 20
-        # reads differ, every other read "agrees" with t whatever its haplotype
-        w_agree = min(1.0, 2.0 * min(len(s.agree), len(s.disagree)) / max(1, s.depth))
-        for q in s.agree:
-            if q != s.t:
-                A[ti, idx[q]] += w_agree
-        for q in s.disagree:
-            D[ti, idx[q]] += 1.0
+    # agreement is informative only at a balanced split: where 2 of 20 reads
+    # differ, every other read "agrees" with t whatever its haplotype
+    w_agree = np.array(
+        [
+            min(1.0, 2.0 * min(len(s.agree), len(s.disagree)) / max(1, s.depth))
+            for s in sites
+        ]
+    )
+    t_of = np.array([idx[s.t] for s in sites], dtype=np.int64)
+    sa, qa = _flat_reads(sites, "agree", idx)
+    keep = qa != t_of[sa]
+    sa, qa = sa[keep], qa[keep]
+    sd, qd = _flat_reads(sites, "disagree", idx)
+    # bincount adds in input order (site by site): the same sums as a loop
+    A = np.bincount(t_of[sa] * n + qa, weights=w_agree[sa], minlength=n * n)
+    D = np.bincount(t_of[sd] * n + qd, minlength=n * n).astype(np.float64)
+    A, D = A.reshape(n, n), D.reshape(n, n)
     A = A + A.T
     D = D + D.T
     return A - D
@@ -647,19 +702,45 @@ def discriminating_positions(
     """Distinct variant positions at which clusters a and b are each
     near-unanimous with different alleles (max over targets: every variant is
     seen once per target read)."""
-    per_t: Counter = Counter()
-    for s in sites:
-        ag, di = set(s.agree), set(s.disagree)
-        a0, a1 = len(ag & a_set), len(di & a_set)
-        b0, b1 = len(ag & b_set), len(di & b_set)
-        if a0 + a1 < min_obs or b0 + b1 < min_obs:
-            continue
-        fa, fb = a0 / (a0 + a1), b0 / (b0 + b1)
-        if (fa >= min_major and fb <= 1 - min_major) or (
-            fb >= min_major and fa <= 1 - min_major
-        ):
-            per_t[s.t] += 1
-    return max(per_t.values(), default=0)
+    return _SiteMembership(sites).discriminating(a_set, b_set, min_obs, min_major)
+
+
+class _SiteMembership:
+    """The sites' agree / disagree read sets as matrices, for counting the
+    discriminating positions of many cluster pairs."""
+
+    def __init__(self, sites: list[Site]):
+        ag, idx = _membership(sites, "agree")
+        di, idx = _membership(sites, "disagree", idx)
+        self.ag, self.di = _pad(ag, di)
+        self.idx = idx
+        t_idx: dict[str, int] = {}
+        self.t = np.array(
+            [t_idx.setdefault(s.t, len(t_idx)) for s in sites], dtype=np.int64
+        )
+        self.n_t = len(t_idx)
+
+    def _vec(self, reads: set[str]) -> np.ndarray:
+        v = np.zeros(self.ag.shape[1], dtype=np.float32)
+        v[[self.idx[r] for r in reads if r in self.idx]] = 1
+        return v
+
+    def discriminating(
+        self, a_set: set[str], b_set: set[str], min_obs: int = 2, min_major: float = 0.8
+    ) -> int:
+        if len(self.t) == 0:
+            return 0
+        va, vb = self._vec(a_set), self._vec(b_set)
+        a0, a1 = (self.ag @ va).astype(np.float64), (self.di @ va).astype(np.float64)
+        b0, b1 = (self.ag @ vb).astype(np.float64), (self.di @ vb).astype(np.float64)
+        ok = (a0 + a1 >= min_obs) & (b0 + b1 >= min_obs)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fa, fb = a0 / (a0 + a1), b0 / (b0 + b1)
+        hit = ok & (
+            ((fa >= min_major) & (fb <= 1 - min_major))
+            | ((fb >= min_major) & (fa <= 1 - min_major))
+        )
+        return int(np.bincount(self.t[hit], minlength=self.n_t).max(initial=0))
 
 
 def refine_clusters(
@@ -670,6 +751,7 @@ def refine_clusters(
     params: PhasingParams,
 ) -> list[int]:
     lab = np.array(labels)
+    membership = _SiteMembership(sites)
     while True:
         cnt = Counter(lab[lab >= 0].tolist())
         big = [lb for lb, c in cnt.most_common() if c >= params.min_group]
@@ -679,7 +761,7 @@ def refine_clusters(
         best = None
         for i, a in enumerate(big):
             for b in big[i + 1 :]:
-                d = discriminating_positions(sites, sets[a], sets[b])
+                d = membership.discriminating(sets[a], sets[b])
                 if best is None or d < best[0]:
                     best = (d, a, b)
         if best[0] >= params.min_discriminating:
@@ -727,9 +809,7 @@ def phase_reads(
     if len(reads) < 2 * params.min_group:
         return PhasingResult(status="no_information", unassigned=sorted(reads))
     all_reads = reads
-    if params.max_reads and len(reads) > params.max_reads:
-        keep = sorted(reads, key=lambda n: (-len(reads[n].seq), n))[: params.max_reads]
-        reads = {n: reads[n] for n in sorted(keep)}
+    reads = select_reads(reads, params)
     seqs = {n: str(r.seq) for n, r in reads.items()}
     try:
         with tempfile.TemporaryDirectory(dir=tmp_dir_path) as tmp:
@@ -755,8 +835,24 @@ def phase_reads(
     if params.recurrence > 0:
         s_snv = recurrent_sites(s_snv, min_support=params.recurrence)
     s_sv = sv_sites(by_t, seqs, params) if params.use_sv_sites else []
-    sites = s_snv + s_sv
+    return phase_from_sites(all_reads, reads, s_snv, s_sv, lowq, params)
 
+
+def select_reads(reads: dict, params: PhasingParams) -> dict:
+    """The reads that are phased: at most ``max_reads``, the longest first."""
+    if params.max_reads and len(reads) > params.max_reads:
+        keep = sorted(reads, key=lambda n: (-len(reads[n].seq), n))[: params.max_reads]
+        return {n: reads[n] for n in sorted(keep)}
+    return reads
+
+
+def phase_from_sites(
+    all_reads, reads, s_snv: list[Site], s_sv: list[Site], lowq: set[str], params
+) -> PhasingResult:
+    """Pair weights, correlation clustering and refinement of the sites found
+    on ``reads`` (the phased subset of ``all_reads``): the part of the phasing
+    that does not depend on where the sites come from."""
+    sites = s_snv + s_sv
     names = sorted(r for r in reads if r not in lowq)
     W = pair_weights(sites, names)
     labels = refine_clusters(correlation_cluster(W), names, sites, W, params)

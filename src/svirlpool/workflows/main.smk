@@ -88,6 +88,9 @@ consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
 clustering_strategy = config.get("clustering_strategy", "balanced")
+# phasing sites: reference-alignment SNVs first, all-vs-all when they do not
+# give a clean 2-allele split (tiered); or always ava / always reference
+phasing_sites = config.get("phasing_sites", "tiered")
 assembly_max_reads = config.get("assembly_max_reads", 0)
 heavy_container_bp = config.get("heavy_container_bp", 0)
 # seconds of wall clock after which a container is dropped (0: no limit; default 240)
@@ -705,6 +708,7 @@ rule consensus_consensus:
         phasing_flank=phasing_flank,
         phasing_fallback=phasing_fallback,
         clustering_strategy=clustering_strategy,
+        phasing_sites=phasing_sites,
         assembly_max_reads=assembly_max_reads,
         heavy_container_bp=heavy_container_bp,
         container_time_limit=container_time_limit,
@@ -751,6 +755,7 @@ rule consensus_consensus:
         --phasing-flank {params.phasing_flank} \
         --phasing-fallback {params.phasing_fallback} \
         --clustering-strategy {params.clustering_strategy} \
+        --phasing-sites {params.phasing_sites} \
         --assembly-max-reads {params.assembly_max_reads} \
         --heavy-container-bp {params.heavy_container_bp} \
         --container-time-limit {params.container_time_limit} {params.read_selection_arg} \

@@ -1,0 +1,25 @@
+# --phasing-sites (branch exp/ref-vs-ava-phasing): the read phasing with its
+# sites from the all-vs-all alignments (ps_ava, the default) vs from the
+# reads' reference alignments (ps_ref), everything else equal, and the tiered
+# phasing (ps_tiered: reference sites where they pass the check). For
+# /home/mayv_c/development/svp_improvements, on the trio, SV benchmarks and
+# Mendelian consistency (not stage_reports, which rewrites reports/):
+#   bash run.sh stage_benchmark stage_mendel --configfile <this file>
+samples: [HG002, HG003, HG004]
+variants:
+  ps_ava:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ref-vs-ava/pyproject.toml
+    pixi_env: dev
+    run_flags: "--phasing-sites ava"
+    call_flags: ""
+  ps_ref:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ref-vs-ava/pyproject.toml
+    pixi_env: dev
+    run_flags: "--phasing-sites reference"
+    call_flags: ""
+  ps_tiered:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/ref-vs-ava/pyproject.toml
+    pixi_env: dev
+    run_flags: "--phasing-sites tiered"
+    call_flags: ""
+active_variants: [ps_ava, ps_ref, ps_tiered]

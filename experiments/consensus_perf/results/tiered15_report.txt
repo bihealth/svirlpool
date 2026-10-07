@@ -1,0 +1,58 @@
+== SV benchmark (truvari --pctsize 0.9, refined)
+  variant truthset regions      P      R     F1   TP  FP  FN  F1_raw  GT_conc_raw
+   ps_ava       V5     all 0.8937 0.8080 0.8487 2471 294 587  0.8105       0.9475
+   ps_ava       V5 non_trf 0.9491 0.9197 0.9342  802  43  70  0.9276       0.9786
+   ps_ava  T2TQ100     all 0.8940 0.8138 0.8520 2697 293 617  0.8111       0.8733
+   ps_ava  T2TQ100 non_trf 0.9459 0.9136 0.9295  888  46  84  0.9231       0.8810
+ps_tiered       V5     all 0.8960 0.8095 0.8505 2473 287 582  0.8113       0.9484
+ps_tiered       V5 non_trf 0.9514 0.9209 0.9359  803  41  69  0.9299       0.9799
+ps_tiered  T2TQ100     all 0.8968 0.8152 0.8541 2704 285 613  0.8118       0.8742
+ps_tiered  T2TQ100 non_trf 0.9482 0.9146 0.9311  889  44  83  0.9253       0.8824
+   ps_ref       V5     all 0.8968 0.8011 0.8462 2437 280 605  0.8053       0.9389
+   ps_ref       V5 non_trf 0.9490 0.9154 0.9319  801  43  74  0.9282       0.9736
+   ps_ref  T2TQ100     all 0.8969 0.8019 0.8467 2639 279 652  0.8044       0.8702
+   ps_ref  T2TQ100 non_trf 0.9458 0.9083 0.9267  882  46  89  0.9221       0.8822
+
+== Mendelian consistency (trio)
+  variant  consistent  inconsistent     MC
+   ps_ava        4798           341 0.9336
+ps_tiered        4790           332 0.9352
+   ps_ref        4789           357 0.9306
+
+== svirlpool run
+  variant sample  wall_min  cpu_h  rss_gb  consensus_batch_h  escalated  timeout_last_level
+   ps_ava  HG002    199.78  23.33   13.78              18.59        258                  84
+   ps_ava  HG003    275.10  20.96   13.93              20.00        302                  91
+   ps_ava  HG004    189.35  18.60   13.67              20.02        355                  72
+ps_tiered  HG002    183.92  22.64   13.35              17.33        241                  88
+ps_tiered  HG003    278.07  21.20   14.22              18.82        287                  94
+ps_tiered  HG004    184.47  19.13   13.71              18.85        322                  79
+   ps_ref  HG002    173.20  16.50   13.43              13.36        184                  84
+   ps_ref  HG003    254.65  16.87   14.06              14.74        188                  86
+   ps_ref  HG004    167.90  15.04   13.50              15.07        209                  93
+           wall_min  cpu_h  consensus_batch_h  escalated  timeout_last_level
+variant                                                                     
+ps_ava       664.23  62.89              58.61        915                 247
+ps_ref       595.75  48.41              43.17        581                 263
+ps_tiered    646.45  62.98              55.01        850                 261
+
+== HG002 core consensuses vs Q100
+           consensuses  located  identity_mean  identity_aggr  ge_0.99  ge_0.999  containers  cons_per_container
+ps_ava       8519.0000   0.9998         0.9902         0.9770   0.9091    0.5471   4564.0000              1.8666
+ps_tiered    8527.0000   0.9999         0.9903         0.9783   0.9099    0.5457   4564.0000              1.8683
+ps_ref       9168.0000   0.9999         0.9887         0.9732   0.8539    0.5075   4562.0000              2.0096
+  ps_tiered: containers by phasing sites {'ava': 2567, 'reference': 1961}
+  ps_ref: containers by phasing sites {'reference': 4560}
+
+== container representation of the two Q100 haplotypes, paired vs ps_ava
+  ps_ava: mean 0.98715 over 4564 containers
+  ps_tiered: {'containers': 4563, 'repr': {'diff': 0.00013, 'better': 10, 'worse': 7}, 'prec': {'diff': 3e-05, 'better': 7, 'worse': 10}, 'cons_per_container': (1.866, 1.868), 'n_cons_changed': 36}
+    phased with ava sites: {'containers': 2566, 'repr': {'diff': -0.0001, 'better': 0, 'worse': 3}, 'prec': {'diff': -7e-05, 'better': 1, 'worse': 1}, 'cons_per_container': (1.77, 1.768), 'n_cons_changed': 5}
+    phased with reference sites: {'containers': 1961, 'repr': {'diff': 0.0002, 'better': 7, 'worse': 2}, 'prec': {'diff': 0.00014, 'better': 5, 'worse': 5}, 'cons_per_container': (1.994, 1.999), 'n_cons_changed': 27}
+  ps_tiered, without 57 containers with a last-level timeout: {'containers': 4516, 'repr': {'diff': 9e-05, 'better': 7, 'worse': 2}, 'prec': {'diff': 6e-05, 'better': 5, 'worse': 5}, 'cons_per_container': (1.867, 1.869), 'n_cons_changed': 27}
+    phased with ava sites: {'containers': 2555, 'repr': {'diff': 0.0, 'better': 0, 'worse': 0}, 'prec': {'diff': 0.0, 'better': 0, 'worse': 0}, 'cons_per_container': (1.769, 1.769), 'n_cons_changed': 0}
+    phased with reference sites: {'containers': 1961, 'repr': {'diff': 0.0002, 'better': 7, 'worse': 2}, 'prec': {'diff': 0.00014, 'better': 5, 'worse': 5}, 'cons_per_container': (1.994, 1.999), 'n_cons_changed': 27}
+  ps_ref: {'containers': 4562, 'repr': {'diff': 0.00497, 'better': 315, 'worse': 118}, 'prec': {'diff': 0.00139, 'better': 283, 'worse': 183}, 'cons_per_container': (1.867, 2.009), 'n_cons_changed': 612}
+    phased with reference sites: {'containers': 4560, 'repr': {'diff': 0.00498, 'better': 315, 'worse': 118}, 'prec': {'diff': 0.00139, 'better': 283, 'worse': 183}, 'cons_per_container': (1.867, 2.01), 'n_cons_changed': 612}
+  ps_ref, without 59 containers with a last-level timeout: {'containers': 4514, 'repr': {'diff': 0.00483, 'better': 298, 'worse': 99}, 'prec': {'diff': 0.00115, 'better': 266, 'worse': 164}, 'cons_per_container': (1.866, 2.003), 'n_cons_changed': 578}
+    phased with reference sites: {'containers': 4514, 'repr': {'diff': 0.00483, 'better': 298, 'worse': 99}, 'prec': {'diff': 0.00115, 'better': 266, 'worse': 164}, 'cons_per_container': (1.866, 2.003), 'n_cons_changed': 578}

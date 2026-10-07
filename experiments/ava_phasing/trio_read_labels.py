@@ -70,10 +70,15 @@ CHUNK = 2_000_000
 def load_containers(db):
     con = sqlite3.connect(db)
     out = []
+    multi = []
     for crid, data in con.execute("SELECT crID, data FROM containers"):
         crs = json.loads(data)["crs"]
         chrs = {c["chr"] for c in crs}
-        assert len(chrs) == 1, (crid, chrs)
+        if len(chrs) > 1:
+            # CRs on several chromosomes (translocation-linked): no single
+            # window; such containers get no labels
+            multi.append(int(crid))
+            continue
         out.append(
             (
                 int(crid),
@@ -82,6 +87,8 @@ def load_containers(db):
                 max(c["referenceEnd"] for c in crs),
             )
         )
+    if multi:
+        print(f"skipped {len(multi)} multi-chromosome containers: {multi[:20]}", file=sys.stderr)
     return sorted(out, key=lambda x: (x[1], x[2]))
 
 

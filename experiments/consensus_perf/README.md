@@ -302,3 +302,232 @@ svp_improvements variants `perf_legacy` / `perf_phased`, `e2e_table.py` F1 and
 consensus time per variant, `compare_consensus.py` / `fp_containers.py`
 consensus and FP differences between two variants per container, `py.sh`
 runner.
+
+## Ablation: phasing sites from all-vs-all vs reference alignments
+
+Branch `exp/ref-vs-ava-phasing` (baba158, on a4a8558). Does aligning the reads
+to each other beat reading the same variants off their reference alignments?
+`ref_read_phasing.phase_reads_reference` (arm B, `--phasing-sites reference`)
+builds the same per-target-read SNV and SV sites from the BAM alignments and
+the reference FASTA; everything after the sites (`read_phasing.phase_from_sites`:
+weights, correlation clustering, refinement), the read set (`select_reads`, 50
+longest), the window (CR +- 10 kb) and the low-quality rule (read divergence to
+the reference put on the pairwise scale) are shared with arm A (`phase_reads`).
+
+`ref_vs_ava_eval.py` (lam_orient workdir, 8 processes, 217 s wall) +
+`ref_vs_ava_summary.py`; per-container table `results/ref_vs_ava_all.tsv.gz`.
+All 2004 HG002 containers:
+
+| | A: all-vs-all | B: reference |
+|---|---|---|
+| phasing time (sum) | 1547 s | **48 s** |
+| status phased / single / no info | 1792 / 124 / 88 | 1787 / 91 / 126 |
+| pair accuracy, assigned trio reads (1768 paired containers) | **0.9838** | 0.9707 |
+| containers perfect | **0.958** | 0.926 |
+| trio reads assigned | 0.844 | 0.855 |
+| containers better than the other arm | **93** | 27 (sign test p = 1e-9) |
+| pair errors: split / joined | 641 / 901 | 1632 / 2382 |
+| T2TQ100 allele set recovered (1747) | 0.974 | 0.969 |
+| ... recovered by this arm only | 13 | 5 (p = 0.10) |
+| purity | 0.9947 | 0.9923 |
+
+By trio-label coverage (labelled / all reads of the container; the labels
+come from reference alignments, so low coverage marks reads the reference
+handles badly), pair accuracy A / B: < 0.6: 0.868 / 0.773 (148 containers);
+0.6-0.8: 0.978 / 0.942 (145); >= 0.8: 0.993 / 0.987 (672). TR 0.987 / 0.972,
+non-TR 0.977 / 0.968. At the allele level, the difference is in compound
+hets in TRF (A only 9, B only 4) and hets in TRF (3 / 0).
+
+* Most containers are partitioned identically (median difference 0); the gap
+  is a tail of containers where B collapses, almost all with low label
+  coverage. Two kinds: B sees far more SNV sites than A (crIDs 258, 2002,
+  22: 844 vs 170, 980 vs 83, 2672 vs 1329; mismapped / paralogous reads
+  differ from the reference, not from each other), or far fewer (995, 508,
+  1614: 0 vs 13, 0 vs 4, 4 vs 59; het SNVs the reference alignments miss).
+* The read-level truth is itself reference-based (trio SNVs in the reads'
+  reference alignments), so it is evaluated only where reference alignments
+  work, which favours B; A wins anyway. The allele-level difference is not
+  significant; the end-to-end trio benchmark decides
+  (`svp_variants_phasing_sites.yaml`: ps_ava / ps_ref).
+* Both arms merge a het SV without a het SNV within the window: one SV is one
+  discriminating position, `min_discriminating` is 2
+  (`tests/test_ref_read_phasing.py::test_a_deletion_alone_separates_the_haplotypes`).
+
+### Larger set (30%) and a tiered phasing
+
+5% was too small to fit routing rules safely, so a second, disjoint set was
+built: `make_regions30.py` (seed 30) draws 5 Mb tiles over 31.6% of the
+autosomes' non-N sequence (871 Mb, 128 blocks, `results/regions30.bed`),
+avoiding the 5% blocks +- 1 Mb. Upstream stages only (snakemake targets
+`crs_containers.db consensus_batches.tsv copy_number_tracks.bed.gz`, 12
+threads, in `~/development/phasing_ablation_30pct/`): 8957 containers. Trio
+read labels with `../ava_phasing/trio_read_labels.py` (208,785 informative
+SNVs; 61.7% of reads labelled vs 77.3% on the 5% set, minority votes 0.85%
+vs 0.77% -- random tiles include more repeat-rich and duplicated sequence;
+two containers spanning two chromosomes have no labels), truth columns with
+`../ava_phasing/container_truth_light.py` (same categories as
+container_truth.tsv on the 5% set for all 2004 containers).
+
+A vs B on the 30% set (`results/ref_vs_ava_30pct.tsv.gz`):
+
+| | A: all-vs-all | B: reference |
+|---|---|---|
+| phasing time (sum) | 10368 s | 1062 s |
+| pair accuracy (7142 paired containers) | **0.9688** | 0.9572 |
+| containers perfect | **0.921** | 0.897 |
+| containers better than the other arm | **412** | 242 |
+| allele set recovered (6615) | **0.965** | 0.961 |
+| ... by this arm only | **50** | 25 (p = 0.005) |
+| containers with 3-4 alleles | 391 | 726 |
+
+The 30% set confirms the 5% result and makes the allele-level difference
+significant (mostly compound hets in TRF, 29 vs 11). B over-splits more.
+
+**Routing** (`ref_route_features.py`, `ref_route_rules.py`): when can B stand
+in for A? B's own partition is the best guide -- its *discordance* (share of
+the grouped reads' bases at the kept SNV columns that differ from their
+group's majority; AUC 0.81 for B failing on the 5% set), then allele
+imbalance at those columns (0.78), read divergence (0.70); MAPQ is weak
+(0.65; most failures have MAPQ 60). Rule grid over allele count, discordance,
+imbalance, smallest group share and divergence; a rule must not lose alleles
+on balance and not lose read-level containers beyond a budget.
+
+* Rules fitted on the 5% set and tested on the disjoint 30% set: the simple
+  rule **B finds 2 alleles, discordance <= 0.02, smallest group >= 30%**
+  (also the rule leave-one-chromosome-out picks in 13 of 22 folds on the 5%)
+  holds: 30% set routed 42.9%, 37.4% of A's time avoided, pair accuracy
+  0.9694 vs 0.9688 always-A (95% bootstrap CI of the difference
+  [-0.00002, +0.0012]), containers worse / better 15 / 32, alleles lost /
+  gained 2 / 5. Per chromosome the accuracy change is within +-0.003, no
+  chromosome loses more than 1 allele set; routed share 13% (chr21) to 56%.
+* Looser rules that the 5% set favoured do not transfer: at a 0.2% budget
+  the 5%-fitted rule loses 26 alleles and gains 6 on the 30% set. Leave-one-
+  chromosome-out on the 30% set (and on both, 10961 containers) picks
+  "2 alleles, smallest group >= 30%" without the discordance limit: ~70%
+  routed, ~60% of A's time avoided, accuracy -0.001 to -0.002, alleles
+  neutral (8 / 15, 12 / 16) -- more churn; not adopted.
+* Net saving: B runs for every container in tiered mode. Its mean cost on
+  the 30% set was 0.12 s (median 21 ms; a tail of high-read containers took
+  up to 10 s), so the simple rule saved ~27% of the phasing time net on the
+  30% set and ~47% on the 5% set. The tail is gone since b411f8c (below):
+  >= ~31% net on the 30% set.
+
+`--phasing-sites tiered` implements the simple rule
+(`ref_read_phasing.accept_reference`, `TIERED_MAX_DISCORDANCE` /
+`TIERED_MIN_GROUP_FRACTION`): the reference-site phasing first, kept when it
+passes, the all-vs-all phasing otherwise. Its decisions match the rule of the
+feature table on 2002 of 2004 containers of the 5% set (the two differ by the
+de-duplication of alignments listed under several CRs). End to end:
+`svp_variants_phasing_sites.yaml` (ps_ava / ps_ref / ps_tiered).
+
+### B's slow tail (b411f8c)
+
+Profile of the 10 slowest containers (57 s): 81% in `recurrent_sites`, which
+multiplied int32 site x read matrices -- NumPy has no BLAS path for integer
+products. Then `discriminating_positions` (11%, set intersections per site
+for every cluster pair) and `pair_weights` (4%). The reference arm made it
+worse by giving every target read its own copy of a column's read lists.
+Changes (shared with arm A):
+
+* float32 products (exact for counts < 2^24), the ratio in float64 as before;
+* the site x read memberships built once, a list shared by several sites
+  indexed once; the reference arm shares a column's lists between targets;
+* `discriminating_positions` as matrix products over those memberships;
+* `pair_weights` sums with `bincount`, which adds in the loop's order.
+
+`ref_b_bench.py` freezes B's inputs (150 slowest + 350 random containers of
+the 30% set) and compares old and new code: **every result identical**
+(status, groups, low-quality reads, discordance, digests of the SNV / SV
+sites), total 480 -> 121 s (4.0x), slowest 9.6 -> 1.8 s. Arm A on 120 of
+them: identical (its time is the minimap2 all-vs-all).
+
+### End to end on a representative 15% (svp_tiered15)
+
+`make_regions15.py`: 5 Mb tiles, 15% of every autosome (410 Mb, 72 blocks,
+`results/regions15.bed`), disjoint from the 5% blocks +- 1 Mb where the
+tiered rule was fitted; of 5000 random draws the one closest to the whole
+autosomal genome (largest relative deviation 0.9%):
+
+| | genome | 15% set |
+|---|---|---|
+| TRF share | 0.0624 | 0.0623 |
+| GC | 0.4095 | 0.4060 |
+| T2TQ100 SVs / Mb | 15.37 | 15.42 |
+| V5 SVs / Mb | 13.54 | 13.67 |
+| benchmark-region share | 0.942 | 0.937 |
+
+`~/development/svp_tiered15` is a copy of svp_improvements (own results/,
+shared resources and truvari env) with these regions, the trio and truvari
+`--pctsize 0.9`; variants ps_ava, ps_tiered, ps_ref at b411f8c.
+`consensus_q100.py` scores every HG002 core consensus against the Q100 v1.1
+assembly (located with minimap2 asm20 via the padded consensus, the core
+alone aligned with edlib in infix mode to each haplotype);
+`tiered15_report.py` collects SV benchmarks, Mendelian consistency, run time
+and the consensus identities, paired by container.
+
+Run (2026-10-02): the three variants of a sample together, 8 threads each
+(`run_grouped.sh` / `run_rest.sh` in svp_tiered15), so every variant sees
+the same load -- the consensus timeouts are wall-clock, and the machine ran
+at load 50-100 throughout. One run at a time on 24 threads (tried first)
+left 22 cores idle for an hour per run: the 15% set includes the chr19
+pericentromere (modelled alpha-satellite sequence passes the non-N filter),
+whose containers escalate to the last level and time out by the dozen (one
+batch of 100 containers ran > 2 h). The last escalation level is capped at
+8 threads instead of 12 by this setup, for all variants alike. Report:
+`results/tiered15_report.txt`.
+
+SV benchmark (HG002, truvari --pctsize 0.9, refined F1) and trio Mendelian
+consistency:
+
+| | V5 all | V5 non-TRF | T2TQ100 all | T2TQ100 non-TRF | MC |
+|---|---|---|---|---|---|
+| ps_ava | 0.8487 | 0.9342 | 0.8520 | 0.9295 | 93.36% |
+| **ps_tiered** | **0.8505** | **0.9359** | **0.8541** | **0.9311** | **93.52%** |
+| ps_ref | 0.8462 | 0.9319 | 0.8467 | 0.9267 | 93.06% |
+
+(T2TQ100 all: tiered TP 2704 / FP 285 / FN 613 vs ava 2697 / 293 / 617; ref
+loses recall, 2639 TP.)
+
+HG002 core consensuses vs Q100 (per container `repr` = mean over the two
+haplotypes of the best consensus' identity, recall-like; `prec` = mean
+identity of the container's consensuses, precision-like):
+
+* ps_tiered routes 1961 of 4528 phased containers (43%) to the reference
+  sites, as offline (42.9%). Paired vs ps_ava: repr +0.00013 (10 better / 7
+  worse by > 0.005), prec +0.00003. Without the 57 containers with a
+  last-level timeout in either run, every container phased on the all-vs-all
+  sites is identical in both runs; all differences are in the routed ones
+  (repr 7 better / 2 worse).
+* ps_ref: per consensus worse (identity >= 0.99: 85.4% vs 90.9%; 2.01
+  consensuses per container vs 1.87), per container apparently better (repr
+  +0.005) -- but all of that is the chr19 pericentromere: there the
+  all-vs-all phasing fails in the satellite arrays (no_information -> one
+  consensus at ~0.51 identity to Q100) and the reference sites split the
+  reads into 4 groups at ~0.97. Outside chr19 24-30 Mb ps_ref is worse (repr
+  -0.00076, 58 better / 81 worse; prec -0.00019), ps_tiered is +0.00008
+  (7 / 3). `tiered15_q100_diff.py`.
+
+Time (sum over the trio; wall clock per run is not comparable, the variants
+shared the machine):
+
+| | all-vs-all phasing | consensus batches | CPU of `svirlpool run` |
+|---|---|---|---|
+| ps_ava | 16.74 h (14253 phasings) | 58.6 h | 62.9 h |
+| ps_tiered | 12.78 h (8046) | 55.0 h (-6%) | 63.0 h |
+| ps_ref | -- | 43.2 h (-26%) | 48.4 h |
+
+The tiered mode avoids 24% of the all-vs-all phasing time (`phase_time.py`,
+from the log timestamps, measured under load), but the all-vs-all phasing is
+only ~28% of the consensus time on this set: -6% consensus time, and no
+difference in total CPU within its noise (escalations, contention). Most of
+the consensus time here is lamassemble, much of it timing out in satellites
+and repeats.
+
+Conclusions: (1) the tiered mode is safe -- SV F1, Mendelian consistency
+and consensus accuracy equal to or slightly better than all-vs-all only;
+(2) its saving is small end to end, because the phasing is a minority of the
+consensus cost on a genome-representative set; (3) reference-site phasing
+alone is worse (recall, MC, consensus precision) except in centromeric
+satellites, where the all-vs-all phasing fails -- a candidate for a
+satellite-specific route (tiered accepts only 2-allele results, so it does
+not take these).
