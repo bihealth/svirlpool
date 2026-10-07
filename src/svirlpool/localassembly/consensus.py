@@ -4160,12 +4160,19 @@ def run_consensus_script(args, **kwargs):
 
 def read_selection_k_from_args(args) -> int:
     """k of --read-selection-factor: the factor x the median depth, from
-    --median-depth-file (written by candidateregions.container_depth)."""
+    --median-depth-file (written once per sample by the workflow), else
+    computed from the containers database (--input)."""
     if args.read_selection_factor <= 0:
         return 0
-    if args.median_depth_file is None:
-        raise ValueError("--read-selection-factor needs --median-depth-file.")
-    depth = float(Path(args.median_depth_file).read_text().strip())
+    if args.median_depth_file is not None:
+        depth = float(Path(args.median_depth_file).read_text().strip())
+    else:
+        from ..candidateregions.container_depth import median_container_depth
+
+        depth = median_container_depth(Path(args.input))
+    if depth <= 0:
+        log.warning("read selection: no median depth, all reads are used")
+        return 0
     k = max(1, round(args.read_selection_factor * depth))
     log.info(
         f"read selection: k = {k} ({args.read_selection_factor} x median depth {depth:g})"
@@ -4347,23 +4354,24 @@ def get_consensus_parser(
     parser.add_argument(
         "--container-time-limit",
         type=float,
-        default=0,
+        default=240,
         help="Drop a container still unfinished after this many seconds of wall "
-        "clock over all --escalation levels (default: 0, no limit).",
+        "clock over all --escalation levels; 0: no limit (default: 240).",
     )
     parser.add_argument(
         "--read-selection-factor",
         type=float,
-        default=0,
+        default=2,
         help="In a CR with more than k = this x the median depth reads, assemble "
         "only the k reads crossing it that reach farthest beyond it, filled up with "
-        "reads anchored on one side; drop such a CR without a crossing read "
-        "(default: 0, off).",
+        "reads anchored on one side; drop such a CR without a crossing read; "
+        "0: all reads (default: 2).",
     )
     parser.add_argument(
         "--median-depth-file",
         default=None,
-        help="File holding the sample's median depth (for --read-selection-factor).",
+        help="File holding the sample's median depth (for --read-selection-factor); "
+        "without it, the median is computed from the containers database (-i).",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

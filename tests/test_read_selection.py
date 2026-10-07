@@ -104,13 +104,77 @@ def test_median_container_depth(tmp_path):
     assert container_depth.median_container_depth(db) == pytest.approx(21)
 
 
+def _containers_db(path, depths):
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE containers (crID INTEGER, data TEXT)")
+    for i, d in enumerate(depths):
+        crs = [{"sv_signals": [{"coverage": d}]}]
+        con.execute(
+            "INSERT INTO containers VALUES (?, ?)", (i, json.dumps({"crs": crs}))
+        )
+    con.commit()
+
+
 def test_k_from_args(tmp_path):
     f = tmp_path / "depth.txt"
     f.write_text("20\n")
-    args = SimpleNamespace(read_selection_factor=2.0, median_depth_file=str(f))
+    args = SimpleNamespace(
+        read_selection_factor=2.0, median_depth_file=str(f), input=None
+    )
     assert consensus.read_selection_k_from_args(args) == 40
     args.read_selection_factor = 0
     assert consensus.read_selection_k_from_args(args) == 0
-    args = SimpleNamespace(read_selection_factor=2.0, median_depth_file=None)
-    with pytest.raises(ValueError):
-        consensus.read_selection_k_from_args(args)
+    # without a depth file: the median of the containers database
+    db = tmp_path / "c.db"
+    _containers_db(db, [18, 30, 30])
+    args = SimpleNamespace(read_selection_factor=2.0, median_depth_file=None, input=db)
+    assert consensus.read_selection_k_from_args(args) == 60
+    # an empty database: no depth, all reads
+    empty = tmp_path / "e.db"
+    _containers_db(empty, [])
+    args.input = empty
+    assert consensus.read_selection_k_from_args(args) == 0
+
+
+def test_settings_are_on_by_default():
+    from svirlpool.__main__ import get_parser
+
+    run = get_parser().parse_args(
+        [
+            "run",
+            "--samplename",
+            "s",
+            "--workdir",
+            "w",
+            "--alignments",
+            "a.bam",
+            "--reference",
+            "r.fa",
+            "--trf",
+            "t.bed",
+            "--mononucleotides",
+            "m.bed",
+            "--threads",
+            "1",
+        ]
+    )
+    assert run.read_selection_factor == 2
+    assert run.container_time_limit == 240
+    cons = consensus.get_consensus_parser().parse_args(
+        [
+            "-s",
+            "s",
+            "-i",
+            "c.db",
+            "-a",
+            "a.bam",
+            "-cn",
+            "cn.bed.gz",
+            "-o",
+            "o",
+            "-r",
+            "r.fa",
+        ]
+    )
+    assert cons.read_selection_factor == 2
+    assert cons.container_time_limit == 240

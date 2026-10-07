@@ -328,21 +328,22 @@ def get_parser():
     parser_run_wf.add_argument(
         "--container-time-limit",
         help="Drop a candidate-region container whose consensus is still unfinished "
-        "after this many seconds of wall clock over all --consensus-escalation levels "
-        "(default: 0, no limit).",
+        "after this many seconds of wall clock over all --consensus-escalation levels; "
+        "0: no limit. The limit is wall clock, so it bites harder on a loaded machine "
+        "(default: 240).",
         required=False,
         type=float,
-        default=0,
+        default=240,
     )
     parser_run_wf.add_argument(
         "--read-selection-factor",
         help="In a candidate region with more than k = this x the median depth reads, "
         "assemble only the k reads crossing it that reach farthest beyond it, filled up "
-        "with reads anchored on one side; drop such a region if no read crosses it "
-        "(default: 0, off).",
+        "with reads anchored on one side; drop such a region if no read crosses it; "
+        "0: all reads (default: 2).",
         required=False,
         type=float,
-        default=0,
+        default=2,
     )
     parser_run_wf.add_argument(
         "--cn-override",
