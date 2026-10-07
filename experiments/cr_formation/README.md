@@ -123,6 +123,44 @@ cr_base,cr_s1,cr_s1_sat --ref cr_base`. Variants are in
   which is the suspected source of the quality cost (split CRs, alleles
   assembled in pieces). This has not been checked.
 
+## Per-job time limits (`time_limits.py`)
+
+What a wall-clock limit per consensus job would cost: a container (one job
+of the batch loop) that needs longer than the limit is dropped with all its
+CRs, and so is every call whose consensuses all come from dropped
+containers. The times are from the trio runs above (8 threads per run, three
+runs side by side), with escalation retries included. TP and FP are counted
+on truvari bench for HG002 vs T2TQ100 'all', before refine: 2,549 TPs and
+457 FPs. Calls are counted in the family VCF: 6,472 for cr_base and 6,602 for
+cr_s1_sat. "Consensus h" is the summed container time with the limit
+applied.
+
+| variant | limit | containers lost | CRs lost | calls lost | HG002 TP lost | HG002 FP lost | consensus h |
+|---|---|---|---|---|---|---|---|
+| cr_base | none | 0 of 13,592 | 0 of 13,676 | 0 | 0 | 0 | 43.5 |
+| cr_base | 30 s | 751 (5.5%) | 807 | 850 | 52 | 33 | 20.5 |
+| cr_base | 60 s | 356 (2.6%) | 401 | 486 | 6 | 15 | 24.8 |
+| cr_base | 120 s | 245 (1.8%) | 290 | 303 | 2 | 10 | 29.4 |
+| cr_base | 180 s | 196 (1.4%) | 236 | 229 | 1 | 10 | 33.1 |
+| cr_base | 300 s | 114 (0.8%) | 144 | 139 | 0 | 0 | 38.1 |
+| cr_s1_sat | none | 0 of 14,149 | 0 of 14,242 | 0 | 0 | 0 | 40.4 |
+| cr_s1_sat | 30 s | 794 (5.6%) | 858 | 878 | 38 | 17 | 22.6 |
+| cr_s1_sat | 60 s | 318 (2.2%) | 369 | 482 | 4 | 11 | 26.8 |
+| cr_s1_sat | 120 s | 199 (1.4%) | 242 | 269 | 1 | 10 | 30.6 |
+| cr_s1_sat | 180 s | 152 (1.1%) | 184 | 179 | 0 | 0 | 33.5 |
+| cr_s1_sat | 300 s | 67 (0.5%) | 89 | 46 | 0 | 0 | 36.8 |
+
+* The containers lost hold slightly more than one CR each on average (1.1-1.3).
+  Over the whole run a container holds 1.006 CRs, so job and locus are nearly
+  the same thing here.
+* The calls lost are mostly outside the T2TQ100 benchmark: 303 calls but 2
+  TPs at 120 s. Most of the slow containers lie outside the benchmark
+  bed, so truth cannot tell whether those calls were real.
+* A limit is a hard drop. The escalation timeouts inside a job (20/60/120 s per
+  tool call) instead keep a degraded result. Moving those per-call limits
+  changes quality, not the call count, and needs a rerun to measure.
+* The times depend on the load: three runs shared 24 cores.
+
 ## Next (not run)
 
 * The same rules with buffer 1200 (`--min-signal-support 1
@@ -143,7 +181,8 @@ cr_base,cr_s1,cr_s1_sat --ref cr_base`. Variants are in
 `cr_reform.py` re-forms CRs with `signalstrength_to_crs` and caches them in
 `$CR_STUDY_OUT` (default `./cr_study_out`); `cr_validate.py` the validation
 tables; `cr_lost30.py` which rule loses the 30% SVs, and their depth;
-`cr_b1200.py` the buffer-1200 estimate; `q100_cr.sh` the Q100 comparison of
+`cr_b1200.py` the buffer-1200 estimate; `time_limits.py` the per-job
+time-limit table; `q100_cr.sh` the Q100 comparison of
 the three variants. The svirlpool dev env has no `edlib`, so this script uses
 the svp_tiered15 truvari env's python. Run the Python scripts with the dev
 env, from this directory. The paths to the svp_tiered15 and
