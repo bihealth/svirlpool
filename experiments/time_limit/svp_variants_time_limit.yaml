@@ -1,0 +1,28 @@
+# Consensus container time limit (svirlpool run --container-time-limit, branch
+# perf/assembly-tail): a container still unfinished after this many seconds of
+# wall clock over all escalation levels is dropped. HG002 over a 10% region
+# set disjoint from the 15% set the limits were chosen on, in svp_tl10:
+#   bash run_tl10.sh
+samples: [HG002]
+variants:
+  tl_off:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: ""
+    call_flags: ""
+  tl_120:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--container-time-limit 120"
+    call_flags: ""
+  tl_180:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--container-time-limit 180"
+    call_flags: ""
+  tl_300:
+    manifest: /home/mayv_c/development/svirlpool/.claude/worktrees/strip-error-rate/pyproject.toml
+    pixi_env: dev
+    run_flags: "--container-time-limit 300"
+    call_flags: ""
+active_variants: [tl_off, tl_120, tl_180, tl_300]

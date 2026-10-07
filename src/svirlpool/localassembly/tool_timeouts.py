@@ -5,15 +5,25 @@ failing it: the read phasing falls back to one consensus, a cluster's
 lamassemble consensus is dropped, the spectral all-vs-all subsamples the
 reads. The batch driver (`consensus.crs_containers_to_consensus`) watches for
 these and processes such a container again with more threads and time.
+
+`time_limit` bounds the wall clock of one container over all its levels: a
+container still unfinished then is dropped (`--container-time-limit`).
 """
 
 from __future__ import annotations
 
+import logging
+import signal
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+log = logging.getLogger(__name__)
+
 _hits: list[str] | None = None
 _escalate = False
+_shield_depth = 0  # > 0 inside `shielded()`
+_limit_pending = False  # the time limit ran out inside `shielded()`
 
 
 class Escalate(BaseException):
@@ -56,3 +66,62 @@ def watch(escalate: bool = False) -> Iterator[list[str]]:
         yield _hits
     finally:
         _hits, _escalate = outer
+
+
+class ContainerTimeLimit(BaseException):
+    """Raised inside `time_limit()` once its wall-clock budget is spent. A
+    BaseException for the same reason as `Escalate`."""
+
+
+def _on_alarm(signum, frame) -> None:
+    global _limit_pending
+    if _shield_depth > 0:
+        _limit_pending = True
+    else:
+        raise ContainerTimeLimit()
+
+
+@contextmanager
+def shielded() -> Iterator[None]:
+    """Defer a `ContainerTimeLimit` to the end of the block, for state shared
+    beyond one container (the batch's read cache) that must not be left half
+    updated."""
+    global _shield_depth, _limit_pending
+    _shield_depth += 1
+    try:
+        yield
+    finally:
+        _shield_depth -= 1
+        if _shield_depth == 0 and _limit_pending:
+            _limit_pending = False
+            raise ContainerTimeLimit()
+
+
+@contextmanager
+def time_limit(seconds: float) -> Iterator[None]:
+    """Raise `ContainerTimeLimit` in the block after `seconds` of wall clock
+    (0: no limit). The SIGALRM interrupts the Python code wherever it is: a
+    running `subprocess.run` / `check_call` kills its child on the way out,
+    and the tools' temporary directories are removed by their `with` blocks.
+    Code in C (pysam, numpy) is interrupted when it returns. A no-op, with a
+    warning, outside the main thread or without SIGALRM."""
+    global _limit_pending
+    if seconds <= 0:
+        yield
+        return
+    if (
+        not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    ):
+        log.warning("container time limit needs SIGALRM in the main thread; not set")
+        yield
+        return
+    _limit_pending = False
+    previous = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+        _limit_pending = False

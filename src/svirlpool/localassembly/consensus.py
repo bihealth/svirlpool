@@ -3436,7 +3436,8 @@ def process_consensus_container(
     alns: dict[int, list[pysam.AlignedSegment]] = {}
     read_records: dict[str, SeqRecord] = {}
     for cr in crs_dict.values():
-        cr_alns, cr_seqs = read_cache.fetch_for_cr(cr)
+        with tool_timeouts.shielded():  # the cache outlives the container
+            cr_alns, cr_seqs = read_cache.fetch_for_cr(cr)
         alns[cr.crID] = cr_alns
         read_records.update(cr_seqs)
     if verbose:
@@ -3800,6 +3801,7 @@ def crs_containers_to_consensus(
     clustering_strategy: str = "balanced",
     assembly_max_reads: int = 0,
     heavy_container_bp: int = 0,
+    container_time_limit: float = 0,
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3820,6 +3822,8 @@ def crs_containers_to_consensus(
     threads of every level (0: the CPUs this process may use). A container
     with at least `heavy_container_bp` bp of cut reads (0: off) starts at the
     last level. A phasing that finished is reused at the next level.
+    A container unfinished after `container_time_limit` seconds of wall clock
+    over all its levels (0: off) is dropped: its result is empty.
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -3892,6 +3896,7 @@ def crs_containers_to_consensus(
     n_escalated = 0  # containers processed again after a tool timeout
     n_unresolved = 0  # of them, still timed out at the last level
     n_heavy = 0  # containers sent straight to the last level (heavy_container_bp)
+    n_time_limited = 0  # containers dropped at container_time_limit
     try:
         with open(output, "w") as out_f:
             for idx, (rep_crID, container) in enumerate(sorted_containers):
@@ -3900,76 +3905,90 @@ def crs_containers_to_consensus(
                 )
                 crs_dict = {cr.crID: cr for cr in container["crs"]}
                 phasing_cache: dict = {}
+                container_start = time.monotonic()
                 attempt = 0
-                while True:
-                    attempt_threads, attempt_timeout = attempts[attempt]
-                    # below the last level, a container is abandoned at its first
-                    # timeout instead of finishing a degraded result first
-                    last_level = attempt + 1 == len(attempts)
-                    heavy = False
-                    try:
-                        with tool_timeouts.watch(escalate=not last_level) as timed_out:
-                            consensuses, _unused = process_consensus_container(
-                                samplename=samplename,
-                                crs_dict=crs_dict,
-                                read_cache=cache,
-                                tmp_dir_path=tmp_dir_path,
-                                copy_number_tracks=copy_number_tracks,
-                                threads=attempt_threads,
-                                buffer_clipped_length=buffer_clipped_sequence,
-                                lamassemble_mat=lamassemble_mat,
-                                timeout=attempt_timeout,
-                                figures_dir=figures_dir,
-                                verbose=verbose,
-                                densities_weight=densities_weight,
-                                max_intra_distance=max_intra_distance,
-                                cn_override=cn_override,
-                                consensus_method=consensus_method,
-                                max_padding_size=max_padding_size,
-                                max_copy_number_threshold=max_copy_number_threshold,
-                                clustering_mode=clustering_mode,
-                                phasing_flank=phasing_flank,
-                                phasing_fallback=phasing_fallback,
-                                clustering_strategy=clustering_strategy,
-                                ref_fasta=_ref_fasta,
-                                assembly_max_reads=assembly_max_reads,
-                                heavy_container_bp=heavy_container_bp,
-                                phasing_cache=phasing_cache,
+                try:
+                    with tool_timeouts.time_limit(container_time_limit):
+                        while True:
+                            attempt_threads, attempt_timeout = attempts[attempt]
+                            # below the last level, a container is abandoned at its first
+                            # timeout instead of finishing a degraded result first
+                            last_level = attempt + 1 == len(attempts)
+                            heavy = False
+                            try:
+                                with tool_timeouts.watch(
+                                    escalate=not last_level
+                                ) as timed_out:
+                                    consensuses, _unused = process_consensus_container(
+                                        samplename=samplename,
+                                        crs_dict=crs_dict,
+                                        read_cache=cache,
+                                        tmp_dir_path=tmp_dir_path,
+                                        copy_number_tracks=copy_number_tracks,
+                                        threads=attempt_threads,
+                                        buffer_clipped_length=buffer_clipped_sequence,
+                                        lamassemble_mat=lamassemble_mat,
+                                        timeout=attempt_timeout,
+                                        figures_dir=figures_dir,
+                                        verbose=verbose,
+                                        densities_weight=densities_weight,
+                                        max_intra_distance=max_intra_distance,
+                                        cn_override=cn_override,
+                                        consensus_method=consensus_method,
+                                        max_padding_size=max_padding_size,
+                                        max_copy_number_threshold=max_copy_number_threshold,
+                                        clustering_mode=clustering_mode,
+                                        phasing_flank=phasing_flank,
+                                        phasing_fallback=phasing_fallback,
+                                        clustering_strategy=clustering_strategy,
+                                        ref_fasta=_ref_fasta,
+                                        assembly_max_reads=assembly_max_reads,
+                                        heavy_container_bp=heavy_container_bp,
+                                        phasing_cache=phasing_cache,
+                                    )
+                            except tool_timeouts.EscalateToLast:
+                                heavy = True
+                            except tool_timeouts.Escalate:
+                                pass
+                            if not timed_out:
+                                break
+                            tools = ", ".join(sorted(set(timed_out)))
+                            if heavy:
+                                n_heavy += 1
+                                attempt = len(attempts) - 1
+                                log.info(
+                                    f"Container {rep_crID}: heavy ({tools}); straight to "
+                                    f"the last level ({attempts[attempt][0]} thread(s), "
+                                    f"{attempts[attempt][1]} s)."
+                                )
+                                continue
+                            if attempt == 0:
+                                n_escalated += 1
+                            if last_level:
+                                n_unresolved += 1
+                                log.warning(
+                                    f"Container {rep_crID}: {tools} timed out at the last "
+                                    f"level ({attempt_threads} thread(s), {attempt_timeout} s); "
+                                    "keeping its degraded result."
+                                )
+                                break
+                            next_threads, next_timeout = attempts[attempt + 1]
+                            log.warning(
+                                f"Container {rep_crID}: {tools} timed out "
+                                f"({attempt_threads} thread(s), {attempt_timeout} s); "
+                                f"escalating to {next_threads} thread(s), "
+                                f"{next_timeout} s."
                             )
-                    except tool_timeouts.EscalateToLast:
-                        heavy = True
-                    except tool_timeouts.Escalate:
-                        pass
-                    if not timed_out:
-                        break
-                    tools = ", ".join(sorted(set(timed_out)))
-                    if heavy:
-                        n_heavy += 1
-                        attempt = len(attempts) - 1
-                        log.info(
-                            f"Container {rep_crID}: heavy ({tools}); straight to "
-                            f"the last level ({attempts[attempt][0]} thread(s), "
-                            f"{attempts[attempt][1]} s)."
-                        )
-                        continue
-                    if attempt == 0:
-                        n_escalated += 1
-                    if last_level:
-                        n_unresolved += 1
-                        log.warning(
-                            f"Container {rep_crID}: {tools} timed out at the last "
-                            f"level ({attempt_threads} thread(s), {attempt_timeout} s); "
-                            "keeping its degraded result."
-                        )
-                        break
-                    next_threads, next_timeout = attempts[attempt + 1]
+                            attempt += 1
+                except tool_timeouts.ContainerTimeLimit:
+                    n_time_limited += 1
+                    consensuses = {}
                     log.warning(
-                        f"Container {rep_crID}: {tools} timed out "
-                        f"({attempt_threads} thread(s), {attempt_timeout} s); "
-                        f"escalating to {next_threads} thread(s), "
-                        f"{next_timeout} s."
+                        f"Container {rep_crID}: dropped at the container time limit "
+                        f"of {container_time_limit:g} s "
+                        f"({time.monotonic() - container_start:.0f} s, level "
+                        f"{attempt + 1} of {len(attempts)})."
                     )
-                    attempt += 1
 
                 # Validate consensuses immediately so the offending container
                 # is identified in the log if validation fails.
@@ -4050,7 +4069,8 @@ def crs_containers_to_consensus(
     log.info(
         f"{n_escalated} container(s) escalated after a tool timeout; "
         f"{n_unresolved} of them timed out at the last level too; "
-        f"{n_heavy} heavy container(s) started at the last level."
+        f"{n_heavy} heavy container(s) started at the last level; "
+        f"{n_time_limited} container(s) dropped at the container time limit."
     )
     log.info("done")
 
@@ -4098,6 +4118,7 @@ def run_consensus_script(args, **kwargs):
         clustering_strategy=args.clustering_strategy,
         assembly_max_reads=args.assembly_max_reads,
         heavy_container_bp=args.heavy_container_bp,
+        container_time_limit=args.container_time_limit,
     )
 
 
@@ -4271,6 +4292,13 @@ def get_consensus_parser(
         default=0,
         help="A container with at least this many bp of cut reads starts at the last "
         "--escalation level instead of timing out below it (default: 0, off).",
+    )
+    parser.add_argument(
+        "--container-time-limit",
+        type=float,
+        default=0,
+        help="Drop a container still unfinished after this many seconds of wall "
+        "clock over all --escalation levels (default: 0, no limit).",
     )
     parser.add_argument(
         "--buffer-clipped-sequence",

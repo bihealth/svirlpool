@@ -3,6 +3,7 @@ with more threads and time."""
 
 import json
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -198,6 +199,96 @@ def test_skip_to_last_is_a_no_op_outside_escalation():
     with tool_timeouts.watch(escalate=False) as hits:
         tool_timeouts.skip_to_last("big")
     assert hits == []
+
+
+def test_time_limit_interrupts_and_passes_broad_handlers():
+    t0 = time.monotonic()
+    with pytest.raises(tool_timeouts.ContainerTimeLimit):
+        with tool_timeouts.time_limit(0.2):
+            try:
+                time.sleep(5)
+            except Exception:  # the consensus code's fallbacks
+                pass
+    assert time.monotonic() - t0 < 2
+    time.sleep(0.3)  # disarmed after the block
+
+
+def test_time_limit_kills_a_running_tool():
+    t0 = time.monotonic()
+    with pytest.raises(tool_timeouts.ContainerTimeLimit):
+        with tool_timeouts.time_limit(0.2):
+            subprocess.run(["sleep", "10"], check=True)
+    assert time.monotonic() - t0 < 2
+
+
+def test_time_limit_waits_for_a_shielded_block():
+    done = []
+    with pytest.raises(tool_timeouts.ContainerTimeLimit):
+        with tool_timeouts.time_limit(0.1):
+            with tool_timeouts.shielded():
+                time.sleep(0.3)
+                done.append(True)
+            time.sleep(5)
+    assert done == [True]
+
+
+def test_no_time_limit():
+    with tool_timeouts.time_limit(0):
+        time.sleep(0.1)
+
+
+def test_container_over_the_time_limit_is_dropped(tmp_path, monkeypatch):
+    containers = {
+        crID: {"crs": [SimpleNamespace(crID=crID, chr="chr1", referenceStart=start)]}
+        for crID, start in ((1, 100), (2, 5000))
+    }
+    monkeypatch.setattr(
+        consensus, "load_crs_containers_from_db", lambda path_db, crIDs: containers
+    )
+    monkeypatch.setattr(consensus.read_cache_mod, "ReadSequenceCache", _Cache)
+    monkeypatch.setattr(consensus, "available_cpus", lambda: 24)
+    calls = []
+
+    def process(crs_dict, threads, timeout, **kwargs):
+        crID = next(iter(crs_dict))
+        calls.append((crID, threads, timeout))
+        if crID == 1:
+            if len(calls) == 1:
+                tool_timeouts.record("lamassemble")  # escalates
+            time.sleep(5)  # the next level runs into the limit
+        return {"c": SimpleNamespace(original_regions=[1])}, {}
+
+    monkeypatch.setattr(consensus, "process_consensus_container", process)
+    monkeypatch.setattr(
+        consensus.consensus_class,
+        "CrsContainerResult",
+        lambda consensus_dicts, unused_reads: SimpleNamespace(
+            unstructure=lambda: {"n": len(consensus_dicts)}
+        ),
+    )
+    db = tmp_path / "containers.db"
+    db.write_text("")
+    out = tmp_path / "consensus.jsonl"
+    consensus.crs_containers_to_consensus(
+        samplename="s",
+        input=db,
+        copy_number_tracks=tmp_path / "cn.bed.gz",
+        output=out,
+        lamassemble_mat=None,
+        path_alignments=tmp_path / "reads.bam",
+        threads=16,
+        buffer_clipped_sequence=500,
+        consensus_method="lamassemble",
+        reference=None,
+        escalation=[(1, 20), (4, 60)],
+        container_time_limit=0.3,
+    )
+    assert calls == [(1, 1, 20), (1, 4, 60), (2, 1, 20)]
+    # container 1 dropped (empty result), container 2 kept
+    assert [json.loads(line) for line in out.read_text().splitlines()] == [
+        {"n": 0},
+        {"n": 1},
+    ]
     with tool_timeouts.watch(escalate=True) as hits:
         with pytest.raises(tool_timeouts.EscalateToLast):
             tool_timeouts.skip_to_last("big")

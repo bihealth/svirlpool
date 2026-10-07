@@ -326,6 +326,15 @@ def get_parser():
         default=0,
     )
     parser_run_wf.add_argument(
+        "--container-time-limit",
+        help="Drop a candidate-region container whose consensus is still unfinished "
+        "after this many seconds of wall clock over all --consensus-escalation levels "
+        "(default: 0, no limit).",
+        required=False,
+        type=float,
+        default=0,
+    )
+    parser_run_wf.add_argument(
         "--cn-override",
         help="Use this fixed copy number as the maximum number of read clusters (alleles) of "
         "every candidate-region container, instead of the copy-number track estimate "

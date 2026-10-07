@@ -160,6 +160,15 @@ def get_sequences_from_fasta(
         return {name: ff.fetch(name) for name in sequence_names}
 
 
+def _kill_group(process: subprocess.Popen) -> None:
+    """Kill a process started with start_new_session=True and its children."""
+    try:
+        killpg(getpgid(process.pid), signal.SIGKILL)
+    except OSError:
+        process.kill()
+    process.wait()
+
+
 def align_reads_with_minimap(
     reference: Path | str,
     reads: Path | str | list[Path | str],
@@ -225,6 +234,10 @@ def align_reads_with_minimap(
             raise TimeoutError(
                 "Alignment with minimap2 timed out after the specified time limit."
             )
+        except BaseException:  # e.g. the consensus container time limit
+            _kill_group(p_align)
+            p_sort.kill()
+            raise
 
         # Check that samtools sort succeeded
         if p_sort.returncode != 0:
@@ -339,6 +352,9 @@ def align_reads_with_minimap_paf(
             raise TimeoutError(
                 "Alignment with minimap2 timed out after the specified time limit."
             )
+        except BaseException:  # e.g. the consensus container time limit
+            _kill_group(p_align)
+            raise
         if p_align.returncode != 0:
             raise subprocess.CalledProcessError(p_align.returncode, " ".join(cmd_align))
     finally:

@@ -90,6 +90,8 @@ phasing_fallback = config.get("phasing_fallback", "single")
 clustering_strategy = config.get("clustering_strategy", "balanced")
 assembly_max_reads = config.get("assembly_max_reads", 0)
 heavy_container_bp = config.get("heavy_container_bp", 0)
+# seconds of wall clock after which a container is dropped (0: no limit)
+container_time_limit = config.get("container_time_limit", 0)
 # None = take each container's copy number from the copy-number track.
 cn_override = config.get("cn_override", None)
 
@@ -682,6 +684,7 @@ rule consensus_consensus:
         clustering_strategy=clustering_strategy,
         assembly_max_reads=assembly_max_reads,
         heavy_container_bp=heavy_container_bp,
+        container_time_limit=container_time_limit,
         max_threads=cores,
         escalation=consensus_escalation,
     threads: 1
@@ -722,6 +725,7 @@ rule consensus_consensus:
         --clustering-strategy {params.clustering_strategy} \
         --assembly-max-reads {params.assembly_max_reads} \
         --heavy-container-bp {params.heavy_container_bp} \
+        --container-time-limit {params.container_time_limit} \
         -o {output.container} \
         -t {params.max_threads} \
         --escalation {params.escalation} \
