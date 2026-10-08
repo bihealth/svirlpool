@@ -600,11 +600,13 @@ def write_consensus_files_for_parallel_processing(
                     f"Consensus {consensus.ID} has no consensus_padding. This should not happen. Please check the input data."
                 )
 
+            # The description says where the core lies in the padded sequence;
+            # svirltile.db keeps it, so the core can be cut out again later.
             padded_seqRec = SeqRecord(
                 seq=Seq(consensus.consensus_padding.sequence),
                 id=consensus.ID,
                 name=consensus.ID,
-                description="",
+                description=consensus.padded_description(),
             )
             log.debug(
                 f"Writing padded consensus {consensus.ID} with length {len(consensus.consensus_padding.sequence)} to fasta file"

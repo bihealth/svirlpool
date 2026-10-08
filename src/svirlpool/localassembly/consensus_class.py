@@ -89,6 +89,24 @@ class Consensus:
     def unstructure(self):
         return cattrs.unstructure(self)
 
+    def padded_description(self) -> str:
+        """FASTA description of the padded sequence, e.g.
+        `core=33485-67591 region=chr4:190093012-190093512 phasing=phased`:
+        the core's interval on the padded sequence, the first reference region
+        it was assembled for, and its phasing status. svirltile.db keeps it
+        with the sequence; parse_padded_description reads it back."""
+        if self.consensus_padding is None:
+            raise ValueError(f"Consensus {self.ID} has no consensus_padding.")
+        start, end = self.consensus_padding.consensus_interval_on_sequence_with_padding
+        fields = [f"core={start}-{end}"]
+        if self.original_regions:
+            chrom, region_start, region_end = self.original_regions[0]
+            fields.append(f"region={chrom}:{region_start}-{region_end}")
+        status = self.clustering_meta_data.get("phasing_status")
+        if status:
+            fields.append(f"phasing={status}")
+        return " ".join(fields)
+
     def get_used_readnames(self) -> set[str]:
         """Returns a set of read names that were used to generate this consensus."""
         return {
@@ -109,6 +127,29 @@ class Consensus:
             current_depth += event_type
             max_depth = max(max_depth, current_depth)
         return max_depth
+
+
+def parse_padded_description(description: str) -> dict[str, str | int]:
+    """The fields of Consensus.padded_description, from a FASTA description
+    (with or without the leading sequence ID): core_start, core_end, and, when
+    present, chrom, region_start, region_end and phasing. Empty for a
+    description without a core field (svirltile.db built before it existed)."""
+    fields = dict(token.split("=", 1) for token in description.split() if "=" in token)
+    if "core" not in fields:
+        return {}
+    start, end = fields["core"].split("-")
+    result: dict[str, str | int] = {"core_start": int(start), "core_end": int(end)}
+    if "region" in fields:
+        chrom, interval = fields["region"].rsplit(":", 1)
+        region_start, region_end = interval.split("-")
+        result |= {
+            "chrom": chrom,
+            "region_start": int(region_start),
+            "region_end": int(region_end),
+        }
+    if "phasing" in fields:
+        result["phasing"] = fields["phasing"]
+    return result
 
 
 @attrs.define
