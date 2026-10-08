@@ -23,7 +23,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import attrs
@@ -788,6 +789,37 @@ def align_reads_to_record(
 #: consensus ("using 1 out of 14 sequences").
 LAMASSEMBLE_MAX_INITIAL_MATCHES = 50
 
+#: --lamassemble-max-initial-matches: the -m values tried in turn, each further
+#: one only when the layout of the previous one left reads unlinked (see
+#: lamassemble.LamassembleParams.m_fallback). In satellite arrays -m 50 makes
+#: LAST 6-45x slower than -m 10, which already links the reads there
+#: (experiments/time_limit/README.md, section 6.3).
+_max_initial_matches: tuple[int, ...] = (LAMASSEMBLE_MAX_INITIAL_MATCHES,)
+
+
+def parse_max_initial_matches(text: str) -> tuple[int, ...]:
+    """'10,50' -> (10, 50)"""
+    try:
+        ms = tuple(int(x) for x in str(text).split(","))
+    except ValueError as e:
+        raise ValueError(f"-m values '{text}' are not a list of integers") from e
+    if not ms or any(m < 1 for m in ms):
+        raise ValueError(f"-m values '{text}' must be >= 1")
+    return ms
+
+
+@contextmanager
+def max_initial_matches(ms: Sequence[int]) -> Iterator[None]:
+    """lamassemble's -m values (see `_max_initial_matches`) inside the block."""
+    global _max_initial_matches
+    outer = _max_initial_matches
+    _max_initial_matches = tuple(ms)
+    try:
+        yield
+    finally:
+        _max_initial_matches = outer
+
+
 #: Flank (bp) added on both sides of a candidate region when cutting reads.
 CR_CUT_FLANK = 200
 
@@ -805,11 +837,14 @@ DEFAULT_CONSENSUS_METHOD = "lamassemble-onestrand"
 
 
 def lamassemble_params(both_strands: bool = True) -> lamassemble.LamassembleParams:
-    """lamassemble options of svirlpool: -s 2 -g 67 -m 50."""
+    """lamassemble options of svirlpool: -s 2 -g 67 -m 50 (-m: see
+    `max_initial_matches`)."""
+    m, *fallback = _max_initial_matches
     return lamassemble.LamassembleParams(
         seq_min="2",
         gap_max=67,
-        m=LAMASSEMBLE_MAX_INITIAL_MATCHES,
+        m=m,
+        m_fallback=tuple(fallback),
         both_strands=both_strands,
     )
 
@@ -830,12 +865,13 @@ def make_consensus_with_lamassemble(
     READS > OUTPUT``, run in-process (see ``lamassemble.py``). Returns None
     if the assembly fails, times out or is empty.
     """
-    log.info(
-        f"Running lamassemble on {reads_file} for {consensus_name} "
-        f"(both strands: {both_strands}) with timeout of {timeout} seconds"
-    )
     try:
         sequences = lamassemble.read_sequences(reads_file)
+        log.info(
+            f"Running lamassemble on {reads_file} for {consensus_name} "
+            f"(both strands: {both_strands}) with timeout of {timeout} seconds "
+            f"({len(sequences)} reads, {sum(len(s) for _, s in sequences)} bp)"
+        )
         consensus_sequence = lamassemble.assemble(
             sequences,
             train_file=lamassemble_mat,
@@ -1237,6 +1273,12 @@ def prepare_and_run_racon(
 
 # This function is run after cut reads of one cluster have been aligned to
 # their representative read (for racon/lamassemble).
+def fasta_bp(path: Path | str) -> int:
+    """Summed sequence length of a FASTA file."""
+    with open(path) as f:
+        return sum(len(line.strip()) for line in f if not line.startswith(">"))
+
+
 def assemble_consensus(
     lamassemble_mat: Path | None | str,
     name: str,
@@ -1253,6 +1295,8 @@ def assemble_consensus(
         raise ValueError(
             f"Unknown consensus method '{method}'. Choose one of {CONSENSUS_METHODS}."
         )
+    # --max-assembly-bp: drop the container before an oversized assembly starts
+    tool_timeouts.check_assembly_size(fasta_bp(reads_fasta))
 
     with tempfile.TemporaryDirectory():
         if method == "racon":
@@ -3877,6 +3921,8 @@ def crs_containers_to_consensus(
     container_time_limit: float = 0,
     read_selection_k: int = 0,
     phasing_sites: str = "tiered",
+    max_assembly_bp: int = 0,
+    lamassemble_max_initial_matches: Sequence[int] = (LAMASSEMBLE_MAX_INITIAL_MATCHES,),
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3901,6 +3947,11 @@ def crs_containers_to_consensus(
     over all its levels (0: off) is dropped: its result is empty.
     A CR with more than `read_selection_k` reads (0: off) is assembled from its
     best-anchored reads only (read_selection.select_reads).
+    A container about to assemble more than `max_assembly_bp` bp of reads in
+    one assembly (0: off) is dropped before that assembly starts: the same
+    decision on every machine and at every load, unlike the time limit.
+    `lamassemble_max_initial_matches`: lamassemble's -m values (see
+    `max_initial_matches`).
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -3924,6 +3975,12 @@ def crs_containers_to_consensus(
     log.info(
         "escalation levels (threads, timeout s): "
         + ", ".join(f"({t}, {sec})" for t, sec in attempts)
+    )
+    log.info(
+        f"container time limit: {container_time_limit:g} s; assembly size limit: "
+        f"{max_assembly_bp} bp; lamassemble -m: "
+        + ",".join(map(str, lamassemble_max_initial_matches))
+        + " (0: no limit)"
     )
     if crIDs is not None:
         if not isinstance(crIDs, list):
@@ -3974,6 +4031,7 @@ def crs_containers_to_consensus(
     n_unresolved = 0  # of them, still timed out at the last level
     n_heavy = 0  # containers sent straight to the last level (heavy_container_bp)
     n_time_limited = 0  # containers dropped at container_time_limit
+    n_too_large = 0  # containers dropped at max_assembly_bp
     try:
         with open(output, "w") as out_f:
             for idx, (rep_crID, container) in enumerate(sorted_containers):
@@ -3985,7 +4043,11 @@ def crs_containers_to_consensus(
                 container_start = time.monotonic()
                 attempt = 0
                 try:
-                    with tool_timeouts.time_limit(container_time_limit):
+                    with (
+                        tool_timeouts.time_limit(container_time_limit),
+                        tool_timeouts.assembly_size_limit(max_assembly_bp),
+                        max_initial_matches(lamassemble_max_initial_matches),
+                    ):
                         while True:
                             attempt_threads, attempt_timeout = attempts[attempt]
                             # below the last level, a container is abandoned at its first
@@ -4068,6 +4130,13 @@ def crs_containers_to_consensus(
                         f"({time.monotonic() - container_start:.0f} s, level "
                         f"{attempt + 1} of {len(attempts)})."
                     )
+                except tool_timeouts.AssemblyTooLarge as e:
+                    n_too_large += 1
+                    consensuses = {}
+                    log.warning(
+                        f"Container {rep_crID}: dropped at --max-assembly-bp: {e} "
+                        f"({time.monotonic() - container_start:.0f} s)."
+                    )
 
                 # Validate consensuses immediately so the offending container
                 # is identified in the log if validation fails.
@@ -4149,7 +4218,8 @@ def crs_containers_to_consensus(
         f"{n_escalated} container(s) escalated after a tool timeout; "
         f"{n_unresolved} of them timed out at the last level too; "
         f"{n_heavy} heavy container(s) started at the last level; "
-        f"{n_time_limited} container(s) dropped at the container time limit."
+        f"{n_time_limited} container(s) dropped at the container time limit; "
+        f"{n_too_large} container(s) dropped at the assembly size limit."
     )
     log.info("done")
 
@@ -4200,6 +4270,10 @@ def run_consensus_script(args, **kwargs):
         container_time_limit=args.container_time_limit,
         read_selection_k=read_selection_k_from_args(args),
         phasing_sites=args.phasing_sites,
+        max_assembly_bp=args.max_assembly_bp,
+        lamassemble_max_initial_matches=parse_max_initial_matches(
+            args.lamassemble_max_initial_matches
+        ),
     )
 
 
@@ -4417,6 +4491,35 @@ def get_consensus_parser(
         "This is the main dial between speed and SV recall. "
         "The limit is wall clock, so it bites harder on a loaded or slower machine; "
         "raise it there.",
+    )
+    parser.add_argument(
+        "--max-assembly-bp",
+        type=int,
+        default=0,
+        help="Drop a container before it assembles more than this many bp of reads "
+        "in one assembly (after --assembly-max-reads); 0: no limit (default: 0). "
+        "lamassemble's time grows with the square of its input, so this bounds a "
+        "container's cost like --container-time-limit, but the same on every machine "
+        "and at every load.",
+    )
+    parser.add_argument(
+        "--lamassemble-max-initial-matches",
+        default=str(LAMASSEMBLE_MAX_INITIAL_MATCHES),
+        help="LAST -m (max initial matches per query position) of lamassemble's "
+        "all-vs-all alignment; comma-separated values are tried in turn, each only "
+        "when the previous one left reads unlinked, e.g. '10,50': in satellite arrays "
+        "-m 50 makes LAST many times slower than -m 10, while short tandem repeats "
+        "need 50 (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--tmp-dir",
+        default=None,
+        help="Directory for this process' temporary files (lamassemble, minimap2 and "
+        "phasing inputs): each process works in its own new subdirectory of it, "
+        "removed at the end (default: $TMPDIR or the system default). On a cluster use "
+        "node-local storage, e.g. /tmp inside a SLURM job: on a shared file system "
+        "the many small temporary files can make the consensus wait on I/O most of "
+        "the time.",
     )
     parser.add_argument(
         "--read-selection-factor",
@@ -4738,6 +4841,29 @@ def _configure_diagnostic_logger(log_level: int, diag_logfile: str | None) -> No
 # =============================================================================
 
 
+@contextmanager
+def private_tmp_dir(base: str | Path | None) -> Iterator[Path]:
+    """Every temporary file of this process and of the tools it starts in a new
+    directory under `base` (None: $TMPDIR or the system default), removed at the
+    end. One directory per process, never shared: on cephfs, consensus
+    processes creating and removing their temporary files in one directory
+    spent most of their wall clock waiting (experiments/time_limit/README.md,
+    section 6.1)."""
+    path = tempfile.mkdtemp(prefix="svirlpool-consensus.", dir=base)
+    outer_tempdir, outer_env = tempfile.tempdir, os.environ.get("TMPDIR")
+    tempfile.tempdir = path
+    os.environ["TMPDIR"] = path
+    try:
+        yield Path(path)
+    finally:
+        tempfile.tempdir = outer_tempdir
+        if outer_env is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = outer_env
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def main():
     """Main entry point for the consensus script."""
     parser = get_consensus_parser()
@@ -4777,7 +4903,9 @@ def main():
     log.info("Starting consensus generation with log level %s", args.log_level)
     diag_log.info("Starting consensus generation with log level %s", args.log_level)
     try:
-        run_consensus_script(args)
+        with private_tmp_dir(args.tmp_dir) as tmp:
+            log.info(f"temporary files in {tmp}")
+            run_consensus_script(args)
     finally:
         mem_monitor_stop.set()
     log.info("Consensus generation completed")

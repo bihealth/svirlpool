@@ -96,6 +96,13 @@ heavy_container_bp = config.get("heavy_container_bp", 0)
 # seconds of wall clock after which a container is dropped (0: no limit; default
 # 180); the main dial between speed and SV recall (see svirlpool run --help)
 container_time_limit = config.get("container_time_limit", 180)
+# bp of reads in one assembly above which a container is dropped (0: no limit);
+# the same on every machine, unlike the time limit (see svirlpool run --help)
+max_assembly_bp = config.get("max_assembly_bp", 0)
+# LAST -m values of lamassemble, tried in turn while reads stay unlinked
+lamassemble_max_initial_matches = config.get("lamassemble_max_initial_matches", "50")
+# base directory of the consensus processes' temporary files (None: $TMPDIR)
+consensus_tmp_dir = config.get("consensus_tmp_dir") or ""
 # k = this x the median depth: reads per crowded CR (0: all reads; default 3)
 read_selection_factor = config.get("read_selection_factor", 3)
 # None = take each container's copy number from the copy-number track.
@@ -715,6 +722,9 @@ rule consensus_consensus:
         assembly_max_reads=assembly_max_reads,
         heavy_container_bp=heavy_container_bp,
         container_time_limit=container_time_limit,
+        max_assembly_bp=max_assembly_bp,
+        lamassemble_max_initial_matches=lamassemble_max_initial_matches,
+        tmp_dir_arg=f"--tmp-dir {consensus_tmp_dir}" if consensus_tmp_dir else "",
         # always passed: without it the consensus CLI applies its own default
         # (2), so a 0 here would not switch the read selection off
         read_selection_arg=(
@@ -764,6 +774,8 @@ rule consensus_consensus:
         --assembly-max-reads {params.assembly_max_reads} \
         --heavy-container-bp {params.heavy_container_bp} \
         --container-time-limit {params.container_time_limit} {params.read_selection_arg} \
+        --max-assembly-bp {params.max_assembly_bp} \
+        --lamassemble-max-initial-matches {params.lamassemble_max_initial_matches} {params.tmp_dir_arg} \
         -o {output.container} \
         -t {params.max_threads} \
         --escalation {params.escalation} \

@@ -94,6 +94,11 @@ class LamassembleParams:
     W: int = 19
     #: LAST -m: max initial matches per query position
     m: int = 5
+    #: Not in lamassemble: further -m values, each tried (with both strands
+    #: tried first, see `both_strands`) only when the layout of the previous
+    #: one left reads unlinked. A small -m is much cheaper in satellite arrays,
+    #: a large one links the reads of short tandem repeats.
+    m_fallback: tuple[int, ...] = ()
     #: LAST -z: max gap length
     z: int = 30
     #: Run lastal on both strands (lamassemble's behaviour). With False only
@@ -803,6 +808,24 @@ def _mafft_alignment(tmpdir, fasta_text, tree_text, anchors_text, scores,
     return _aligned_rows(out)
 
 
+def layout_attempts(params: LamassembleParams) -> list[LamassembleParams]:
+    """The LAST settings tried in turn until the layout links every read: for
+    each -m (`m`, then `m_fallback`), one strand then both strands in one-strand
+    mode, both strands otherwise. lamassemble's own behaviour is the single
+    attempt with both strands."""
+    out = []
+    for m in (params.m, *params.m_fallback):
+        p = dataclasses.replace(params, m=m, m_fallback=())
+        out.append(p)
+        if not p.both_strands:
+            out.append(dataclasses.replace(p, both_strands=True))
+    return out
+
+
+def _strands(params: LamassembleParams) -> str:
+    return "both strands" if params.both_strands else "one strand"
+
+
 def multiple_alignment(
     sequences: list[tuple[str, str]],
     train_file: str,
@@ -832,25 +855,26 @@ def multiple_alignment(
     deadline = _Deadline(timeout)
     scores = alignment_scores(str(train_file))
     with tempfile.TemporaryDirectory(prefix="lamassemble", dir=tmp_dir) as tmpdir:
-        alignments = _pairwise_alignments(
-            params, scores, sequences, tmpdir, threads, deadline
-        )
-        deadline.remaining()
-        data_per_seq, alignment_order, kept = _layout_of_seqs(
-            params, len(sequences), alignments
-        )
-        if not params.both_strands and len(alignment_order) < len(sequences) - 1:
-            # One strand left reads unlinked. In tandem repeats, orienting all
-            # reads alike multiplies each seed's matches past LAST's -m limit,
-            # which reads on the other strand stay under: redo with both.
-            log.debug("lamassemble: one-strand layout incomplete, using both strands")
-            params = dataclasses.replace(params, both_strands=True)
+        attempts = layout_attempts(params)
+        for i, params in enumerate(attempts):
             alignments = _pairwise_alignments(
                 params, scores, sequences, tmpdir, threads, deadline
             )
             deadline.remaining()
             data_per_seq, alignment_order, kept = _layout_of_seqs(
                 params, len(sequences), alignments
+            )
+            if len(alignment_order) == len(sequences) - 1 or i + 1 == len(attempts):
+                break
+            # Reads left unlinked. In tandem repeats, orienting all reads
+            # alike multiplies each seed's matches past LAST's -m limit, which
+            # reads on the other strand stay under, and a larger -m keeps
+            # seeds that a small one drops.
+            nxt = attempts[i + 1]
+            log.info(
+                f"lamassemble: {len(alignment_order) + 1} of {len(sequences)} reads "
+                f"linked at -m {params.m} ({_strands(params)}); "
+                f"retrying at -m {nxt.m} ({_strands(nxt)})"
             )
         group_per_seq, is_rev_per_seq = zip(*data_per_seq, strict=True)
         seqs_per_group = [0] * len(sequences)

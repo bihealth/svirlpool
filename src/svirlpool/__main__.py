@@ -351,6 +351,39 @@ def get_parser():
         default=180,
     )
     parser_run_wf.add_argument(
+        "--max-assembly-bp",
+        help="Drop a candidate-region container before it assembles more than this "
+        "many bp of reads in one assembly (after --assembly-max-reads); 0: no limit "
+        "(default: 0). lamassemble's time grows with the square of its input, so this "
+        "bounds a container's cost like --container-time-limit, but the same on every "
+        "machine and at every load.",
+        required=False,
+        type=int,
+        default=0,
+    )
+    parser_run_wf.add_argument(
+        "--lamassemble-max-initial-matches",
+        help="LAST -m (max initial matches per query position) of lamassemble's "
+        "all-vs-all alignment; comma-separated values are tried in turn, each only "
+        "when the previous one left reads unlinked, e.g. '10,50': in satellite arrays "
+        "-m 50 makes LAST many times slower than -m 10, while short tandem repeats "
+        "need 50 (default: %(default)s).",
+        required=False,
+        type=str,
+        default="50",
+    )
+    parser_run_wf.add_argument(
+        "--consensus-tmp-dir",
+        help="Directory for the temporary files of the consensus processes; each "
+        "works in its own new subdirectory, removed at its end (default: $TMPDIR or "
+        "the system default). On a cluster use node-local storage, e.g. /tmp inside "
+        "a SLURM job: on a shared file system the many small temporary files can make "
+        "the consensus wait on I/O most of the time.",
+        required=False,
+        type=str,
+        default=None,
+    )
+    parser_run_wf.add_argument(
         "--read-selection-factor",
         help="In a candidate region with more than k = this x the median depth reads, "
         "assemble only the k reads crossing it that reach farthest beyond it, filled up "

@@ -8,6 +8,10 @@ these and processes such a container again with more threads and time.
 
 `time_limit` bounds the wall clock of one container over all its levels: a
 container still unfinished then is dropped (`--container-time-limit`).
+
+`assembly_size_limit` bounds the bp of any one assembly of a container: a
+container about to assemble more is dropped (`--max-assembly-bp`). Unlike the
+wall clock, this does not depend on the machine or its load.
 """
 
 from __future__ import annotations
@@ -125,3 +129,34 @@ def time_limit(seconds: float) -> Iterator[None]:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
         _limit_pending = False
+
+
+class AssemblyTooLarge(BaseException):
+    """Raised by `check_assembly_size` inside `assembly_size_limit()` when an
+    assembly's reads exceed its bp budget. A BaseException for the same reason
+    as `Escalate`: no fallback may assemble the same reads some other way."""
+
+
+_max_assembly_bp = 0  # 0: no limit
+
+
+def check_assembly_size(bp: int) -> None:
+    """Raise `AssemblyTooLarge` if an assembly of `bp` bp of reads is over the
+    budget of the enclosing `assembly_size_limit()` (a no-op outside it)."""
+    if 0 < _max_assembly_bp < bp:
+        raise AssemblyTooLarge(f"{bp} bp in one assembly (> {_max_assembly_bp})")
+
+
+@contextmanager
+def assembly_size_limit(max_bp: int) -> Iterator[None]:
+    """Inside the block, an assembly of more than `max_bp` bp raises
+    `AssemblyTooLarge` before it starts (0: no limit). lamassemble's time grows
+    with the square of its input, so this bounds a container's cost the way a
+    time limit does, but deterministically."""
+    global _max_assembly_bp
+    outer = _max_assembly_bp
+    _max_assembly_bp = max(0, int(max_bp))
+    try:
+        yield
+    finally:
+        _max_assembly_bp = outer
