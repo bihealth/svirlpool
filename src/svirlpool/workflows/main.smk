@@ -194,6 +194,7 @@ rule signalprocessing_alignments_to_rafs:
         index="rafs.tsv.gz.tbi",
     params:
         samplename=samplename,
+        reference=reference,
         min_signal_size=6,
         min_bnd_size=300,
         min_segment_size=250,
@@ -216,6 +217,7 @@ rule signalprocessing_alignments_to_rafs:
         -a {input.alignments} \
         -s {params.samplename} \
         -r {input.regions} \
+        --reference {params.reference} \
         -o {output.file} \
         --max-coverage {params.max_coverage_per_region} \
         --min-signal-size {params.min_signal_size} \
