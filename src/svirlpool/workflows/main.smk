@@ -712,10 +712,12 @@ rule consensus_consensus:
         assembly_max_reads=assembly_max_reads,
         heavy_container_bp=heavy_container_bp,
         container_time_limit=container_time_limit,
+        # always passed: without it the consensus CLI applies its own default
+        # (2), so a 0 here would not switch the read selection off
         read_selection_arg=(
-            f"--read-selection-factor {read_selection_factor} "
-            "--median-depth-file consensus_median_depth.txt"
-            if read_selection_factor > 0 else ""
+            f"--read-selection-factor {read_selection_factor}"
+            + (" --median-depth-file consensus_median_depth.txt"
+               if read_selection_factor > 0 else "")
         ),
         max_threads=cores,
         escalation=consensus_escalation,

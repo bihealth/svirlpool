@@ -183,3 +183,22 @@ def test_settings_are_on_by_default():
     assert cons.container_time_limit == 240
     assert cons.clustering_strategy == "balanced"
     assert cons.phasing_sites == "tiered"
+
+
+def test_workflow_always_passes_the_factor():
+    """main.smk must pass --read-selection-factor even when it is 0: without
+    it the consensus CLI applies its own default (2), and 0 could not switch
+    the read selection off."""
+    import re
+    from pathlib import Path
+
+    import svirlpool
+
+    smk = (Path(svirlpool.__file__).parent / "workflows" / "main.smk").read_text()
+    expr = re.search(r"read_selection_arg=\((.*?)\n        \),", smk, re.S).group(1)
+    for factor, expected in (
+        (0, "--read-selection-factor 0"),
+        (2, "--read-selection-factor 2 --median-depth-file"),
+    ):
+        arg = eval("(" + expr + ")", {"read_selection_factor": factor})  # noqa: S307
+        assert arg == expected or arg.startswith(expected + " ")
