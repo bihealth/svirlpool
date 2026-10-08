@@ -105,7 +105,7 @@ def test_contigs_missing_from_the_alignments_are_skipped(tmp_path, caplog, cache
         "--filter-nonseparated__cache-size-alignments-filtering", str(cache_size),
     ])  # fmt: skip
 
-    with caplog.at_level(logging.INFO, logger=alignments_to_rafs.__name__):
+    with caplog.at_level(logging.DEBUG, logger=alignments_to_rafs.__name__):
         alignments_to_rafs.run(args)
 
     rafs = _read_rafs(out)
@@ -118,8 +118,10 @@ def test_contigs_missing_from_the_alignments_are_skipped(tmp_path, caplog, cache
             (s.sv_type, s.ref_start, s.ref_end, s.size) for s in raf.SV_signals
         ] == [(1, DEL_START, DEL_START + DEL_SIZE, DEL_SIZE)]
 
-    # one message for all skipped contigs, none for the contig without reads
-    skipped = [r.getMessage() for r in caplog.records if "chrExtra1" in r.getMessage()]
-    assert len(skipped) == 1
-    assert "chrExtra2" in skipped[0]
-    assert "chrNoReads" not in skipped[0]
+    # the skipped contigs are not reported at the default log levels
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.INFO and "chrExtra" in r.getMessage()
+    ]

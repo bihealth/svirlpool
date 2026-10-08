@@ -502,14 +502,15 @@ def process_bam(
     log.info(f"parse regions from {path_regions}")
     regions = parse_and_split_regions(path_regions=path_regions)
     # skip regions on contigs that the alignment file does not have (e.g. a reference
-    # with more contigs than the reads were aligned to). Fetching them raises a ValueError.
+    # with more contigs than the reads were aligned to), silently: they have no reads.
+    # Fetching them raises a ValueError.
     with pysam.AlignmentFile(path_alignments, "rb") as file:
         contigs = set(file.references)
     missing_contigs = list(
         dict.fromkeys(chrom for chrom, _, _ in regions if chrom not in contigs)
     )
     if missing_contigs:
-        log.warning(
+        log.debug(
             f"skipping {len(missing_contigs)} contigs that are not in the alignments {path_alignments}: {', '.join(missing_contigs)}"
         )
         regions = [region for region in regions if region[0] in contigs]
