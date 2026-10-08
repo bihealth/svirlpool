@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 
 log = logging.getLogger(__name__)
@@ -160,3 +160,52 @@ def assembly_size_limit(max_bp: int) -> Iterator[None]:
         yield
     finally:
         _max_assembly_bp = outer
+
+
+class EscalateTo(Escalate):
+    """Raised by `require_level` inside `watch(escalate=True)`: an assembly
+    too large for the current level, so the container goes straight to
+    `level` (an index into the escalation levels) instead of timing out first."""
+
+    def __init__(self, level: int, reason: str):
+        super().__init__(reason)
+        self.level = level
+
+
+_level = 0  # the escalation level the container runs at (index)
+_n_levels = 1
+_level_bp: tuple[int, ...] = ()  # an assembly of more bp than _level_bp[i] needs level i + 1
+
+
+@contextmanager
+def at_level(level: int, n_levels: int, level_bp: Sequence[int]) -> Iterator[None]:
+    """Inside the block the container runs at escalation level `level` (index)
+    of `n_levels`; an assembly of more than `level_bp[i]` bp needs level i + 1
+    (`require_level`). Empty `level_bp`: no size rule."""
+    global _level, _n_levels, _level_bp
+    outer = _level, _n_levels, _level_bp
+    _level, _n_levels, _level_bp = level, n_levels, tuple(level_bp)
+    try:
+        yield
+    finally:
+        _level, _n_levels, _level_bp = outer
+
+
+def required_level(bp: int) -> int:
+    """The escalation level (index) an assembly of `bp` bp starts at."""
+    return min(sum(bp > t for t in _level_bp), _n_levels - 1)
+
+
+def require_level(bp: int) -> None:
+    """Send the container straight to the level an assembly of `bp` bp needs
+    when that is above the current one. lamassemble's time grows with the
+    square of its input: on the trio, the input bp predicted a timeout at the
+    first level with AUC 0.998 (experiments/time_limit/README.md, section 8).
+    A no-op at or above that level, at the last level and outside `watch()`."""
+    if _hits is None or not _escalate:
+        return
+    target = required_level(bp)
+    if target > _level:
+        reason = f"{bp} bp assembly"
+        _hits.append(reason)
+        raise EscalateTo(target, reason)

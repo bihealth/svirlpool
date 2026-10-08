@@ -91,16 +91,16 @@ clustering_strategy = config.get("clustering_strategy", "accurate")
 # phasing sites: reference-alignment SNVs first, all-vs-all when they do not
 # give a clean 2-allele split (tiered); or always ava / always reference
 phasing_sites = config.get("phasing_sites", "tiered")
-assembly_max_reads = config.get("assembly_max_reads", 0)
+assembly_max_reads = config.get("assembly_max_reads", 30)
 heavy_container_bp = config.get("heavy_container_bp", 0)
-# seconds of wall clock after which a container is dropped (0: no limit; default
-# 180); the main dial between speed and SV recall (see svirlpool run --help)
-container_time_limit = config.get("container_time_limit", 180)
+# seconds of wall clock after which a container is dropped (0: no limit, the
+# default; see svirlpool run --help)
+container_time_limit = config.get("container_time_limit", 0)
 # bp of reads in one assembly above which a container is dropped (0: no limit);
 # the same on every machine, unlike the time limit (see svirlpool run --help)
 max_assembly_bp = config.get("max_assembly_bp", 0)
 # LAST -m values of lamassemble, tried in turn while reads stay unlinked
-lamassemble_max_initial_matches = config.get("lamassemble_max_initial_matches", "50")
+lamassemble_max_initial_matches = config.get("lamassemble_max_initial_matches", "10,50")
 # base directory of the consensus processes' temporary files (None: $TMPDIR)
 consensus_tmp_dir = config.get("consensus_tmp_dir") or ""
 # k = this x the median depth: reads per crowded CR (0: all reads; default 3)
@@ -162,6 +162,8 @@ ref_name = Path(reference).stem
 # job that fails (e.g. killed for memory or runtime) is retried by snakemake
 # with double the memory and runtime, up to consensus_max_mem_mb.
 consensus_escalation = config.get("consensus_escalation", "1:20,4:60,12:120")
+# assemblies of more bp than the i-th value start at escalation level i + 2
+consensus_escalation_bp = config.get("consensus_escalation_bp", "100000,300000")
 consensus_max_mem_mb = config.get("consensus_max_mem_mb", 16384)
 _CONSENSUS_MEM_MB = [2048]
 while _CONSENSUS_MEM_MB[-1] * 2 <= consensus_max_mem_mb:
@@ -734,6 +736,7 @@ rule consensus_consensus:
         ),
         max_threads=cores,
         escalation=consensus_escalation,
+        escalation_bp=consensus_escalation_bp,
     threads: 1
     retries: len(_CONSENSUS_MEM_MB) - 1
     conda:
@@ -779,6 +782,7 @@ rule consensus_consensus:
         -o {output.container} \
         -t {params.max_threads} \
         --escalation {params.escalation} \
+        --escalation-bp {params.escalation_bp} \
         --logfile {log.algorithm} \
         --diag-logfile {log.diag} \
         --log-level {params.log_level} 2>&1 | tee -a {log.diag}"""

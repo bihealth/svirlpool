@@ -257,13 +257,20 @@ CONSENSUS_ARGS = [
 def test_options_and_their_defaults():
     from svirlpool.__main__ import get_parser
 
+    # the defaults since the trio tests of README sections 7-8
     run = get_parser().parse_args(RUN_ARGS)
     assert run.max_assembly_bp == 0
-    assert run.lamassemble_max_initial_matches == "50"
+    assert run.lamassemble_max_initial_matches == "10,50"
+    assert run.assembly_max_reads == 30
+    assert run.container_time_limit == 0
+    assert run.consensus_escalation_bp == "100000,300000"
     assert run.consensus_tmp_dir is None
     cons = consensus.get_consensus_parser().parse_args(CONSENSUS_ARGS)
     assert cons.max_assembly_bp == 0
-    assert cons.lamassemble_max_initial_matches == "50"
+    assert cons.lamassemble_max_initial_matches == "10,50"
+    assert cons.assembly_max_reads == 30
+    assert cons.container_time_limit == 0
+    assert cons.escalation_bp == "100000,300000"
     assert cons.tmp_dir is None
 
 
@@ -278,3 +285,107 @@ def test_workflow_passes_the_options():
     expr = re.search(r"tmp_dir_arg=(.*?),\n", smk).group(1)
     assert eval(expr, {"consensus_tmp_dir": ""}) == ""  # noqa: S307
     assert eval(expr, {"consensus_tmp_dir": "/tmp"}) == "--tmp-dir /tmp"  # noqa: S307
+
+    assert "--escalation-bp {params.escalation_bp}" in smk
+    assert 'config.get("consensus_escalation_bp", "100000,300000")' in smk
+    assert 'config.get("assembly_max_reads", 30)' in smk
+    assert 'config.get("container_time_limit", 0)' in smk
+
+
+# --------------------------------------------------------------------------
+# --escalation-bp: the starting level by assembly size
+
+
+def test_parse_escalation_bp():
+    assert consensus.parse_escalation_bp("100000,300000") == (100000, 300000)
+    assert consensus.parse_escalation_bp("0") == ()
+    assert consensus.parse_escalation_bp("") == ()
+    for bad in ("300000,100000", "-5", "x"):
+        with pytest.raises(ValueError):
+            consensus.parse_escalation_bp(bad)
+
+
+def test_required_level():
+    with tool_timeouts.at_level(0, 3, (100, 300)):
+        assert [tool_timeouts.required_level(bp) for bp in (100, 101, 300, 301)] == [
+            0,
+            1,
+            1,
+            2,
+        ]
+    with tool_timeouts.at_level(0, 2, (100, 300)):
+        assert tool_timeouts.required_level(10**6) == 1  # capped at the last level
+    with tool_timeouts.at_level(0, 3, ()):
+        assert tool_timeouts.required_level(10**6) == 0  # no size rule
+
+
+def test_require_level_only_escalates_below_the_needed_level():
+    with (
+        tool_timeouts.at_level(1, 3, (100, 300)),
+        tool_timeouts.watch(escalate=True) as hits,
+    ):
+        tool_timeouts.require_level(200)  # level 2 is the current one
+        assert hits == []
+        with pytest.raises(tool_timeouts.EscalateTo) as e:
+            try:
+                tool_timeouts.require_level(400)
+            except Exception:  # the consensus code's fallbacks
+                pytest.fail("EscalateTo was caught by `except Exception`")
+        assert e.value.level == 2
+    # outside watch() and at the last level (no escalation): no-op
+    with tool_timeouts.at_level(0, 3, (100, 300)):
+        tool_timeouts.require_level(10**6)
+        with tool_timeouts.watch(escalate=False):
+            tool_timeouts.require_level(10**6)
+
+
+def test_large_assembly_starts_at_its_level(tmp_path, monkeypatch):
+    containers = {
+        crID: {"crs": [SimpleNamespace(crID=crID, chr="chr1", referenceStart=start)]}
+        for crID, start in ((1, 100), (2, 5000), (3, 9000))
+    }
+    monkeypatch.setattr(
+        consensus, "load_crs_containers_from_db", lambda path_db, crIDs: containers
+    )
+    monkeypatch.setattr(consensus.read_cache_mod, "ReadSequenceCache", _Cache)
+    monkeypatch.setattr(consensus, "available_cpus", lambda: 24)
+    calls = []
+    sizes = {1: 50_000, 2: 200_000, 3: 500_000}
+
+    def process(crs_dict, threads, timeout, **kwargs):
+        crID = next(iter(crs_dict))
+        calls.append((crID, threads, timeout))
+        tool_timeouts.require_level(sizes[crID])  # as assemble_consensus does
+        return {"c": SimpleNamespace(original_regions=[1])}, {}
+
+    monkeypatch.setattr(consensus, "process_consensus_container", process)
+    monkeypatch.setattr(
+        consensus.consensus_class,
+        "CrsContainerResult",
+        lambda consensus_dicts, unused_reads: SimpleNamespace(
+            unstructure=lambda: {"n": len(consensus_dicts)}
+        ),
+    )
+    db = tmp_path / "containers.db"
+    db.write_text("")
+    out = tmp_path / "consensus.jsonl"
+    consensus.crs_containers_to_consensus(
+        samplename="s",
+        input=db,
+        copy_number_tracks=tmp_path / "cn.bed.gz",
+        output=out,
+        lamassemble_mat=None,
+        path_alignments=tmp_path / "reads.bam",
+        threads=16,
+        buffer_clipped_sequence=500,
+        consensus_method="lamassemble",
+        reference=None,
+        escalation=[(1, 20), (4, 60), (12, 120)],
+        escalation_bp=(100_000, 300_000),
+    )
+    assert calls == [
+        (1, 1, 20),  # 50 kb: level 1
+        (2, 1, 20), (2, 4, 60),  # 200 kb: straight to level 2
+        (3, 1, 20), (3, 12, 120),  # 500 kb: straight to level 3
+    ]  # fmt: skip
+    assert [json.loads(line) for line in out.read_text().splitlines()] == [{"n": 1}] * 3

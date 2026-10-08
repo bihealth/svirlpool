@@ -324,10 +324,10 @@ def get_parser():
         help="Assemble each allele from at most about this many reads over every "
         "100 bp of the reference (reads covering more of it first; all reads are "
         "still aligned to the consensus). Bounds lamassemble, whose time grows with "
-        "the square of the read count (default: 0, all reads).",
+        "the square of the read count; 0: all reads (default: 30).",
         required=False,
         type=int,
-        default=0,
+        default=30,
     )
     parser_run_wf.add_argument(
         "--heavy-container-bp",
@@ -342,13 +342,14 @@ def get_parser():
         "--container-time-limit",
         help="Drop a candidate-region container whose consensus is still unfinished "
         "after this many seconds of wall clock over all --consensus-escalation levels; "
-        "0: no limit (default: 180). "
-        "This is the main dial between speed and SV recall. "
-        "The limit is wall clock, so it bites harder on a loaded or slower machine; "
-        "raise it there.",
+        "0: no limit (default: 0). "
+        "The limit is wall clock, so its effect depends on the machine and its load; "
+        "--lamassemble-max-initial-matches 10,50 and --assembly-max-reads bound the "
+        "cost of the heavy containers without it, and --max-assembly-bp drops them "
+        "deterministically.",
         required=False,
         type=float,
-        default=180,
+        default=0,
     )
     parser_run_wf.add_argument(
         "--max-assembly-bp",
@@ -370,7 +371,17 @@ def get_parser():
         "need 50 (default: %(default)s).",
         required=False,
         type=str,
-        default="50",
+        default="10,50",
+    )
+    parser_run_wf.add_argument(
+        "--consensus-escalation-bp",
+        help="An assembly of more bp of reads than the i-th of these comma-separated "
+        "values starts at --consensus-escalation level i + 2 instead of timing out at a "
+        "lower level first (the input bp predicts a timeout at the first level almost "
+        "perfectly); 0: no size rule (default: %(default)s).",
+        required=False,
+        type=str,
+        default="100000,300000",
     )
     parser_run_wf.add_argument(
         "--consensus-tmp-dir",

@@ -1295,8 +1295,12 @@ def assemble_consensus(
         raise ValueError(
             f"Unknown consensus method '{method}'. Choose one of {CONSENSUS_METHODS}."
         )
+    bp = fasta_bp(reads_fasta)
     # --max-assembly-bp: drop the container before an oversized assembly starts
-    tool_timeouts.check_assembly_size(fasta_bp(reads_fasta))
+    tool_timeouts.check_assembly_size(bp)
+    # --escalation-bp: a large assembly starts at the escalation level its size
+    # needs instead of timing out at a lower one first
+    tool_timeouts.require_level(bp)
 
     with tempfile.TemporaryDirectory():
         if method == "racon":
@@ -3870,6 +3874,20 @@ def parse_escalation(text: str) -> list[tuple[int, int]]:
     return levels
 
 
+def parse_escalation_bp(text: str) -> tuple[int, ...]:
+    """'100000,300000' -> (100000, 300000); '0' or '': no size rule."""
+    text = str(text).strip()
+    if text in ("", "0"):
+        return ()
+    try:
+        bps = tuple(int(x) for x in text.split(","))
+    except ValueError as e:
+        raise ValueError(f"escalation bp '{text}' is not a list of integers") from e
+    if any(b <= 0 for b in bps) or list(bps) != sorted(bps):
+        raise ValueError(f"escalation bp '{text}' must be positive and ascending")
+    return bps
+
+
 def available_cpus() -> int:
     """CPUs this process may run on (its affinity, e.g. a SLURM allocation)."""
     try:
@@ -3916,13 +3934,14 @@ def crs_containers_to_consensus(
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
     clustering_strategy: str = "accurate",
-    assembly_max_reads: int = 0,
+    assembly_max_reads: int = 30,
     heavy_container_bp: int = 0,
     container_time_limit: float = 0,
     read_selection_k: int = 0,
     phasing_sites: str = "tiered",
     max_assembly_bp: int = 0,
-    lamassemble_max_initial_matches: Sequence[int] = (LAMASSEMBLE_MAX_INITIAL_MATCHES,),
+    lamassemble_max_initial_matches: Sequence[int] = (10, LAMASSEMBLE_MAX_INITIAL_MATCHES),
+    escalation_bp: Sequence[int] = (100_000, 300_000),
 ) -> None:
     """Batch driver: process a list of containers and stream JSONL results.
 
@@ -3952,6 +3971,8 @@ def crs_containers_to_consensus(
     decision on every machine and at every load, unlike the time limit.
     `lamassemble_max_initial_matches`: lamassemble's -m values (see
     `max_initial_matches`).
+    An assembly of more than `escalation_bp[i]` bp starts at level i + 2
+    (tool_timeouts.require_level) instead of timing out at a lower one first.
     """
     if lamassemble_mat is not None and not Path(lamassemble_mat).exists():
         raise FileNotFoundError(
@@ -3980,6 +4001,8 @@ def crs_containers_to_consensus(
         f"container time limit: {container_time_limit:g} s; assembly size limit: "
         f"{max_assembly_bp} bp; lamassemble -m: "
         + ",".join(map(str, lamassemble_max_initial_matches))
+        + "; assemblies start at the next levels above (bp): "
+        + (",".join(map(str, escalation_bp)) or "-")
         + " (0: no limit)"
     )
     if crIDs is not None:
@@ -4032,6 +4055,7 @@ def crs_containers_to_consensus(
     n_heavy = 0  # containers sent straight to the last level (heavy_container_bp)
     n_time_limited = 0  # containers dropped at container_time_limit
     n_too_large = 0  # containers dropped at max_assembly_bp
+    n_sized = 0  # containers started above level 1 by escalation_bp
     try:
         with open(output, "w") as out_f:
             for idx, (rep_crID, container) in enumerate(sorted_containers):
@@ -4054,10 +4078,16 @@ def crs_containers_to_consensus(
                             # timeout instead of finishing a degraded result first
                             last_level = attempt + 1 == len(attempts)
                             heavy = False
+                            sized_level = None  # --escalation-bp: the level to go to
                             try:
-                                with tool_timeouts.watch(
-                                    escalate=not last_level
-                                ) as timed_out:
+                                with (
+                                    tool_timeouts.at_level(
+                                        attempt, len(attempts), escalation_bp
+                                    ),
+                                    tool_timeouts.watch(
+                                        escalate=not last_level
+                                    ) as timed_out,
+                                ):
                                     consensuses, _unused = process_consensus_container(
                                         samplename=samplename,
                                         crs_dict=crs_dict,
@@ -4089,11 +4119,23 @@ def crs_containers_to_consensus(
                                     )
                             except tool_timeouts.EscalateToLast:
                                 heavy = True
+                            except tool_timeouts.EscalateTo as e:
+                                sized_level = e.level
                             except tool_timeouts.Escalate:
                                 pass
                             if not timed_out:
                                 break
                             tools = ", ".join(sorted(set(timed_out)))
+                            if sized_level is not None:
+                                if attempt == 0:
+                                    n_sized += 1
+                                attempt = sized_level
+                                log.info(
+                                    f"Container {rep_crID}: {tools}; straight to level "
+                                    f"{attempt + 1} ({attempts[attempt][0]} thread(s), "
+                                    f"{attempts[attempt][1]} s)."
+                                )
+                                continue
                             if heavy:
                                 n_heavy += 1
                                 attempt = len(attempts) - 1
@@ -4218,6 +4260,7 @@ def crs_containers_to_consensus(
         f"{n_escalated} container(s) escalated after a tool timeout; "
         f"{n_unresolved} of them timed out at the last level too; "
         f"{n_heavy} heavy container(s) started at the last level; "
+        f"{n_sized} container(s) moved up a level by their assembly size; "
         f"{n_time_limited} container(s) dropped at the container time limit; "
         f"{n_too_large} container(s) dropped at the assembly size limit."
     )
@@ -4274,6 +4317,7 @@ def run_consensus_script(args, **kwargs):
         lamassemble_max_initial_matches=parse_max_initial_matches(
             args.lamassemble_max_initial_matches
         ),
+        escalation_bp=parse_escalation_bp(args.escalation_bp),
     )
 
 
@@ -4469,11 +4513,11 @@ def get_consensus_parser(
     parser.add_argument(
         "--assembly-max-reads",
         type=int,
-        default=0,
+        default=30,
         help="Assemble each allele from at most about this many reads over every "
         "100 bp of the reference (reads covering more of it first; all reads are "
         "still aligned to the consensus). Bounds lamassemble, whose time grows with "
-        "the square of the read count (default: 0, all reads).",
+        "the square of the read count; 0: all reads (default: 30).",
     )
     parser.add_argument(
         "--heavy-container-bp",
@@ -4485,12 +4529,13 @@ def get_consensus_parser(
     parser.add_argument(
         "--container-time-limit",
         type=float,
-        default=180,
+        default=0,
         help="Drop a container still unfinished after this many seconds of wall "
-        "clock over all --escalation levels; 0: no limit (default: 180). "
-        "This is the main dial between speed and SV recall. "
-        "The limit is wall clock, so it bites harder on a loaded or slower machine; "
-        "raise it there.",
+        "clock over all --escalation levels; 0: no limit (default: 0). "
+        "The limit is wall clock, so its effect depends on the machine and its load; "
+        "--lamassemble-max-initial-matches 10,50 and --assembly-max-reads bound the "
+        "cost of the heavy containers without it, and --max-assembly-bp drops them "
+        "deterministically.",
     )
     parser.add_argument(
         "--max-assembly-bp",
@@ -4504,7 +4549,7 @@ def get_consensus_parser(
     )
     parser.add_argument(
         "--lamassemble-max-initial-matches",
-        default=str(LAMASSEMBLE_MAX_INITIAL_MATCHES),
+        default="10,50",
         help="LAST -m (max initial matches per query position) of lamassemble's "
         "all-vs-all alignment; comma-separated values are tried in turn, each only "
         "when the previous one left reads unlinked, e.g. '10,50': in satellite arrays "
@@ -4550,6 +4595,14 @@ def get_consensus_parser(
         "first; if the all-vs-all alignment or the assembly timed out, again at the "
         "next level, up to the last one (then the degraded result is kept). Threads "
         "are capped at --threads. Default: %(default)s.",
+    )
+    parser.add_argument(
+        "--escalation-bp",
+        default="100000,300000",
+        help="An assembly of more bp of reads than the i-th of these comma-separated "
+        "values starts at --escalation level i + 2 instead of timing out at a lower level "
+        "first (the input bp predicts a timeout at the first level almost perfectly); "
+        "0: no size rule (default: %(default)s).",
     )
     parser.add_argument(
         "--tmp-dir-path",
