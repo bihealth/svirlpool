@@ -334,3 +334,32 @@ better, 14 worse; aggregate identity 0.9694 → 0.9729).
 - **The escalation's per-tool timeouts are the remaining wall-clock switch.** They decide when a
   container is redone with more threads, and at the last level they drop an assembly. -m 10,50
   halves the escalations (466 → 204 without a limit).
+
+### 7.1 Confirmation: -m 10,50 + read cap 30, with and without a 400 kb gate (budget10b, budget15)
+
+The same settings on the 10% set (budget10b) and on the disjoint 15% set (budget15, against the
+current defaults), at 64 threads, with node-local /tmp and no container time limit:
+
+| set | variant | CPU h | run wall, sum (min) | T2TQ100 F1 | V5 F1 | MC | Q100 aggregate identity | dropped |
+|---|---|---|---|---|---|---|---|---|
+| 15% | defaults (180 s, `$TMPDIR`) | 38.9 | 170 | 0.8570 | 0.8535 | 0.9329 | 0.9797 | 45 (time) |
+| 15% | m10 + cap 30 | 21.4 | 116 | 0.8569 | 0.8535 | 0.9338 | 0.9818 | 0 |
+| 15% | m10 + cap 30 + gate 400 kb | 18.1 | 104 | 0.8565 | 0.8535 | 0.9333 | 0.9819 | 21 (3 / 9 / 9) |
+| 10% | defaults (180 s, `$TMPDIR`) | 36.9 | 171 | 0.8291 | 0.8254 | 0.9285 | 0.9694 | 38 (time) |
+| 10% | m10 + cap 30 | 24.0 | 114 | 0.8297 | 0.8254 | 0.9284 | 0.9729 | 0 |
+| 10% | m10 + cap 30 + gate 400 kb | 20.2 | 108 | 0.8300 | 0.8264 | 0.9278 | 0.9727 | 19 (6 / 7 / 6) |
+
+Non-TRF F1 is identical within each set. Q100 container representation on the 15% set vs the
+defaults: +0.00008 (27 better, 19 worse) for both m10 variants.
+
+Conclusion:
+
+- -m 10,50 + read cap 30 makes the wall-clock container limit unnecessary. Against the defaults:
+  CPU −35% (10%) and −45% (15%), run wall −33% / −32%. F1 is equal, MC equal or better, Q100
+  identity better.
+- The 400 kb gate on top saves another 14–16% CPU (−45% / −53% in all). It is deterministic, the
+  trio members lose similar numbers of containers, and its F1 and MC differences to m10 + cap 30
+  are within noise (MC −0.0005 on both sets).
+- The remaining wall-clock dependence is the escalation's per-tool timeouts (1:20,4:60,12:120).
+  They are now rarer (297 → 121 escalations on the 15% set) but still decide when a container is
+  redone with more threads and, at the last level, when an assembly is given up.
