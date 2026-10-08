@@ -87,16 +87,17 @@ max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
 phasing_fallback = config.get("phasing_fallback", "single")
-clustering_strategy = config.get("clustering_strategy", "balanced")
+clustering_strategy = config.get("clustering_strategy", "accurate")
 # phasing sites: reference-alignment SNVs first, all-vs-all when they do not
 # give a clean 2-allele split (tiered); or always ava / always reference
 phasing_sites = config.get("phasing_sites", "tiered")
 assembly_max_reads = config.get("assembly_max_reads", 0)
 heavy_container_bp = config.get("heavy_container_bp", 0)
-# seconds of wall clock after which a container is dropped (0: no limit; default 240)
-container_time_limit = config.get("container_time_limit", 240)
-# k = this x the median depth: reads per crowded CR (0: all reads; default 2)
-read_selection_factor = config.get("read_selection_factor", 2)
+# seconds of wall clock after which a container is dropped (0: no limit; default
+# 120); the main dial between speed and SV recall (see svirlpool run --help)
+container_time_limit = config.get("container_time_limit", 120)
+# k = this x the median depth: reads per crowded CR (0: all reads; default 3)
+read_selection_factor = config.get("read_selection_factor", 3)
 # None = take each container's copy number from the copy-number track.
 cn_override = config.get("cn_override", None)
 

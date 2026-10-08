@@ -3427,7 +3427,7 @@ def process_consensus_container(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    clustering_strategy: str = "balanced",
+    clustering_strategy: str = "accurate",
     ref_fasta: pysam.FastaFile | None = None,
     assembly_max_reads: int = 0,
     heavy_container_bp: int = 0,
@@ -3574,8 +3574,11 @@ def process_consensus_container(
     # the reads each; "fast" otherwise also the two haplotypes of the het SNVs in
     # the reads' reference alignments (ref_snv_haplotypes) when they split the
     # reads. Everything else is phased. On the HG002 trio "fast" cost accuracy,
-    # "balanced" (the default) did not and saved ~17% CPU
-    # (experiments/consensus_perf/strategy_table.py).
+    # "balanced" did not and saved ~17% CPU
+    # (experiments/consensus_perf/strategy_table.py); with truvari refine on the
+    # 15% and 10% region sets (evaluation/tuning, 2026-10) it cost SV precision
+    # outside tandem repeats, so "accurate" (reference-SNV phasing, else
+    # all-vs-all, with --phasing-sites tiered) is the default.
     if clustering_mode == "phased" and clustering_strategy in ("balanced", "fast"):
         res = fast_clustering_consensus(
             samplename=samplename,
@@ -3868,7 +3871,7 @@ def crs_containers_to_consensus(
     clustering_mode: str = "phased",
     phasing_flank: int = 10000,
     phasing_fallback: str = "single",
-    clustering_strategy: str = "balanced",
+    clustering_strategy: str = "accurate",
     assembly_max_reads: int = 0,
     heavy_container_bp: int = 0,
     container_time_limit: float = 0,
@@ -4379,13 +4382,15 @@ def get_consensus_parser(
     parser.add_argument(
         "--clustering-strategy",
         choices=("accurate", "balanced", "fast"),
-        default="balanced",
-        help="With --clustering-mode phased: 'balanced' (default) skips the read "
-        "phasing where KMeans on the reads' summed indels finds >= 2 clusters of >= 20%% "
-        "of the reads each. 'accurate' phases the reads of every container (with "
-        "--phasing-fallback). 'fast' in addition to 'balanced' uses the two haplotypes "
-        "of the het SNVs in the reads' reference alignments where they split the reads "
-        "(needs --reference; costs accuracy). The rest is phased.",
+        default="accurate",
+        help="With --clustering-mode phased: 'accurate' (default) phases the reads of "
+        "every container (with --phasing-fallback); with --phasing-sites tiered (default) "
+        "on their reference-alignment SNVs, else all-vs-all. 'balanced' first takes "
+        "KMeans on the reads' summed indels where it finds >= 2 clusters of >= 20%% of "
+        "the reads each (less CPU, but lower SV precision outside tandem repeats). 'fast' "
+        "in addition to 'balanced' uses the two haplotypes of the het SNVs in the reads' "
+        "reference alignments where they split the reads (needs --reference; costs "
+        "accuracy). The rest is phased.",
     )
     parser.add_argument(
         "--assembly-max-reads",
@@ -4406,18 +4411,24 @@ def get_consensus_parser(
     parser.add_argument(
         "--container-time-limit",
         type=float,
-        default=240,
+        default=120,
         help="Drop a container still unfinished after this many seconds of wall "
-        "clock over all --escalation levels; 0: no limit (default: 240).",
+        "clock over all --escalation levels; 0: no limit (default: 120). "
+        "This is the main dial between speed and SV recall: on a 10%% subset of the "
+        "GIAB trio (20x ONT, 64 threads) 240 s dropped ~30 containers, 120 s ~200 "
+        "(~1.5 points less recall, ~25%% less CPU), 90 s ~600 and 60 s ~3,400 (recall "
+        "collapses). "
+        "The limit is wall clock, so it bites harder on a loaded or slower machine; "
+        "raise it there.",
     )
     parser.add_argument(
         "--read-selection-factor",
         type=float,
-        default=2,
+        default=3,
         help="In a CR with more than k = this x the median depth reads, assemble "
         "only the k reads crossing it that reach farthest beyond it, filled up with "
         "reads anchored on one side; drop such a CR without a crossing read; "
-        "0: all reads (default: 2).",
+        "0: all reads (default: 3).",
     )
     parser.add_argument(
         "--median-depth-file",

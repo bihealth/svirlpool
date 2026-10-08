@@ -158,10 +158,10 @@ def test_settings_are_on_by_default():
             "1",
         ]
     )
-    assert run.read_selection_factor == 2
-    assert run.container_time_limit == 240
-    # the cascade: KMeans, else reference-SNV phasing, else all-vs-all phasing
-    assert run.clustering_strategy == "balanced"
+    assert run.read_selection_factor == 3
+    assert run.container_time_limit == 120
+    # reference-SNV phasing, else all-vs-all phasing (no KMeans route)
+    assert run.clustering_strategy == "accurate"
     assert run.phasing_sites == "tiered"
     cons = consensus.get_consensus_parser().parse_args(
         [
@@ -179,9 +179,9 @@ def test_settings_are_on_by_default():
             "r.fa",
         ]
     )
-    assert cons.read_selection_factor == 2
-    assert cons.container_time_limit == 240
-    assert cons.clustering_strategy == "balanced"
+    assert cons.read_selection_factor == 3
+    assert cons.container_time_limit == 120
+    assert cons.clustering_strategy == "accurate"
     assert cons.phasing_sites == "tiered"
 
 

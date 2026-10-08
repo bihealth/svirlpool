@@ -307,15 +307,17 @@ def get_parser():
     )
     parser_run_wf.add_argument(
         "--clustering-strategy",
-        help="With --consensus-clustering-mode phased: 'balanced' (default) skips the "
-        "read phasing where KMeans on the reads' summed indels finds >= 2 clusters of "
-        ">= 20%% of the reads each. 'accurate' phases the reads of every container (with "
-        "--phasing-fallback). 'fast' in addition to 'balanced' uses the two haplotypes "
-        "of the het SNVs in the reads' reference alignments where they split the reads "
-        "(costs accuracy). The rest is phased.",
+        help="With --consensus-clustering-mode phased: 'accurate' (default) phases the "
+        "reads of every container (with --phasing-fallback); with --phasing-sites tiered "
+        "(default) on their reference-alignment SNVs, else all-vs-all. 'balanced' first "
+        "takes KMeans on the reads' summed indels where it finds >= 2 clusters of >= 20%% "
+        "of the reads each (less CPU, but lower SV precision outside tandem repeats). "
+        "'fast' in addition to 'balanced' uses the two haplotypes of the het SNVs in the "
+        "reads' reference alignments where they split the reads (costs accuracy). The "
+        "rest is phased.",
         required=False,
         choices=("accurate", "balanced", "fast"),
-        default="balanced",
+        default="accurate",
     )
     parser_run_wf.add_argument(
         "--assembly-max-reads",
@@ -340,21 +342,26 @@ def get_parser():
         "--container-time-limit",
         help="Drop a candidate-region container whose consensus is still unfinished "
         "after this many seconds of wall clock over all --consensus-escalation levels; "
-        "0: no limit. The limit is wall clock, so it bites harder on a loaded machine "
-        "(default: 240).",
+        "0: no limit (default: 120). "
+        "This is the main dial between speed and SV recall: on a 10%% subset of the "
+        "GIAB trio (20x ONT, 64 threads) 240 s dropped ~30 containers, 120 s ~200 "
+        "(~1.5 points less recall, ~25%% less CPU), 90 s ~600 and 60 s ~3,400 (recall "
+        "collapses). "
+        "The limit is wall clock, so it bites harder on a loaded or slower machine; "
+        "raise it there.",
         required=False,
         type=float,
-        default=240,
+        default=120,
     )
     parser_run_wf.add_argument(
         "--read-selection-factor",
         help="In a candidate region with more than k = this x the median depth reads, "
         "assemble only the k reads crossing it that reach farthest beyond it, filled up "
         "with reads anchored on one side; drop such a region if no read crosses it; "
-        "0: all reads (default: 2).",
+        "0: all reads (default: 3).",
         required=False,
         type=float,
-        default=2,
+        default=3,
     )
     parser_run_wf.add_argument(
         "--cn-override",
