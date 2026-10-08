@@ -404,3 +404,23 @@ Implementation sketch: in `assemble_consensus`, next to the size gate, raise `Es
 when the input is over that level's threshold and the container runs below it. The phasing is
 cached across levels, so only the assemblies before it are redone. This generalizes
 `--heavy-container-bp`, which jumps to the last level on the container's cut-read bp.
+
+## 9. New defaults (cb2518e) and read cap 20 vs 30 (2026-10-08)
+
+Defaults since cb2518e: `--lamassemble-max-initial-matches 10,50`, `--assembly-max-reads 30`,
+`--container-time-limit 0` and `--consensus-escalation-bp 100000,300000` (the size rule of
+section 8). `--max-assembly-bp` stays off.
+
+Read cap 20 instead of 30, a quick check:
+
+- **What cap 20 touches.** In the cap-30 trio runs (both sets), 6% of lamassemble calls assemble
+  > 20 reads (~1,500 per trio), and they take 38–40% of the lamassemble time. In HG002 (10% set),
+  442 containers have such a call; they hold 96 TP and 15 FP calls (3.5% of the TPs), with Q100
+  representation 0.918 vs 0.984 overall.
+- **Local rerun of 40 of these containers** (20 with TP calls) at the new defaults, cap 30 vs 20.
+  16 of 49 consensuses change, 8 of them substantially, some by an allele length of 200–650 bp
+  (e.g. 2164.0: 1,315 → 892 bp). lamassemble time falls only 86 → 82 s: with -m 10,50 most of
+  the cost is in assemblies of long, tiled reads, which the cap does not shorten.
+- **Which allele lengths are right** needs the benchmark: tuning experiments cap10 / cap15 (variants
+  e_cap20 / e_cap30, f_cap20 / f_cap30); the reports are reports/regions10/cap10.txt and
+  reports/regions15/cap15.txt. Until then cap 30 stays the default.
