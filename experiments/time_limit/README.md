@@ -363,3 +363,44 @@ Conclusion:
 - The remaining wall-clock dependence is the escalation's per-tool timeouts (1:20,4:60,12:120).
   They are now rarer (297 → 121 escalations on the 15% set) but still decide when a container is
   redone with more threads and, at the last level, when an assembly is given up.
+
+## 8. Picking the escalation level from the assembly size (offline replay, `call_levels.py`, 2026-10-08)
+
+Question: would starting an assembly at a higher level (more threads, longer timeout) by its
+size avoid the retries? The data are the 50,354 lamassemble calls of the m10 + cap 30 runs
+(budget10b on the 10% set, budget15 on the 15% set, trio). Each call's log line has its input
+reads and bp, its level, its duration, and whether it timed out.
+
+Level-1 calls (1 thread, 20 s), timeout rate by input size (AUC of the bp 0.998, of the read
+count 0.923):
+
+| input | calls | timed out | rate | median s |
+|---|---|---|---|---|
+| ≤ 50 kb | 46,694 | 1 | 0.00 | ≤ 0.7 |
+| 50–100 kb | 2,242 | 5 | 0.002 | 1.2 |
+| 100–150 kb | 439 | 33 | 0.075 | 3.5 |
+| 150–200 kb | 125 | 37 | 0.30 | 8.4 |
+| 200–300 kb | 80 | 43 | 0.54 | 20.0 |
+| > 300 kb | 64 | 60 | 0.94 | 20.1 |
+
+At level 2 (4 threads, 60 s) only calls > 300 kb time out (30 of 74; ≤ 1 of 100+ in each smaller
+bin), and no call timed out at the last level.
+
+Replay of the rule "> 100 kb starts at level 2, > 300 kb at level 3":
+
+- **Level 1 → 2.** It catches 173 of the 179 level-1 lamassemble timeouts and saves 1.52 of the
+  1.63 h of discarded level-1 wall. It moves 535 calls needlessly; those took 0.87 h at
+  1 thread and would run at 4.
+- **Level 2 → 3.** It catches 30 of the 32 level-2 timeouts and saves 0.51 h of 4-thread wall
+  (~2.1 thread-hours), with 44 needless moves.
+- **Overall.** lamassemble escalations fall from 222 to ~19, and ~3.6 thread-hours are saved
+  (~8% of the runs' 45 CPU h). The decision no longer depends on the clock.
+- **The phasing all-vs-all is less predictable** (142 escalations, 0.88 h discarded). The AUC is
+  0.91–0.94 from its read count, which is capped at 50, and 0.86–0.89 from the cut-read bp. The
+  timed-out calls took ~21.5 s at a 20 s limit, so load matters there. A size rule would need
+  the bp of the phasing reads (with their 10 kb flanks), which is not logged yet.
+
+Implementation sketch: in `assemble_consensus`, next to the size gate, raise `EscalateTo(level)`
+when the input is over that level's threshold and the container runs below it. The phasing is
+cached across levels, so only the assemblies before it are redone. This generalizes
+`--heavy-container-bp`, which jumps to the last level on the container's cut-read bp.
