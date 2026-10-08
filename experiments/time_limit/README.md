@@ -423,4 +423,6 @@ Read cap 20 instead of 30, a quick check:
   the cost is in assemblies of long, tiled reads, which the cap does not shorten.
 - **Which allele lengths are right** needs the benchmark: tuning experiments cap10 / cap15 (variants
   e_cap20 / e_cap30, f_cap20 / f_cap30); the reports are reports/regions10/cap10.txt and
-  reports/regions15/cap15.txt. Until then cap 30 stays the default.
+  reports/regions15/cap15.txt.
+- **Decision (user, 2026-10-08).** Cap 30 stays the default. Cap 20 changes allele lengths
+  for ~5% less assembly time, which is not worth it.
