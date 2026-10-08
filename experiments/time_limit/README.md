@@ -274,3 +274,63 @@ had > 270 kb). It removes it on every node, and it removes it before any work is
      assembles at most 50. `--assembly-max-reads` exists and is off by default.
    - **No escalation for predicted-heavy containers.** `--heavy-container-bp` exists and is
      off. Levels that end in a timeout are discarded: 40–64% of the escalated containers' wall.
+
+## 7. Deterministic budgets on the trio (cluster, budget10, 2026-10-08)
+
+Implemented in 425ba7c (all off by default):
+
+- `--consensus-tmp-dir` (run) / `--tmp-dir` (consensus): each consensus process keeps its
+  temporary files, and its tools', in its own directory under this base, removed at its end.
+- `--max-assembly-bp`: a container about to assemble more bp of reads in one assembly (after
+  `--assembly-max-reads`) is dropped before that assembly starts.
+- `--lamassemble-max-initial-matches 10,50`: LAST -m 10, then 50 only when the layout leaves reads
+  unlinked (after the one-strand → both-strands retry of each -m).
+
+Setup: evaluation/tuning experiment budget10. The data are the trio on the 10% set (verify10),
+64 threads per run. Every variant uses the defaults (accurate + tiered phasing, read selection
+factor 3, escalation 1:20,4:60,12:120). `/tmp` is the node-local per-job directory of SLURM.
+The report is evaluation/tuning/reports/regions10/budget10.txt; `budget_analysis.py` gives the
+per-container part. Earlier replicates put the noise at about ±0.0005 F1 and ±0.0007 MC.
+
+| variant | temporary files | container bound | CPU h (trio) | run wall, sum (min) | T2TQ100 F1 | V5 F1 | MC | dropped |
+|---|---|---|---|---|---|---|---|---|
+| b_default | `$TMPDIR` (cephfs) | 180 s | 36.9 | 171 | 0.8291 | 0.8254 | 0.9285 | 38 (time) |
+| b_private | private dirs on cephfs | 180 s | 38.3 | 169 | 0.8287 | 0.8248 | 0.9285 | 39 (time) |
+| b_tmp | /tmp | 180 s | 41.9 | 169 | 0.8288 | 0.8246 | 0.9285 | 38 (time) |
+| b_tmp_nolimit | /tmp | none | 65.3 | 202 | 0.8303 | 0.8259 | 0.9279 | 0 |
+| b_gate | /tmp | 300 kb gate | 27.2 | 142 | 0.8305 | 0.8254 | 0.9266 | 48 (size) |
+| b_m10 | /tmp | none | 25.5 | 123 | 0.8301 | 0.8254 | 0.9288 | 0 |
+| b_m10_cap | /tmp, read cap 30 | none | 24.0 | 114 | 0.8297 | 0.8254 | 0.9284 | 0 |
+| b_m10_gate | /tmp | 300 kb gate | 19.8 | 107 | 0.8293 | 0.8259 | 0.9272 | 47 (size) |
+
+Non-TRF F1 is identical in every variant (V5 0.9316, T2TQ100 0.9276). Q100 representation of the
+HG002 containers vs b_default: b_m10 +0.00007 (21 better, 13 worse), b_m10_cap +0.00028 (38
+better, 14 worse; aggregate identity 0.9694 → 0.9729).
+
+- **`-m 10,50` is the lever.** Without dropping anything, CPU is −31% and the summed run wall
+  −28% against the current defaults, at equal F1, MC and Q100. Per container (HG002
+  thread-seconds), the containers whose largest assembly is > 200 kb cost 5–10× less, ordinary
+  ones ~20% less. About 1,160 containers per trio retry at -m 50 (484 retry only the strand at
+  -m 50).
+- **The gate is deterministic.** Its decision depends on the assembly inputs, not the clock. b_gate
+  and b_m10_gate dropped the same containers in HG003 (15) and HG004 (22). In HG002 (11 / 10),
+  the one difference is a wall-clock effect: under -m 50, both phased assemblies of container 2954
+  (247 / 259 kb) ran into the last level's 120 s tool timeout, and the KMeans fallback then
+  wanted to assemble all its reads (570 kb).
+- **The gated containers are worth little.** HG002's 11 held 2 TP and 0 FP in the uncapped run
+  (Q100 representation 0.867). They cost 12.3 of the 24.2 thread-hours of b_tmp_nolimit, but only
+  1.8 of 7.7 after `-m 10,50`. The 300 kb gate costs ~0.002 MC: the trio members lose 11 / 15 / 22
+  containers, i.e. different loci.
+- **Gate threshold sweep** on the largest assembly per container (b_tmp_nolimit inputs, HG002
+  truth): 300 kb loses 2 TP, 400 kb 0 TP, with a more even trio (10 / 11 / 10) and 11.5
+  thread-hours saved uncapped (1.7 with -m 10,50).
+- **Temporary files on node-local /tmp** cut the summed consensus batch time from 35.5 to 22.6 h
+  (median container 6.5 → 2.4 s; the alignment stage 1.1 → 0.1 s). A private directory per
+  process on cephfs does not help (4.5 s). The cluster was quiet in this run (median 6.5 s vs
+  41 s in verify10). The run wall times did not change, and escalations rose from 276 to 373,
+  mostly the phasing all-vs-all at 1 thread / 20 s. Their AVA stage took 16–18 s on cephfs and
+  29–31 s on /tmp, and minimap2 itself took < 2 s of CPU per finished call. That points to CPU
+  contention within the job once the I/O waits are gone (likely, not proven).
+- **The escalation's per-tool timeouts are the remaining wall-clock switch.** They decide when a
+  container is redone with more threads, and at the last level they drop an assembly. -m 10,50
+  halves the escalations (466 → 204 without a limit).

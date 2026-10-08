@@ -50,6 +50,10 @@ PHASE = re.compile(
 )
 AVA_N = re.compile(r"--secondary=yes -N (\d+)")
 LAM = re.compile(r"Running lamassemble on \S+ for \S+ \(both strands: \w+\) with timeout of (\d+) seconds")
+LAM_SIZE = re.compile(r"\((\d+) reads, (\d+) bp\)$")
+TIME_DROP = re.compile(r"Container \d+: dropped at the container time limit")
+SIZE_DROP = re.compile(r"Container \d+: dropped at --max-assembly-bp: (\d+) bp")
+M_RETRY = re.compile(r"lamassemble: \d+ of \d+ reads linked at -m (\d+)")
 ESC = re.compile(r"Container \d+: (.*) timed out \((\d+) thread")
 LAST = re.compile(r"Container \d+: (.*) timed out at the last level")
 LAM_TO = re.compile(r"lamassemble timed out for")
@@ -148,6 +152,17 @@ def parse_batch(path: str) -> list[dict]:
         elif lm := LAM.search(msg):
             lam_start, lam_limit = t, int(lm.group(1))
             state = "lam"
+            if sz := LAM_SIZE.search(msg):
+                bp = int(sz.group(2))
+                cur["max_call_bp"] = max(cur["max_call_bp"], bp)
+                cur["max_call_reads"] = max(cur["max_call_reads"], int(sz.group(1)))
+        elif M_RETRY.search(msg):
+            cur["m_retries"] += 1
+        elif TIME_DROP.search(msg):
+            cur["time_dropped"] = 1
+        elif sd := SIZE_DROP.search(msg):
+            cur["size_dropped"] = 1
+            cur["size_dropped_bp"] = int(sd.group(1))
         elif src.endswith("util.util") and msg.startswith("minimap2"):
             state = "align"
         elif level == "WARNING" and (e := ESC.search(msg)):
