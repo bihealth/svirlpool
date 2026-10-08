@@ -472,9 +472,59 @@ def filter_signals_for_too_many_aligned_segments(lines: list, max_bnds: int) -> 
     return [line for line in lines if counter[line[7]] <= max_bnds]
 
 
+def check_alignment_contigs_in_reference(
+    path_alignments: Path | str, path_reference: Path | str
+) -> None:
+    """raises a ValueError if the alignments have mapped reads on contigs that are not in
+    the reference index (.fai). Their signals would be lost, because the regions are made
+    from the reference. Contigs of the alignment header without mapped reads (e.g. decoys)
+    may be missing from the reference."""
+    path_fai = util.create_fai_if_not_exists(reference=Path(path_reference))
+    reference_contigs = set(
+        util.create_ref_dict(reference=Path(path_reference)).values()
+    )
+    with pysam.AlignmentFile(path_alignments, "rb") as file:
+        header_contigs = list(file.references)
+        # the numbers of mapped reads come from the index. A CRAM index does not record
+        # them (pysam reports 0 for every contig) and without an index there are none:
+        # then every contig of the header counts as one with reads.
+        contigs_with_reads = header_contigs
+        if not file.is_cram:
+            try:
+                contigs_with_reads = [
+                    stats.contig
+                    for stats in file.get_index_statistics()
+                    if stats.mapped > 0
+                ]
+            except ValueError:
+                pass
+    missing_with_reads = [
+        chrom for chrom in contigs_with_reads if chrom not in reference_contigs
+    ]
+    contigs_with_reads = set(contigs_with_reads)
+    missing_without_reads = [
+        chrom
+        for chrom in header_contigs
+        if chrom not in reference_contigs and chrom not in contigs_with_reads
+    ]
+    if missing_without_reads:
+        log.debug(
+            f"{len(missing_without_reads)} contigs without mapped reads in the alignments {path_alignments} are not in the reference index {path_fai}: {', '.join(missing_without_reads)}"
+        )
+    if missing_with_reads:
+        listed = ", ".join(missing_with_reads[:10])
+        if len(missing_with_reads) > 10:
+            listed += f" and {len(missing_with_reads) - 10} more"
+        raise ValueError(
+            f"The alignments {path_alignments} have mapped reads on {len(missing_with_reads)} contigs that are not in the reference index {path_fai}: {listed}. "
+            "The reads were probably aligned to a different reference, or to one with another contig naming scheme (e.g. 'chr1' vs '1')."
+        )
+
+
 def process_bam(
     path_alignments: Path | str,
     path_regions: Path | str,
+    path_reference: Path | str,
     path_output: Path | str,
     samplename: int,
     min_signal_size: int,
@@ -491,6 +541,9 @@ def process_bam(
     tmp_dir_path: Path | None = None,
     max_coverage: int = 400,
 ):
+    check_alignment_contigs_in_reference(
+        path_alignments=path_alignments, path_reference=path_reference
+    )
     if threads < 1:
         threads = mp.cpu_count()
     if threads > mp.cpu_count():
@@ -501,6 +554,19 @@ def process_bam(
 
     log.info(f"parse regions from {path_regions}")
     regions = parse_and_split_regions(path_regions=path_regions)
+    # skip regions on contigs that the alignment file does not have (e.g. a reference
+    # with more contigs than the reads were aligned to), silently: they have no reads.
+    # Fetching them raises a ValueError.
+    with pysam.AlignmentFile(path_alignments, "rb") as file:
+        contigs = set(file.references)
+    missing_contigs = list(
+        dict.fromkeys(chrom for chrom, _, _ in regions if chrom not in contigs)
+    )
+    if missing_contigs:
+        log.debug(
+            f"skipping {len(missing_contigs)} contigs that are not in the alignments {path_alignments}: {', '.join(missing_contigs)}"
+        )
+        regions = [region for region in regions if region[0] in contigs]
 
     jobs = [
         {
@@ -662,6 +728,7 @@ def run(args, **kwargs):
     process_bam(
         path_alignments=args.alignments,
         path_regions=args.regions,
+        path_reference=args.reference,
         path_output=args.output,
         samplename=args.samplename,
         min_signal_size=args.min_signal_size,
@@ -726,6 +793,12 @@ def get_parser():
         type=Path,
         required=True,
         help="Path to the regions bed file.",
+    )
+    parser.add_argument(
+        "--reference",
+        type=Path,
+        required=True,
+        help="Path to the reference genome (.fasta) the reads were aligned to. Only its index (.fai) is used, to check that every contig with mapped reads is in it.",
     )
     parser.add_argument(
         "-o",
