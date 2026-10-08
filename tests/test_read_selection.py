@@ -159,7 +159,7 @@ def test_settings_are_on_by_default():
         ]
     )
     assert run.read_selection_factor == 3
-    assert run.container_time_limit == 120
+    assert run.container_time_limit == 180
     # reference-SNV phasing, else all-vs-all phasing (no KMeans route)
     assert run.clustering_strategy == "accurate"
     assert run.phasing_sites == "tiered"
@@ -180,7 +180,7 @@ def test_settings_are_on_by_default():
         ]
     )
     assert cons.read_selection_factor == 3
-    assert cons.container_time_limit == 120
+    assert cons.container_time_limit == 180
     assert cons.clustering_strategy == "accurate"
     assert cons.phasing_sites == "tiered"
 

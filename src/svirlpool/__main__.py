@@ -342,16 +342,13 @@ def get_parser():
         "--container-time-limit",
         help="Drop a candidate-region container whose consensus is still unfinished "
         "after this many seconds of wall clock over all --consensus-escalation levels; "
-        "0: no limit (default: 120). "
-        "This is the main dial between speed and SV recall: on a 10%% subset of the "
-        "GIAB trio (20x ONT, 64 threads) 240 s dropped ~30 containers, 120 s ~200 "
-        "(~1.5 points less recall, ~25%% less CPU), 90 s ~600 and 60 s ~3,400 (recall "
-        "collapses). "
+        "0: no limit (default: 180). "
+        "This is the main dial between speed and SV recall. "
         "The limit is wall clock, so it bites harder on a loaded or slower machine; "
         "raise it there.",
         required=False,
         type=float,
-        default=120,
+        default=180,
     )
     parser_run_wf.add_argument(
         "--read-selection-factor",

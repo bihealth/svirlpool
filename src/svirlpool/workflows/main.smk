@@ -94,8 +94,8 @@ phasing_sites = config.get("phasing_sites", "tiered")
 assembly_max_reads = config.get("assembly_max_reads", 0)
 heavy_container_bp = config.get("heavy_container_bp", 0)
 # seconds of wall clock after which a container is dropped (0: no limit; default
-# 120); the main dial between speed and SV recall (see svirlpool run --help)
-container_time_limit = config.get("container_time_limit", 120)
+# 180); the main dial between speed and SV recall (see svirlpool run --help)
+container_time_limit = config.get("container_time_limit", 180)
 # k = this x the median depth: reads per crowded CR (0: all reads; default 3)
 read_selection_factor = config.get("read_selection_factor", 3)
 # None = take each container's copy number from the copy-number track.
