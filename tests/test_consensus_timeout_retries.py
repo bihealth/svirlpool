@@ -104,7 +104,6 @@ def _run_batch(tmp_path, monkeypatch, timing_out_attempts, escalation=None):
     consensus.crs_containers_to_consensus(
         samplename="s",
         input=db,
-        copy_number_tracks=tmp_path / "cn.bed.gz",
         output=out,
         lamassemble_mat=None,
         path_alignments=tmp_path / "reads.bam",
@@ -177,7 +176,6 @@ def test_heavy_container_starts_at_the_last_level(tmp_path, monkeypatch):
     consensus.crs_containers_to_consensus(
         samplename="s",
         input=db,
-        copy_number_tracks=tmp_path / "cn.bed.gz",
         output=tmp_path / "consensus.jsonl",
         lamassemble_mat=None,
         path_alignments=tmp_path / "reads.bam",
@@ -272,7 +270,6 @@ def test_container_over_the_time_limit_is_dropped(tmp_path, monkeypatch):
     consensus.crs_containers_to_consensus(
         samplename="s",
         input=db,
-        copy_number_tracks=tmp_path / "cn.bed.gz",
         output=out,
         lamassemble_mat=None,
         path_alignments=tmp_path / "reads.bam",

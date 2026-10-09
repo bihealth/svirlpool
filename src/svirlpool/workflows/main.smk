@@ -82,12 +82,8 @@ satellite_depth_factor = config.get("satellite_depth_factor", 0.0)
 lamassemble_mat = config.get("lamassemble_mat", None)
 consensus_method = config.get("consensus_method", "lamassemble-onestrand")
 max_padding_size = config.get("max_padding_size", 100000)
-max_consensus_copy_number = config.get("max_consensus_copy_number", 4)
 # allele separation by read phasing (see localassembly/read_phasing.py)
-consensus_clustering_mode = config.get("consensus_clustering_mode", "phased")
 phasing_flank = config.get("phasing_flank", 10000)
-phasing_fallback = config.get("phasing_fallback", "single")
-clustering_strategy = config.get("clustering_strategy", "accurate")
 # phasing sites: reference-alignment SNVs first, all-vs-all when they do not
 # give a clean 2-allele split (tiered); or always ava / always reference
 phasing_sites = config.get("phasing_sites", "tiered")
@@ -105,8 +101,6 @@ lamassemble_max_initial_matches = config.get("lamassemble_max_initial_matches", 
 consensus_tmp_dir = config.get("consensus_tmp_dir") or ""
 # k = this x the median depth: reads per crowded CR (0: all reads; default 3)
 read_selection_factor = config.get("read_selection_factor", 3)
-# None = take each container's copy number from the copy-number track.
-cn_override = config.get("cn_override", None)
 
 # min mapq
 min_mapq        = config["min_mapq"]
@@ -372,7 +366,6 @@ rule signalprocessing_generate_copynumber_tracks:
         bed="copy_number_tracks.bed.gz",
         tbi="copy_number_tracks.bed.gz.tbi",
         db="copy_number_tracks.db",
-        plot="QC/copy_number_tracks.png"
     params:
         bed_uncompressed="copy_number_tracks.bed",
         regions=regions,
@@ -398,10 +391,36 @@ rule signalprocessing_generate_copynumber_tracks:
         --output-bed {params.bed_uncompressed} \
         --output-db {output.db} \
         --threads {threads} \
-        --plot-output {output.plot} \
         --reference-fai {params.reference_fai} \
         --regions {params.regions} \
         --dispersion {params.dispersion} \
+        --log-level {params.log_level} 2>&1 | tee -a {log}"""
+
+
+# Its own rule (not an output of the tracks rule): a missing plot then only
+# redraws the plot, instead of rewriting the tracks and everything after them.
+rule QC_copy_number_tracks:
+    input:
+        db="copy_number_tracks.db"
+    output:
+        plot="QC/copy_number_tracks.png"
+    params:
+        reference_fai=reference + ".fai",
+        log_level=log_level
+    threads: 1
+    resources:
+        mem_mb=4*1024,
+        runtime=20
+    log:
+        "logs/QC_copy_number_tracks.log"
+    conda:
+        "envs/svirlpool.yml"
+    shell:
+        """set -xeo pipefail
+        python3 -u -m svirlpool.signalprocessing.plot_copynumber_tracks \
+        --db {input.db} \
+        --reference-fai {params.reference_fai} \
+        --output {output.plot} \
         --log-level {params.log_level} 2>&1 | tee -a {log}"""
 
 
@@ -699,7 +718,6 @@ rule consensus_consensus:
     input:
         containers='crs_containers.db',
         batches='consensus_batches.tsv',
-        copynumbertracks='copy_number_tracks.bed.gz',
         depth=['consensus_median_depth.txt'] if read_selection_factor > 0 else [],
     output:
         container="consensus/{batchdir}/consensus.batch_{batch_id}.jsonl",
@@ -714,12 +732,7 @@ rule consensus_consensus:
         log_level=log_level,
         consensus_method=consensus_method,
         max_padding_size=max_padding_size,
-        max_consensus_copy_number=max_consensus_copy_number,
-        cn_override_arg=f"--cn-override {cn_override}" if cn_override is not None else "",
-        clustering_mode=consensus_clustering_mode,
         phasing_flank=phasing_flank,
-        phasing_fallback=phasing_fallback,
-        clustering_strategy=clustering_strategy,
         phasing_sites=phasing_sites,
         assembly_max_reads=assembly_max_reads,
         heavy_container_bp=heavy_container_bp,
@@ -759,7 +772,6 @@ rule consensus_consensus:
         """set -xeo pipefail
         python3 -u -m svirlpool.localassembly.consensus \
         -s {params.samplename} \
-        -cn {input.copynumbertracks} \
         {params.lamassemble_mat_arg} \
         --consensus-method {params.consensus_method} \
         --reference {params.reference} \
@@ -768,11 +780,7 @@ rule consensus_consensus:
         --batch-id {wildcards.batch_id} \
         -a {params.alignments} \
         --max-padding-size {params.max_padding_size} \
-        --max-copy-number {params.max_consensus_copy_number} {params.cn_override_arg} \
-        --clustering-mode {params.clustering_mode} \
         --phasing-flank {params.phasing_flank} \
-        --phasing-fallback {params.phasing_fallback} \
-        --clustering-strategy {params.clustering_strategy} \
         --phasing-sites {params.phasing_sites} \
         --assembly-max-reads {params.assembly_max_reads} \
         --heavy-container-bp {params.heavy_container_bp} \

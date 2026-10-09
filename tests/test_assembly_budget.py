@@ -115,7 +115,6 @@ def test_container_over_the_assembly_size_is_dropped(tmp_path, monkeypatch):
     consensus.crs_containers_to_consensus(
         samplename="s",
         input=db,
-        copy_number_tracks=tmp_path / "cn.bed.gz",
         output=out,
         lamassemble_mat=None,
         path_alignments=tmp_path / "reads.bam",
@@ -249,7 +248,7 @@ RUN_ARGS = [
     "--threads", "1",
 ]  # fmt: skip
 CONSENSUS_ARGS = [
-    "-s", "s", "-i", "c.db", "-a", "a.bam", "-cn", "cn.bed.gz", "-o", "o.jsonl",
+    "-s", "s", "-i", "c.db", "-a", "a.bam", "-o", "o.jsonl",
     "-r", "r.fa",
 ]  # fmt: skip
 
@@ -372,7 +371,6 @@ def test_large_assembly_starts_at_its_level(tmp_path, monkeypatch):
     consensus.crs_containers_to_consensus(
         samplename="s",
         input=db,
-        copy_number_tracks=tmp_path / "cn.bed.gz",
         output=out,
         lamassemble_mat=None,
         path_alignments=tmp_path / "reads.bam",

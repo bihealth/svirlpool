@@ -256,68 +256,22 @@ def get_parser():
         default=100000,
     )
     parser_run_wf.add_argument(
-        "--max-consensus-copy-number",
-        help="Maximum estimated copy number of a candidate-region container for which a "
-        "consensus is still attempted (default: 4). Containers exceeding this threshold are "
-        "skipped as too complex and produce no consensus (and therefore no SV calls) for that "
-        "region. The copy-number HMM has states 0-4 only, so values of 4 or more never skip "
-        "anything; only 2 or 3 do. Not applied when --cn-override is given.",
-        required=False,
-        type=int,
-        default=4,
-    )
-    parser_run_wf.add_argument(
-        "--consensus-clustering-mode",
-        help="How the reads of a candidate-region container are split into alleles before "
-        "assembly. 'phased' (default): phase the reads by the SNVs and SVs in their "
-        "all-vs-all alignments and build one consensus per allele found. 'legacy' "
-        "(deprecated, to be removed): KMeans on summed indels, else spectral clustering with "
-        "k = local copy number.",
-        required=False,
-        choices=("phased", "legacy"),
-        default="phased",
-    )
-    parser_run_wf.add_argument(
         "--phasing-flank",
         help="Flank (bp) around the candidate regions to which reads are cut "
-        "for read phasing with --consensus-clustering-mode phased (default: 10000).",
+        "for read phasing (default: 10000).",
         required=False,
         type=int,
         default=10000,
     )
     parser_run_wf.add_argument(
-        "--phasing-fallback",
-        help="With --consensus-clustering-mode phased, what to do when the "
-        "phasing finds fewer than two alleles: 'single' (default) one consensus from all "
-        "reads, 'legacy' the legacy clustering.",
-        required=False,
-        choices=("single", "legacy"),
-        default="single",
-    )
-    parser_run_wf.add_argument(
         "--phasing-sites",
-        help="With --consensus-clustering-mode phased: where the read phasing takes its "
-        "SNV and SV sites from. 'ava': the reads' all-vs-all alignments. "
+        help="Where the read phasing takes its SNV and SV sites from. 'ava': the reads' all-vs-all alignments. "
         "'reference' (ablation): the reads' alignments to the reference. 'tiered' (default): the "
         "reference sites first, kept when they give two balanced, self-consistent "
         "alleles; the all-vs-all alignments for the rest.",
         required=False,
         choices=("ava", "reference", "tiered"),
         default="tiered",
-    )
-    parser_run_wf.add_argument(
-        "--clustering-strategy",
-        help="With --consensus-clustering-mode phased: 'accurate' (default) phases the "
-        "reads of every container (with --phasing-fallback); with --phasing-sites tiered "
-        "(default) on their reference-alignment SNVs, else all-vs-all. 'balanced' first "
-        "takes KMeans on the reads' summed indels where it finds >= 2 clusters of >= 20%% "
-        "of the reads each (less CPU, but lower SV precision outside tandem repeats). "
-        "'fast' in addition to 'balanced' uses the two haplotypes of the het SNVs in the "
-        "reads' reference alignments where they split the reads (costs accuracy). The "
-        "rest is phased.",
-        required=False,
-        choices=("accurate", "balanced", "fast"),
-        default="accurate",
     )
     parser_run_wf.add_argument(
         "--assembly-max-reads",
@@ -403,17 +357,6 @@ def get_parser():
         required=False,
         type=float,
         default=3,
-    )
-    parser_run_wf.add_argument(
-        "--cn-override",
-        help="Use this fixed copy number as the maximum number of read clusters (alleles) of "
-        "every candidate-region container, instead of the copy-number track estimate "
-        "(default: unset, i.e. use the track). Only used by the legacy clustering "
-        "(--consensus-clustering-mode legacy or --phasing-fallback legacy); the phased "
-        "clustering takes the number of alleles from the reads.",
-        required=False,
-        type=int,
-        default=None,
     )
     parser_run_wf.add_argument(
         "--rerun-triggers",

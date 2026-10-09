@@ -160,29 +160,21 @@ def test_settings_are_on_by_default():
     )
     assert run.read_selection_factor == 3
     assert run.container_time_limit == 0  # no wall-clock limit (README section 7)
-    # reference-SNV phasing, else all-vs-all phasing (no KMeans route)
-    assert run.clustering_strategy == "accurate"
+    # reference-SNV phasing, else all-vs-all phasing: the only route (the KMeans
+    # and legacy clustering routes are gone, and with them the copy number)
     assert run.phasing_sites == "tiered"
+    for removed in ("clustering_strategy", "consensus_clustering_mode",
+                    "phasing_fallback", "cn_override", "max_consensus_copy_number"):  # fmt: skip
+        assert not hasattr(run, removed), removed
     cons = consensus.get_consensus_parser().parse_args(
-        [
-            "-s",
-            "s",
-            "-i",
-            "c.db",
-            "-a",
-            "a.bam",
-            "-cn",
-            "cn.bed.gz",
-            "-o",
-            "o",
-            "-r",
-            "r.fa",
-        ]
+        ["-s", "s", "-i", "c.db", "-a", "a.bam", "-o", "o", "-r", "r.fa"]
     )
     assert cons.read_selection_factor == 3
     assert cons.container_time_limit == 0
-    assert cons.clustering_strategy == "accurate"
     assert cons.phasing_sites == "tiered"
+    for removed in ("copy_number_tracks", "clustering_strategy", "clustering_mode",
+                    "phasing_fallback", "cn_override", "max_copy_number"):  # fmt: skip
+        assert not hasattr(cons, removed), removed
 
 
 def test_workflow_always_passes_the_factor():
