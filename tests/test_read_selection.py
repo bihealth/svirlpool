@@ -202,3 +202,38 @@ def test_workflow_always_passes_the_factor():
     ):
         arg = eval("(" + expr + ")", {"read_selection_factor": factor})  # noqa: S307
         assert arg == expected or arg.startswith(expected + " ")
+
+
+def test_container_without_consensus_skips_reads_the_selection_dropped():
+    """A container whose assembly fails returns its CRs' signal reads as
+    unused. Before, a signal read that the read selection had dropped (so it
+    was never cut) raised a KeyError and failed the whole consensus batch
+    (evaluation hg38, 2026-10-08: every platinum run and giab 5x HG002/HG003)."""
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
+
+    from svirlpool.util import datatypes
+
+    def signal(readname):
+        return datatypes.ExtendedSVsignal(
+            ref_start=S, ref_end=S + 50, read_start=10, read_end=60, size=50,
+            sv_type=1, chr="chr1", chrID=0, coverage=20, readname=readname,
+            samplename="s", forward=1,
+        )  # fmt: skip
+
+    crs = {
+        7: datatypes.CandidateRegion(
+            crID=7, chr="chr1", referenceID=0, referenceStart=S, referenceEnd=E,
+            sv_signals=[signal("kept"), signal("dropped"), signal("kept")],
+        ),
+        8: datatypes.CandidateRegion(
+            crID=8, chr="chr1", referenceID=0, referenceStart=E, referenceEnd=E + 500,
+            sv_signals=[signal("dropped")],
+        ),
+    }  # fmt: skip
+    cutreads = {"kept": SeqRecord(Seq("ACGT"), id="kept", name="kept", description="")}
+    unused = consensus.unused_signal_reads(crs_dict=crs, cutreads=cutreads)
+    assert set(unused) == {7, 8}
+    assert [r.name for r in unused[7]] == ["kept"]
+    assert unused[7][0].sequence == "ACGT" and unused[7][0].qualities is None
+    assert unused[8] == []

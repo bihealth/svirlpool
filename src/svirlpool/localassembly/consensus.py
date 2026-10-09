@@ -3454,6 +3454,34 @@ def fast_clustering_consensus(
     )
 
 
+def unused_signal_reads(
+    crs_dict: dict[int, datatypes.CandidateRegion],
+    cutreads: dict[str, SeqRecord],
+) -> dict[int, list[datatypes.SequenceObject]]:
+    """The cut reads of each CR's SV signals, for a container without consensus.
+
+    A signal read can be missing from cutreads: the read selection
+    (--read-selection-factor) drops reads of crowded CRs before the reads are
+    cut. Such a read is left out (it raised a KeyError before, which failed the
+    whole consensus batch).
+    """
+    dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {}
+    for cr in crs_dict.values():
+        readnames = sorted({signal.readname for signal in cr.sv_signals})
+        dict_unused_reads[cr.crID] = [
+            datatypes.SequenceObject(
+                id=cutreads[readname].id,
+                name=cutreads[readname].name,
+                sequence=str(cutreads[readname].seq),
+                description=cutreads[readname].description,
+                qualities=cutreads[readname].letter_annotations.get("phred_quality"),
+            )
+            for readname in readnames
+            if readname in cutreads
+        ]
+    return dict_unused_reads
+
+
 def process_consensus_container(
     samplename: str,
     crs_dict: dict[int, datatypes.CandidateRegion],
@@ -3712,30 +3740,7 @@ def process_consensus_container(
         log.warning(
             "No consensus objects could be built from the candidate regions. Returning empty consensus dict and all reads as unused reads."
         )
-        # parse unused reads to datatypes.SequenceObject
-        dict_unused_read_names: dict[int, set[str]] = {
-            cr.crID: {signal.readname for signal in cr.sv_signals}
-            for cr in crs_dict.values()
-        }
-        dict_unused_reads: dict[int, list[datatypes.SequenceObject]] = {
-            crID: [] for crID in dict_unused_read_names
-        }
-        for crID, readnames in dict_unused_read_names.items():
-            for readname in readnames:
-                read_seqRecord = cutreads[readname]
-                read_sequence_object = datatypes.SequenceObject(
-                    id=read_seqRecord.id,
-                    name=read_seqRecord.name,
-                    sequence=str(read_seqRecord.seq),
-                    description=read_seqRecord.description,
-                    qualities=(
-                        read_seqRecord.letter_annotations["phred_quality"]
-                        if "phred_quality" in read_seqRecord.letter_annotations
-                        else None
-                    ),
-                )
-                dict_unused_reads[crID].append(read_sequence_object)
-        return {}, dict_unused_reads
+        return {}, unused_signal_reads(crs_dict=crs_dict, cutreads=cutreads)
         # TODO: implement assembly for regions without representatives
 
     # ================================ ADDING UNUSED READS TO CONSENSUS OBJECTS ================================ #
