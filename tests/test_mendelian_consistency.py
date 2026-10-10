@@ -24,6 +24,7 @@ from svirlpool.analysis.barplot_mendelian_consistency import (
     create_table,
     select_stratum,
 )
+from svirlpool.analysis import mendelian_consistency as mc
 from svirlpool.analysis.mendelian_consistency import (
     _STACK_ORDER,
     _STATUS_HATCH,
@@ -46,6 +47,8 @@ TRIO = ["child", "father", "mother"]
 
 _VCF_HEADER = """##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=1000000>
+##contig=<ID=chrX,length=156040895>
+##contig=<ID=chrY,length=57227415>
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Length of the SV">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
@@ -63,17 +66,19 @@ def write_trio_vcf(
     svtype: str = "INS",
     svlen: int = 500,
     name: str = "trio.vcf",
+    chrom: str = "chr1",
+    first_pos: int = 1000,
 ) -> Path:
     """Write a VCF with one INS record per ``(child, father, mother)`` triple."""
     path = tmp_path / name
     lines = [_VCF_HEADER]
     for i, (child, father, mother) in enumerate(trios):
-        pos = 1000 * (i + 1)
+        pos = first_pos + 1000 * i
         info = f"SVTYPE={svtype};SVLEN={svlen}"
         if svtype == "DEL":
             info += f";END={pos + svlen}"
         lines.append(
-            f"chr1\t{pos}\t.\tN\t<{svtype}>\t.\tPASS\t{info}\tGT"
+            f"{chrom}\t{pos}\t.\tN\t<{svtype}>\t.\tPASS\t{info}\tGT"
             f"\t{child}\t{father}\t{mother}\n"
         )
     path.write_text("".join(lines))
@@ -85,13 +90,22 @@ def read_records(path: Path) -> list[vcfpy.Record]:
 
 
 def status_of(
-    tmp_path: Path, child: str, father: str, mother: str, **kwargs
+    tmp_path: Path,
+    child: str,
+    father: str,
+    mother: str,
+    *,
+    chrom: str = "chr1",
+    pos: int = 1000,
+    **kwargs,
 ) -> GTInheritanceStatus:
     """Build a one-record VCF for the trio and return its consistency status."""
     path = write_trio_vcf(
         tmp_path,
         [(child, father, mother)],
-        name=f"one_{abs(hash((child, father, mother)))}.vcf",
+        name=f"one_{abs(hash((child, father, mother, chrom, pos)))}.vcf",
+        chrom=chrom,
+        first_pos=pos,
     )
     record = read_records(path)[0]
     return is_variant_inconsistent(variant=record, names_trio=TRIO, **kwargs)
@@ -253,7 +267,7 @@ class TestDiploidRule:
             ("0/1", "1/1", "0/0"),
             ("1/1", "0/1", "0/1"),  # both parents transmit an alt
             ("1/1", "1/1", "1/1"),
-            ("0/0", "1/1", "0/0"),  # child reference: always possible
+            ("0/0", "0/1", "0/0"),  # each parent can transmit a reference
             ("0/0", "0/1", "0/1"),
         ],
     )
@@ -269,6 +283,9 @@ class TestDiploidRule:
             ("1/1", "0/0", "0/0"),
             ("1/1", "0/1", "0/0"),  # only one parent can transmit an alt
             ("1/1", "0/0", "1/1"),
+            ("0/0", "1/1", "0/0"),  # a 1/1 parent has no reference to transmit
+            ("0/0", "0/1", "1/1"),
+            ("0/1", "1/1", "1/1"),
         ],
     )
     def test_mendelian_violating_trios(self, tmp_path, child, father, mother):
@@ -285,13 +302,17 @@ class TestDiploidRule:
 
 
 class TestHemizygousAndPolyploidRules:
-    def test_hemizygous_alt_from_a_reference_mother_is_inconsistent(self, tmp_path):
-        assert (
-            status_of(tmp_path, "1", "0/1", "0/0") is GTInheritanceStatus.inconsistent
-        )
-
-    def test_hemizygous_alt_from_a_carrier_mother_is_consistent(self, tmp_path):
+    def test_autosomal_haploid_alt_may_come_from_either_parent(self, tmp_path):
+        """Copy number 1 on an autosome is not the male X: no mother-only rule."""
+        assert status_of(tmp_path, "1", "0/1", "0/0") is GTInheritanceStatus.consistent
         assert status_of(tmp_path, "1", "0/0", "0/1") is GTInheritanceStatus.consistent
+
+    def test_autosomal_haploid_alt_from_reference_parents_is_inconsistent(
+        self, tmp_path
+    ):
+        assert (
+            status_of(tmp_path, "1", "0/0", "0/0") is GTInheritanceStatus.inconsistent
+        )
 
     def test_haploid_reference_child_is_non_informative_with_reference_parents(
         self, tmp_path
@@ -581,3 +602,209 @@ class TestBarplotConsumer:
         kept = df[df["status"].isin(["consistent", "inconsistent"])]
         assert "no_call" not in set(kept["status"])
         assert kept["percentage"].sum() == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Sex chromosomes: the child's sex from the PED, the PARs from the build
+# ---------------------------------------------------------------------------
+
+GRCH38 = mc.SexChromosomes("GRCh38")
+NON_PAR_X = 50_000_000
+PAR1_X = 100_000
+NON_PAR_Y = 10_000_000
+
+
+def sex_status(tmp_path, child, father, mother, *, sex, chrom="chrX", pos=NON_PAR_X):
+    return status_of(
+        tmp_path,
+        child,
+        father,
+        mother,
+        chrom=chrom,
+        pos=pos,
+        child_sex=sex,
+        sex_chromosomes=GRCH38,
+    )
+
+
+class TestSonsX:
+    @pytest.mark.parametrize(
+        ("child", "father", "mother"),
+        [
+            ("1/1", "0/0", "0/1"),  # diploid-written hemizygous alt from mother
+            ("1/1", "0/0", "1/1"),
+            ("1", "0", "0/1"),
+            ("0/0", "1/1", "0/1"),  # the father's X goes to daughters only
+        ],
+    )
+    def test_alleles_from_the_mother_are_consistent(
+        self, tmp_path, child, father, mother
+    ):
+        assert (
+            sex_status(tmp_path, child, father, mother, sex=mc.SEX_MALE)
+            is GTInheritanceStatus.consistent
+        )
+
+    @pytest.mark.parametrize(
+        ("child", "father", "mother"),
+        [
+            ("1/1", "1/1", "0/0"),  # alt only in the father
+            ("1", "0", "0/0"),
+            ("0/0", "0/0", "1/1"),  # the mother has no reference X to give
+        ],
+    )
+    def test_alleles_absent_from_the_mother_are_violations(
+        self, tmp_path, child, father, mother
+    ):
+        assert (
+            sex_status(tmp_path, child, father, mother, sex=mc.SEX_MALE)
+            is GTInheritanceStatus.inconsistent
+        )
+
+    def test_a_fathers_alt_alone_is_not_informative_for_a_son(self, tmp_path):
+        assert (
+            sex_status(tmp_path, "0/0", "1/1", "0/0", sex=mc.SEX_MALE)
+            is GTInheritanceStatus.non_informative
+        )
+
+    def test_the_par_follows_the_diploid_rule(self, tmp_path):
+        assert (
+            sex_status(tmp_path, "1/1", "0/0", "0/1", sex=mc.SEX_MALE, pos=PAR1_X)
+            is GTInheritanceStatus.inconsistent
+        )
+
+    def test_unknown_sex_follows_the_diploid_rule(self, tmp_path):
+        assert (
+            sex_status(tmp_path, "1/1", "0/0", "0/1", sex=None)
+            is GTInheritanceStatus.inconsistent
+        )
+
+
+class TestDaughtersX:
+    def test_she_carries_her_fathers_x(self, tmp_path):
+        assert (
+            sex_status(tmp_path, "0/1", "1", "0/0", sex=mc.SEX_FEMALE)
+            is GTInheritanceStatus.consistent
+        )
+        assert (
+            sex_status(tmp_path, "0/0", "1", "0/0", sex=mc.SEX_FEMALE)
+            is GTInheritanceStatus.inconsistent
+        )
+
+
+class TestY:
+    def test_a_sons_y_comes_from_his_father(self, tmp_path):
+        on_y = dict(sex=mc.SEX_MALE, chrom="chrY", pos=NON_PAR_Y)
+        assert (
+            sex_status(tmp_path, "1", "1", "0/0", **on_y)
+            is GTInheritanceStatus.consistent
+        )
+        assert (
+            sex_status(tmp_path, "1", "0", "1/1", **on_y)
+            is GTInheritanceStatus.inconsistent
+        )
+
+    def test_a_daughters_y_is_not_determinable(self, tmp_path):
+        assert (
+            sex_status(
+                tmp_path,
+                "0/1",
+                "1",
+                "0/0",
+                sex=mc.SEX_FEMALE,
+                chrom="chrY",
+                pos=NON_PAR_Y,
+            )
+            is GTInheritanceStatus.uncertain
+        )
+
+
+class TestLegacyLenientInheritance:
+    @pytest.mark.parametrize(
+        ("child", "father", "mother", "expected"),
+        [
+            ("0/0", "1/1", "0/0", GTInheritanceStatus.consistent),
+            ("1", "0/1", "0/0", GTInheritanceStatus.inconsistent),
+            ("1/1", "0/0", "0/1", GTInheritanceStatus.inconsistent),
+        ],
+    )
+    def test_reproduces_the_earlier_verdicts(
+        self, tmp_path, child, father, mother, expected
+    ):
+        assert (
+            status_of(
+                tmp_path,
+                child,
+                father,
+                mother,
+                chrom="chrX",
+                pos=NON_PAR_X,
+                child_sex=mc.SEX_MALE,
+                sex_chromosomes=GRCH38,
+                legacy_inheritance=True,
+            )
+            is expected
+        )
+
+
+class TestBuildAndSexInputs:
+    def test_build_is_read_from_the_chrx_contig(self, tmp_path):
+        path = write_trio_vcf(tmp_path, [("0/1", "0/1", "0/0")])
+        sc = mc.detect_sex_chromosomes(path)
+        assert sc.build == "GRCh38"
+        assert sc.region("chrX", NON_PAR_X) == "X"
+        assert sc.region("chrX", PAR1_X) == "autosome"
+        assert sc.region("X", NON_PAR_X) == "X"
+        assert sc.region("chr7", 1000) == "autosome"
+
+    def test_without_a_chrx_contig_line_there_are_no_pars(self, tmp_path):
+        path = tmp_path / "nocontig.vcf"
+        path.write_text(
+            _VCF_HEADER.replace("##contig=<ID=chrX,length=156040895>\n", "")
+        )
+        sc = mc.detect_sex_chromosomes(path)
+        assert sc.build is None
+        assert sc.region("chrX", PAR1_X) == "X"
+
+    def test_ped_sex_column(self, tmp_path):
+        ped = tmp_path / "trio.ped"
+        ped.write_text(
+            "fam\tchild\tfather\tmother\t1\t0\n"
+            "fam\tfather\tNA\tNA\t1\t0\n"
+            "fam\tmother\tNA\tNA\t2\t0\n"
+            "fam\tother\tNA\tNA\t0\t0\n"
+        )
+        assert mc.parse_ped_sexes(ped) == {
+            "child": 1,
+            "father": 1,
+            "mother": 2,
+            "other": None,
+        }
+
+    def test_the_cli_path_scores_a_son_on_x_by_his_mother(self, tmp_path):
+        ped = tmp_path / "trio.ped"
+        ped.write_text(
+            "fam\tchild\tfather\tmother\t1\t0\n"
+            "fam\tfather\tNA\tNA\t1\t0\n"
+            "fam\tmother\tNA\tNA\t2\t0\n"
+        )
+        vcf = write_trio_vcf(
+            tmp_path,
+            [("1/1", "0/0", "0/1"), ("1/1", "0/0", "1/1")],
+            chrom="chrX",
+            first_pos=NON_PAR_X,
+        )
+        tsv = tmp_path / "out.tsv"
+        mc.mendelian_consistency(
+            input=vcf, output=tmp_path / "out.txt", ped=ped, tsv=tsv
+        )
+        rows = [line.split("\t") for line in tsv.read_text().splitlines()]
+        header = rows[0]
+        counts = {
+            r[header.index("status")]: int(r[header.index("count")])
+            for r in rows[1:]
+            if r[header.index("svtype")] == "all"
+            and r[header.index("size_bin")] == "all"
+        }
+        assert counts["consistent"] == 2
+        assert counts["inconsistent"] == 0

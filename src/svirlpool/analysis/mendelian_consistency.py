@@ -18,15 +18,21 @@
 # 1. Parse genotypes to count ref (0) and alt (non-0) alleles
 # 2. Check if parents can collectively provide the child's alleles
 #
-# For diploid (CN=2):
-#   - Child 0/0: Always possible from any parents
-#   - Child 0/1: At least one parent must have an alt allele
-#   - Child 1/1: Both parents must have at least one alt allele each
+# For diploid (CN=2), one allele from each parent (check_inheritance):
+#   - Child 0/0: each parent must carry a ref allele (a 1/1 parent violates)
+#   - Child 0/1: one parent transmits an alt, the other a ref
+#   - Child 1/1: both parents must carry an alt allele
 #
-# For hemizygous (CN=1):
-#   - Child inherits from mother only (e.g., X chromosome in males)
-#   - Child 0: Mother can be any genotype
-#   - Child 1: Mother must have at least one alt (0/1, 1/1, or 1)
+# For haploid (CN=1) on an autosome: the one allele from either parent.
+#
+# Sex chromosomes, outside the PARs (child's sex from the PED, PARs from the
+# build of the VCF's chrX contig), whatever ploidy the caller wrote:
+#   - son, X: his alleles must be among his mother's
+#   - son, Y: his alleles must be among his father's
+#   - daughter, X: the diploid rule (her father's single X is his alleles)
+#
+# --legacy-lenient-inheritance restores the earlier rules: child 0/0 always
+# consistent, haploid child mother-only on every chromosome, no sex handling.
 #
 # For higher CN (3-4):
 #   - Conservative check: parents must collectively have enough alt alleles
@@ -296,6 +302,159 @@ def check_higher_cn_inheritance(
         return "inconsistent"
 
 
+# %%
+# Sex chromosomes
+# ---------------
+# Outside the pseudo-autosomal regions (PARs) a son carries one X, from his
+# mother, and one Y, from his father; a daughter carries her father's only X and
+# one of her mother's.  Callers do not reliably write haploid genotypes there
+# (sniffles writes diploid ones everywhere; svirlpool follows a copy-number
+# track), so the written ploidy cannot decide which rule applies -- the child's
+# sex from the pedigree and the position relative to the PARs do.
+
+SEX_MALE = 1
+SEX_FEMALE = 2
+
+# 0-based half-open PAR intervals per build.  GRCh38/GRCh37: Genome Reference
+# Consortium; CHM13: T2T chm13v2.0_PAR.bed.
+_PARS: dict[str, dict[str, tuple[tuple[int, int], ...]]] = {
+    "GRCh38": {
+        "X": ((10_000, 2_781_479), (155_701_382, 156_030_895)),
+        "Y": ((10_000, 2_781_479), (56_887_902, 57_217_415)),
+    },
+    "GRCh37": {
+        "X": ((60_000, 2_699_520), (154_931_043, 155_260_560)),
+        "Y": ((10_000, 2_649_520), (59_034_049, 59_363_566)),
+    },
+    "CHM13": {
+        "X": ((0, 2_394_410), (153_925_834, 154_259_566)),
+        "Y": ((0, 2_458_320), (62_122_809, 62_460_029)),
+    },
+}
+# chrX length identifies the build from a VCF header's contig lines.
+_CHRX_LENGTH_TO_BUILD = {
+    156_040_895: "GRCh38",
+    155_270_560: "GRCh37",
+    154_259_566: "CHM13",
+}
+
+
+def _sex_chromosome_name(chrom: str) -> str | None:
+    """'X' or 'Y' for a sex chromosome (with or without 'chr'), else None."""
+    name = chrom[3:] if chrom.lower().startswith("chr") else chrom
+    return name.upper() if name.upper() in ("X", "Y") else None
+
+
+class SexChromosomes:
+    """Which part of the genome a position is in: autosome-like, X or Y.
+
+    PARs count as autosome-like.  Without a known build there are no PARs to
+    exclude, and the whole of X and Y is treated as sex-linked.
+    """
+
+    def __init__(self, build: str | None):
+        if build is not None and build not in _PARS:
+            raise ValueError(f"unknown build {build!r}; known: {sorted(_PARS)}")
+        self.build = build
+        self.pars = _PARS.get(build, {}) if build else {}
+
+    def region(self, chrom: str, pos: int) -> str:
+        """'autosome', 'X' or 'Y' for a 1-based VCF position."""
+        name = _sex_chromosome_name(chrom)
+        if name is None:
+            return "autosome"
+        if any(start < pos <= end for start, end in self.pars.get(name, ())):
+            return "autosome"
+        return name
+
+
+def detect_sex_chromosomes(path_vcf: PosixPath) -> SexChromosomes:
+    """The build of *path_vcf*, from the length of its chrX contig line."""
+    reader = vcfpy.Reader.from_path(str(path_vcf))
+    try:
+        for line in reader.header.get_lines("contig"):
+            if _sex_chromosome_name(line.id) == "X":
+                length = int(line.length or 0)
+                build = _CHRX_LENGTH_TO_BUILD.get(length)
+                if build is None:
+                    log.warning(
+                        f"chrX length {length} matches no known build; "
+                        "X and Y are scored as sex-linked without PARs"
+                    )
+                return SexChromosomes(build)
+    finally:
+        reader.close()
+    log.warning(
+        f"{path_vcf} has no chrX contig line; X and Y are scored as sex-linked "
+        "without PARs"
+    )
+    return SexChromosomes(None)
+
+
+def _alleles(person: tuple[int, int, int]) -> set[int]:
+    """The alleles (0 = ref, 1 = alt) a person carries, hence can transmit."""
+    n_ref, n_alt, _ = person
+    return ({0} if n_ref > 0 else set()) | ({1} if n_alt > 0 else set())
+
+
+def check_inheritance(
+    child: tuple[int, int, int],
+    father: tuple[int, int, int],
+    mother: tuple[int, int, int],
+    region: str = "autosome",
+    child_sex: int | None = None,
+) -> str:
+    """Can the parents' alleles produce the child's genotype?
+
+    Every allele of the child must come from the parent that transmits it:
+
+    - son, non-PAR X: his alleles from his mother's;
+    - son, non-PAR Y: his alleles from his father's;
+    - otherwise (autosomes, PARs, a daughter's X, a child of unknown sex):
+      a diploid child needs one allele from each parent, so a child 0/0 with a
+      1/1 parent is a violation just like a child 1/1 with a 0/0 parent; a
+      haploid child (copy number 1) carries one allele from either parent;
+      copy number 3 or more uses :func:`check_higher_cn_inheritance`.
+
+    Returns "consistent", "inconsistent" or "uncertain" (a daughter's Y).
+    """
+    child_alleles = _alleles(child)
+    father_alleles = _alleles(father)
+    mother_alleles = _alleles(mother)
+    if region == "X" and child_sex == SEX_MALE:
+        return "consistent" if child_alleles <= mother_alleles else "inconsistent"
+    if region == "Y" and child_sex == SEX_MALE:
+        return "consistent" if child_alleles <= father_alleles else "inconsistent"
+    if region == "Y" and child_sex == SEX_FEMALE:
+        return "uncertain"
+    _, child_n_alt, child_ploidy = child
+    if child_ploidy == 1:
+        return (
+            "consistent"
+            if child_alleles <= (father_alleles | mother_alleles)
+            else "inconsistent"
+        )
+    if child_ploidy == 2:
+        possible = any(
+            a + b == child_n_alt for a in father_alleles for b in mother_alleles
+        )
+        return "consistent" if possible else "inconsistent"
+    if child_ploidy in (3, 4):
+        return check_higher_cn_inheritance(child_n_alt, child_ploidy, father, mother)
+    return "uncertain"
+
+
+def _relevant_members(
+    region: str, child_sex: int | None
+) -> tuple[bool, bool]:
+    """(father, mother) relevance for the informativeness of a trio."""
+    if region == "X" and child_sex == SEX_MALE:
+        return False, True
+    if region == "Y" and child_sex == SEX_MALE:
+        return True, False
+    return True, True
+
+
 # define an enum for gt inheritance status: consistent, inconsistent, missing
 class GTInheritanceStatus(Enum):
     missing = 0
@@ -346,9 +505,18 @@ def is_variant_inconsistent(
     variant: vcfpy.Record,
     names_trio: list[str] | None = None,
     missing_as_reference: bool = False,
+    child_sex: int | None = None,
+    sex_chromosomes: SexChromosomes | None = None,
+    legacy_inheritance: bool = False,
 ) -> GTInheritanceStatus:
     """
     Check Mendelian consistency for a variant across all copy numbers (CN 0-4+).
+
+    The rule is :func:`check_inheritance`: the sex-linked rules apply to a child
+    of known sex (*child_sex*, PED coding 1 = male, 2 = female) outside the
+    PARs of *sex_chromosomes* (no PARs when it is None).  *legacy_inheritance*
+    restores the pre-2026-10 rules (a child 0/0 always consistent, a haploid
+    child scored mother-only everywhere) to reproduce earlier numbers.
 
     Uses generalized allele counting approach that works for:
     - Hemizygous (CN=1): e.g., "0" or "1"
@@ -406,6 +574,29 @@ def is_variant_inconsistent(
     if any(is_no_call(person) for person in (child, father, mother)):
         return GTInheritanceStatus.no_call
 
+    if not legacy_inheritance:
+        region = (sex_chromosomes or SexChromosomes(None)).region(
+            variant.CHROM, variant.POS
+        )
+        # A parent who transmits nothing to the child at this position (the
+        # father on a son's X, the mother on his Y) cannot make it informative.
+        father_counts, mother_counts = _relevant_members(region, child_sex)
+        no_alleles = (0, 0, 0)
+        if not is_trio_informative(
+            child,
+            father if father_counts else no_alleles,
+            mother if mother_counts else no_alleles,
+        ):
+            return GTInheritanceStatus.non_informative
+        status = check_inheritance(child, father, mother, region, child_sex)
+        return {
+            "consistent": GTInheritanceStatus.consistent,
+            "inconsistent": GTInheritanceStatus.inconsistent,
+            "uncertain": GTInheritanceStatus.uncertain,
+        }[status]
+
+    # Pre-2026-10 rules (--legacy-lenient-inheritance): a child 0/0 is always
+    # consistent and a haploid child GT is scored mother-only on any chromosome.
     # Check if trio is informative (at least one member has variant)
     if not is_trio_informative(child, father, mother):
         return GTInheritanceStatus.non_informative
@@ -503,6 +694,19 @@ def parse_ped(path_ped: PosixPath) -> dict[str, tuple[str, str, str]]:
             line = line.strip().split("\t")
             dict_ped[line[1]] = (line[2], line[3], line[0])
     return dict_ped
+
+
+def parse_ped_sexes(path_ped: PosixPath) -> dict[str, int | None]:
+    """Sample -> sex from the PED sex column (1 male, 2 female, else None)."""
+    check_ped(path_ped)
+    sexes: dict[str, int | None] = {}
+    with open(path_ped, "r") as f:
+        for line in f:
+            fields = line.strip().split("\t")
+            sexes[fields[1]] = (
+                int(fields[4]) if fields[4] in (str(SEX_MALE), str(SEX_FEMALE)) else None
+            )
+    return sexes
 
 
 def parse_variants(path_vcf: PosixPath, passonly: bool = False) -> list[vcfpy.Record]:
@@ -650,6 +854,9 @@ def variants_consistency_stats(
     svtypes: set[str] | None = None,
     size_stratification: bool = True,
     missing_as_reference: bool = False,
+    child_sex: int | None = None,
+    sex_chromosomes: SexChromosomes | None = None,
+    legacy_inheritance: bool = False,
 ) -> tuple[
     dict[str, dict[GTInheritanceStatus, int]],
     dict[str, dict[str, dict[GTInheritanceStatus, int]]] | None,
@@ -669,6 +876,8 @@ def variants_consistency_stats(
         size_stratification: If True, also return counts stratified by size bin (BNDs excluded).
         missing_as_reference: reproduce the pre-v0.3 reading of ``./.``; see
             ``--legacy-missing-as-reference``.
+        child_sex, sex_chromosomes, legacy_inheritance: see
+            :func:`is_variant_inconsistent`.
 
     Returns:
         Tuple of:
@@ -707,6 +916,9 @@ def variants_consistency_stats(
                 variant=variant,
                 names_trio=names_trio,
                 missing_as_reference=missing_as_reference,
+                child_sex=child_sex,
+                sex_chromosomes=sex_chromosomes,
+                legacy_inheritance=legacy_inheritance,
             )
             dict_stats["all"][status] += 1
             if svtype not in dict_stats:
@@ -1415,6 +1627,7 @@ def annotate_vcf_with_mendelian_consistency(
     regions: dict[str, IntervalTree] | None = None,
     svtypes: set[str] | None = None,
     missing_as_reference: bool = False,
+    legacy_inheritance: bool = False,
 ) -> None:
     """Annotate VCF file with Mendelian consistency information.
 
@@ -1430,6 +1643,8 @@ def annotate_vcf_with_mendelian_consistency(
 
     # Parse pedigree to get trios
     dict_ped = parse_ped(ped)
+    sexes = parse_ped_sexes(ped)
+    sex_chromosomes = detect_sex_chromosomes(input_vcf)
 
     # Read VCF file
     reader = vcfpy.Reader.from_path(str(input_vcf))
@@ -1519,6 +1734,9 @@ def annotate_vcf_with_mendelian_consistency(
                     variant=variant,
                     names_trio=[child, father, mother],
                     missing_as_reference=missing_as_reference,
+                    child_sex=sexes.get(child),
+                    sex_chromosomes=sex_chromosomes,
+                    legacy_inheritance=legacy_inheritance,
                 )
                 trio_statuses[child] = status.name
 
@@ -1586,13 +1804,23 @@ def mendelian_consistency(
     fig: PosixPath | None = None,
     plot_color: str = "#1f77b4",
     missing_as_reference: bool = False,
+    legacy_inheritance: bool = False,
 ) -> None:
     """Run the Mendelian consistency check over *input* and write the reports.
 
     With *missing_as_reference* the pre-v0.3 reading of a no-call is restored so
     that previously published numbers reproduce exactly; see
-    ``--legacy-missing-as-reference``.
+    ``--legacy-missing-as-reference``.  The children's sexes come from the PED
+    sex column and the PARs from the build of *input* (its chrX contig length);
+    *legacy_inheritance* restores the rules before both existed, see
+    ``--legacy-lenient-inheritance``.
     """
+    if legacy_inheritance:
+        log.warning(
+            "--legacy-lenient-inheritance: a child 0/0 counts as consistent "
+            "whatever its parents carry, and sex chromosomes are scored by the "
+            "written ploidy alone (pre-2026-10 rules)."
+        )
     if missing_as_reference:
         log.warning(
             "--legacy-missing-as-reference: missing genotypes (./.) are counted "
@@ -1617,8 +1845,11 @@ def mendelian_consistency(
             regions=regions_tree,
             svtypes=svtypes,
             missing_as_reference=missing_as_reference,
+            legacy_inheritance=legacy_inheritance,
         )
 
+    sexes: dict[str, int | None] = parse_ped_sexes(ped) if ped else {}
+    sex_chromosomes = detect_sex_chromosomes(input)
     variants: list[vcfpy.Record] = parse_variants(path_vcf=input, passonly=passonly)
     if ped:
         trios = get_trios_from_variants(variants, ped)
@@ -1643,6 +1874,9 @@ def mendelian_consistency(
                 svtypes=svtypes,
                 size_stratification=size_stratification,
                 missing_as_reference=missing_as_reference,
+                child_sex=sexes.get(sample),
+                sex_chromosomes=sex_chromosomes,
+                legacy_inheritance=legacy_inheritance,
             )
             all_dict_stats[sample] = dict_stats
             if all_size_dict_stats is not None and size_stats is not None:
@@ -1686,6 +1920,7 @@ def run(args, **kwargs):
         fig=args.fig,
         plot_color=args.plot_color,
         missing_as_reference=args.missing_as_reference,
+        legacy_inheritance=args.legacy_inheritance,
     )
     return
 
@@ -1807,6 +2042,20 @@ def get_parser():
             "no-call outcome existed -- under this flag a technical dropout in "
             "the child scores as a correct inheritance and a dropout in a parent "
             "of a carrier child scores as a Mendelian violation."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-lenient-inheritance",
+        action="store_true",
+        dest="legacy_inheritance",
+        default=False,
+        help=(
+            "Restore the pre-2026-10 inheritance rules: a child 0/0 counts as "
+            "consistent even with a 1/1 parent, and a haploid child genotype is "
+            "scored mother-only on any chromosome while a son's diploid chrX "
+            "genotype needs an alt from his father.  Only for reproducing "
+            "earlier numbers; by default the PED sex column and the PARs of the "
+            "VCF's build decide the sex-linked rules."
         ),
     )
     parser.add_argument(
