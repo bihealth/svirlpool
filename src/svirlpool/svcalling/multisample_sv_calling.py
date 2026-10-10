@@ -935,8 +935,11 @@ def copy_number_at_locus(
     copy_number: int = 2  # Default diploid - if no copy number track is available
     if samplename in cn_tracks and chrname in cn_tracks[samplename]:
         try:
-            # Query overlapping intervals from the CN track IntervalTree
-            overlapping_cn = cn_tracks[samplename][chrname][start:end]
+            # Query overlapping intervals from the CN track IntervalTree. An
+            # insertion's reference region is a point (start == end), and an
+            # IntervalTree slice [s:s] is empty, so it would silently fall
+            # back to CN=2 (a male's chrX insertions were genotyped diploid).
+            overlapping_cn = cn_tracks[samplename][chrname][start : max(end, start + 1)]
             if overlapping_cn:
                 # Take the most common CN in the overlapping intervals
                 cn_values = [interval.data for interval in overlapping_cn]
