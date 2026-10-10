@@ -138,7 +138,11 @@ def test_create_padding_for_consensus() -> None:
         readname_right="f7ada504-4c28-4be8-8bb5-1d17f4888286",
         padding_size_left=39674,
         padding_size_right=36191,
-        consensus_interval_on_sequence_with_padding=(39674, 41744),
+        # the padding reads' cut reads align to consensus [1, 2046) and
+        # [1, 2045) of 2070 bp: the junctions sit there (the core is the
+        # consensus [1, 2045)), not at the consensus ends, where joining their
+        # flanks duplicated 1 bp and 25 bp
+        consensus_interval_on_sequence_with_padding=(39674, 41718),
     )
 
     assert abs(result1.padding_size_left - expected_1.padding_size_left) < 5, (
@@ -190,7 +194,9 @@ def test_create_padding_for_consensus() -> None:
         readname_right="4c08354-027f-4cf0-8534-777467668ca1",
         padding_size_left=28150,
         padding_size_right=29199,
-        consensus_interval_on_sequence_with_padding=(28150, 30228),
+        # the left padding read aligns from consensus position 225 (as does
+        # one other of the four reads with a left flank); the core starts there
+        consensus_interval_on_sequence_with_padding=(28150, 30003),
     )
     # print(result2)
     # counter-lengths are

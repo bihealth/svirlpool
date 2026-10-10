@@ -18,6 +18,7 @@ import os
 import shlex
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -2136,168 +2137,320 @@ def parse_description(description: str) -> dict:
     return result
 
 
+#: A padding flank must be at least this long (bp), or as long as the longest
+#: flank on that side of the consensus.
+PADDING_MIN_FLANK = 1000
+#: Flanking reads whose cut read ends within this distance (bp) of the junction
+#: most flanking reads agree on are equally good padding reads.
+PADDING_JUNCTION_TOLERANCE = 50
+#: A read is anchored beyond its cut when one of its reference alignments
+#: continues at least this far (bp) past the cut.
+PADDING_ANCHOR_BP = 100
+
+
+@attrs.frozen
+class PaddingFlank:
+    """The flank of one read on one side of a consensus.
+
+    ``junction`` is where the read's cut read alignment ends on that side of
+    the consensus (its target start on the left, its target end on the right);
+    the flank is the read sequence from that point outward, i.e.
+    ``read[read_start:read_end]`` in the read's original orientation,
+    reverse-complemented when the read aligns to the consensus on the reverse
+    strand. ``anchored``: one of the read's reference alignments continues
+    beyond its cut on that side, so the flank is sequence of the locus, not a
+    clipped (chimeric, foldback) piece of the read.
+    """
+
+    readname: str
+    junction: int
+    read_start: int
+    read_end: int
+    forward: bool
+    anchored: bool = True
+
+    @property
+    def length(self) -> int:
+        return self.read_end - self.read_start
+
+
+def aligned_interval_on_read(aln: pysam.AlignedSegment) -> tuple[int, int]:
+    """The aligned part of a read, in the read's original orientation."""
+    cig = aln.cigartuples
+    left = cig[0][1] if cig[0][0] in (4, 5) else 0
+    right = cig[-1][1] if cig[-1][0] in (4, 5) else 0
+    n = aln.infer_read_length()
+    start, end = left, n - right
+    return (n - end, n - start) if aln.is_reverse else (start, end)
+
+
+def read_anchoring(
+    alns: dict[int, list[pysam.AlignedSegment]],
+    cutreads: dict[str, SeqRecord],
+    read_records: dict[str, SeqRecord],
+    anchor_bp: int = PADDING_ANCHOR_BP,
+) -> dict[str, tuple[bool, bool]]:
+    """{readname: (anchored before the cut, anchored after the cut)} in the
+    read's original orientation: one of the read's alignments in the
+    candidate regions covers at least `anchor_bp` of the read right before the
+    cut start (after the cut end) and reaches the cut."""
+    intervals: dict[str, list[tuple[int, int]]] = {}
+    for alnlist in alns.values():
+        for aln in alnlist:
+            if aln.query_name in cutreads and aln.cigartuples:
+                intervals.setdefault(aln.query_name, []).append(
+                    aligned_interval_on_read(aln)
+                )
+    result: dict[str, tuple[bool, bool]] = {}
+    for readname, cutread in cutreads.items():
+        if readname not in read_records:
+            continue
+        desc = parse_description(cutread.description)
+        cut_start, cut_end = desc["start"], desc["end"]
+        n = len(read_records[readname].seq)
+        ivs = intervals.get(readname, [])
+        before = cut_start > 0 and any(
+            s <= max(0, cut_start - anchor_bp) and e >= cut_start for s, e in ivs
+        )
+        after = cut_end < n and any(
+            s <= cut_end and e >= min(n, cut_end + anchor_bp) for s, e in ivs
+        )
+        result[readname] = (before, after)
+    return result
+
+
+def _align_cutreads_to_consensus(
+    consensus_object: consensus_class.Consensus,
+    cutreads: dict[str, SeqRecord],
+    readnames: list[str],
+    tmp_dir_path: Path | str | None = None,
+) -> list[util.PafRecord]:
+    """PAF records (minimap2 -c, primary and supplementary) of the cut reads
+    `readnames` on the consensus sequence; the query coordinates are those of
+    the cut reads in their original orientation."""
+    if not readnames or not consensus_object.consensus_sequence:
+        return []
+    with tempfile.TemporaryDirectory(dir=tmp_dir_path) as tmp_dir:
+        target = Path(tmp_dir) / "consensus.fasta"
+        reads = Path(tmp_dir) / "cutreads.fasta"
+        with open(target, "w") as f:
+            f.write(f">{consensus_object.ID}\n{consensus_object.consensus_sequence}\n")
+        with open(reads, "w") as f:
+            for readname in readnames:
+                f.write(f">{readname}\n{cutreads[readname].seq}\n")
+        records = util.align_reads_with_minimap_paf(
+            reference=target,
+            reads=reads,
+            aln_args=CUTREAD_TO_CONSENSUS_ALN_ARGS,
+            threads=1,
+        )
+    return [r for r in records if r.target_name == consensus_object.ID]
+
+
+def padding_flanks(
+    records: list[util.PafRecord],
+    cutreads: dict[str, SeqRecord],
+    read_records: dict[str, SeqRecord],
+    anchoring: dict[str, tuple[bool, bool]] | None = None,
+) -> tuple[list[PaddingFlank], list[PaddingFlank]]:
+    """The left and right flanks of the reads aligned to a consensus.
+
+    A read's flank starts exactly where its cut read's alignment to the
+    consensus ends, so a flank joined to the consensus at that junction
+    continues the read without gap or overlap. Reads aligned on both strands
+    of the consensus (foldback or inverted reads) have no flanks: which of
+    their ends continues the locus is unknown. Of a read with several records
+    on one strand, the outermost record on each side gives the flank; such
+    reads are used only when no read with a single record has a flank on that
+    side.
+    """
+    by_read: dict[str, list[util.PafRecord]] = {}
+    for record in records:
+        by_read.setdefault(record.query_name, []).append(record)
+    single: tuple[list[PaddingFlank], list[PaddingFlank]] = ([], [])
+    multi: tuple[list[PaddingFlank], list[PaddingFlank]] = ([], [])
+    for readname in sorted(by_read):
+        recs = by_read[readname]
+        if readname not in read_records or readname not in cutreads:
+            continue
+        if len({r.is_forward for r in recs}) > 1:
+            continue
+        desc = parse_description(cutreads[readname].description)
+        cut_start = desc["start"]
+        n = len(read_records[readname].seq)
+        before, after = (anchoring or {}).get(readname, (True, True))
+        first = min(recs, key=lambda r: (r.target_start, -r.target_end))
+        last = max(recs, key=lambda r: (r.target_end, -r.target_start))
+        forward = first.is_forward
+        # read positions (original orientation) where the alignment of the
+        # first / last record begins and ends
+        if forward:
+            left = PaddingFlank(
+                readname,
+                first.target_start,
+                0,
+                cut_start + first.query_start,
+                True,
+                before,
+            )
+            right = PaddingFlank(
+                readname, last.target_end, cut_start + last.query_end, n, True, after
+            )
+        else:
+            left = PaddingFlank(
+                readname,
+                first.target_start,
+                cut_start + first.query_end,
+                n,
+                False,
+                after,
+            )
+            right = PaddingFlank(
+                readname,
+                last.target_end,
+                0,
+                cut_start + last.query_start,
+                False,
+                before,
+            )
+        group = single if len(recs) == 1 else multi
+        group[0].append(left)
+        group[1].append(right)
+    left_flanks = [f for f in single[0] if f.length > 0] or [
+        f for f in multi[0] if f.length > 0
+    ]
+    right_flanks = [f for f in single[1] if f.length > 0] or [
+        f for f in multi[1] if f.length > 0
+    ]
+    return left_flanks, right_flanks
+
+
+def choose_padding_flank(
+    flanks: list[PaddingFlank],
+    side: str,
+    min_flank: int = PADDING_MIN_FLANK,
+    tolerance: int = PADDING_JUNCTION_TOLERANCE,
+) -> PaddingFlank | None:
+    """The flank that pads one side ("left" or "right") of a consensus.
+
+    The junction is where most anchored flanking reads end on the consensus
+    (the median; on a tie the one farther inside the consensus): a consensus
+    end that only a few reads reach -- clipped, chimeric or foldback reads
+    whose cut extends past the locus -- is cut off rather than padded. Of the
+    reads ending there, the one with the longest flank pads.
+    """
+    if side not in ("left", "right"):
+        raise ValueError(f"side must be 'left' or 'right', not {side!r}")
+    flanks = [f for f in flanks if f.length > 0]
+    if not flanks:
+        return None
+    pool = [f for f in flanks if f.anchored] or flanks
+    longest = max(f.length for f in pool)
+    pool = [f for f in pool if f.length >= min(min_flank, longest)]
+    junctions = [f.junction for f in pool]
+    agreed = (
+        statistics.median_high(junctions)
+        if side == "left"
+        else statistics.median_low(junctions)
+    )
+    near = [f for f in pool if abs(f.junction - agreed) <= tolerance]
+    return max(near, key=lambda f: (f.length, f.readname))
+
+
+def _flank_sequence(flank: PaddingFlank, read_records: dict[str, SeqRecord]) -> Seq:
+    seq = read_records[flank.readname].seq[flank.read_start : flank.read_end]
+    return seq if flank.forward else seq.reverse_complement()
+
+
 def create_padding_for_consensus(
     consensus_object: consensus_class.Consensus,
     cutreads: dict[str, SeqRecord],
     read_records: dict[str, SeqRecord],
     max_padding_size: int,
+    anchoring: dict[str, tuple[bool, bool]] | None = None,
+    tmp_dir_path: Path | str | None = None,
 ) -> consensus_class.ConsensusPadding:
-    """Creates a ConsensusPadding object with the padding sequence, the consensus interval on the padded squence, and the read names."""
+    """Pads the consensus with the flanks of two of its reads.
 
-    read_paddings_for_consensus = _get_all_read_padding_intervals(
-        consensus_object=consensus_object, cutreads=cutreads, read_records=read_records
+    The cut reads of the consensus are aligned to it; the left (right) flank
+    is the sequence of a read before (after) the point where its cut read's
+    alignment starts (ends) on the consensus (``padding_flanks``,
+    ``choose_padding_flank``). The core is the consensus between the two
+    junctions: a consensus end beyond the junction, which only a minority of
+    the reads reach, is trimmed off -- in place: ``consensus_sequence`` and
+    ``intervals_cutread_alignments`` of `consensus_object` are cut to the core
+    (``clustering_meta_data`` records the trimmed bp as ``padding_trim_left``
+    and ``padding_trim_right`` when that happens). So the padded sequence
+    continues each padding read across its junction without gap or overlap.
+
+    `anchoring` ({readname: (before cut, after cut)}, see ``read_anchoring``):
+    which reads align to the reference beyond their cut; without it every
+    read counts as anchored. A side without a flanking read stays unpadded.
+    """
+    consensus_length = len(consensus_object.consensus_sequence)
+    readnames = sorted(
+        rn
+        for rn in consensus_object.get_used_readnames()
+        if rn in cutreads and rn in read_records
     )
-
-    padding_sizes_per_read = _get_padding_sizes_per_read(
-        read_paddings_for_consensus=read_paddings_for_consensus
+    records = _align_cutreads_to_consensus(
+        consensus_object, cutreads, readnames, tmp_dir_path=tmp_dir_path
     )
-
-    padding_reads = _get_padding_read_names_of_consensus(
-        padding_sizes_per_read=padding_sizes_per_read
+    left_flanks, right_flanks = padding_flanks(
+        records, cutreads, read_records, anchoring
     )
-
-    padding_intervals = _get_read_padding_intervals(
-        read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_read_names_of_consensus=padding_reads,
-    )
-    padding = _create_padding_object(
-        cons=consensus_object,
-        read_paddings_for_consensus=read_paddings_for_consensus,
-        padding_reads=padding_reads,
-        padding_intervals=padding_intervals,
-        read_records=read_records,
-        max_padding_size=max_padding_size,
-    )
-    return padding
-
-
-def _get_all_read_padding_intervals(
-    consensus_object: consensus_class.Consensus,
-    cutreads: dict[str, SeqRecord],
-    read_records: dict[str, SeqRecord],
-) -> dict[str, tuple[int, int, int, int, bool]]:
-    """Generates a dict[readname, (min start, max end, cutread length, read length, is_forward)] for all reads in the consensus object."""
-    directions: dict[str, bool] = {
-        readname: forward
-        for start, end, readname, forward in (
-            consensus_object.intervals_cutread_alignments
+    left = choose_padding_flank(left_flanks, "left")
+    right = choose_padding_flank(right_flanks, "right")
+    core_start = left.junction if left else 0
+    core_end = right.junction if right else consensus_length
+    if core_end <= core_start:
+        # the agreed junctions cross: pad both sides from the read covering
+        # most of the consensus
+        by_span = sorted(
+            (r for r in records if r.target_end > r.target_start),
+            key=lambda r: (r.target_end - r.target_start, r.query_name),
         )
-    }
+        left = right = None
+        for record in reversed(by_span):
+            lf = [f for f in left_flanks if f.readname == record.query_name]
+            rf = [f for f in right_flanks if f.readname == record.query_name]
+            if lf and rf and rf[0].junction > lf[0].junction:
+                left, right = lf[0], rf[0]
+                break
+        core_start = left.junction if left else 0
+        core_end = right.junction if right else consensus_length
+    if core_start > 0 or core_end < consensus_length:
+        log.debug(
+            f"padding of consensus {consensus_object.ID}: core trimmed to "
+            f"{core_start}-{core_end} of {consensus_length} bp"
+        )
+        trim_consensus_inplace(consensus_object, core_start, core_end)
+        consensus_object.clustering_meta_data = dict(
+            consensus_object.clustering_meta_data
+        ) | {
+            "padding_trim_left": core_start,
+            "padding_trim_right": consensus_length - core_end,
+        }
 
-    data: dict[str, tuple[int, int]] = {}
-    for cutread in cutreads.values():
-        if cutread.name not in directions.keys():
-            continue
-        cutread_description_dict = parse_description(cutread.description)
-        if cutread.name not in data:
-            data[cutread.name] = (
-                cutread_description_dict["start"],
-                cutread_description_dict["end"],
-            )
-        else:
-            data[cutread.name] = (
-                min(data[cutread.name][0], cutread_description_dict["start"]),
-                max(data[cutread.name][1], cutread_description_dict["end"]),
-            )
-    result: dict[str, tuple[int, int, int, int, bool]] = {}
-    # now add the read length to each entry
-    for readname, (start, end) in data.items():
-        if readname in read_records:
-            read_length = len(read_records[readname].seq)
-            result[readname] = (
-                start,
-                end,
-                end - start,
-                read_length,
-                directions[readname],
-            )
-    return result
-
-
-def _get_padding_sizes_per_read(
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
-) -> dict[str, tuple[int, int]]:
-    """Generates a dict[readname, (left padding size, right padding size)] for all reads in the consensus object."""
-    """A padding is the sequence that overshoots the cutread alignment on the left and right side (in the orientation of the consensus)."""
-    result: dict[str, tuple[int, int]] = {}
-    for readname, (
-        start,
-        end,
-        _cutread_length,
-        read_length,
-        forward,
-    ) in read_paddings_for_consensus.items():
-        alpha: int = start if forward else read_length - end
-        beta: int = read_length - end if forward else start
-        result[readname] = (alpha, beta)
-    return result
-
-
-def _get_padding_read_names_of_consensus(
-    padding_sizes_per_read: dict[str, tuple[int, int]],
-) -> tuple[str, str]:
-    """Returns the read names of the left and right padding reads."""
-    return (
-        max(padding_sizes_per_read.items(), key=lambda x: x[1][0])[0],
-        max(padding_sizes_per_read.items(), key=lambda x: x[1][1])[0],
+    used_padding_size: int = max(
+        len(consensus_object.consensus_sequence) * 2, max_padding_size
     )
-
-
-def _get_read_padding_intervals(
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
-    padding_read_names_of_consensus: tuple[str, str],
-) -> tuple[tuple[int, int], tuple[int, int]]:
-    """Returns the left and right intervals on the two padding reads, ignorant toward clipped bases."""
-    left_read, right_read = padding_read_names_of_consensus
-    start, end, cutread_length, read_length, forward = read_paddings_for_consensus[
-        left_read
-    ]
-    left_padding = (0, start) if forward else (end, read_length)
-    start, end, cutread_length, read_length, forward = read_paddings_for_consensus[
-        right_read
-    ]
-    right_padding = (end, read_length) if forward else (0, start)
-    return left_padding, right_padding
-
-
-def _create_padding_object(
-    cons: consensus_class.Consensus,
-    read_paddings_for_consensus: dict[str, tuple[int, int, int, int, bool]],
-    padding_reads: tuple[str, str],
-    padding_intervals: tuple[tuple[int, int], tuple[int, int]],
-    read_records: dict[str, SeqRecord],
-    max_padding_size: int,
-) -> consensus_class.ConsensusPadding:
-    """Creates a new ConsensusPadding object with the padding sequence and the read names."""
-
-    used_padding_size: int = max(len(cons.consensus_sequence) * 2, max_padding_size)
-
-    left_padding: Seq = read_records[padding_reads[0]].seq[
-        padding_intervals[0][0] : padding_intervals[0][1]
-    ]
-    # needs to be reverse complimented if the cutread alignment is reverse
-    if not read_paddings_for_consensus[padding_reads[0]][4]:
-        left_padding = left_padding.reverse_complement()
-    # cap padding length; keep the portion adjacent to the consensus
-    left_padding = left_padding[-used_padding_size:]
-
-    right_padding: Seq = read_records[padding_reads[1]].seq[
-        padding_intervals[1][0] : padding_intervals[1][1]
-    ]
-    # needs to be reverse complimented if the cutread alignment is reverse
-    if not read_paddings_for_consensus[padding_reads[1]][4]:
-        right_padding = right_padding.reverse_complement()
-    # cap padding length; keep the portion adjacent to the consensus
-    right_padding = right_padding[:used_padding_size]
-    # add padding to the consensus sequence
-    padded_consensus_sequence = Seq(
-        left_padding.lower() + cons.consensus_sequence.upper() + right_padding.lower()
+    # keep the portion adjacent to the consensus
+    left_padding = (
+        _flank_sequence(left, read_records)[-used_padding_size:] if left else Seq("")
     )
-
-    new_padding = consensus_class.ConsensusPadding(
-        sequence=str(padded_consensus_sequence),
-        readname_left=padding_reads[0],
-        readname_right=padding_reads[1],
+    right_padding = (
+        _flank_sequence(right, read_records)[:used_padding_size] if right else Seq("")
+    )
+    padded_consensus_sequence = (
+        str(left_padding).lower()
+        + consensus_object.consensus_sequence.upper()
+        + str(right_padding).lower()
+    )
+    return consensus_class.ConsensusPadding(
+        sequence=padded_consensus_sequence,
+        readname_left=left.readname if left else "",
+        readname_right=right.readname if right else "",
         padding_size_left=len(left_padding),
         padding_size_right=len(right_padding),
         consensus_interval_on_sequence_with_padding=(
@@ -2305,7 +2458,25 @@ def _create_padding_object(
             len(padded_consensus_sequence) - len(right_padding),
         ),
     )
-    return new_padding
+
+
+def trim_consensus_inplace(
+    consensus_object: consensus_class.Consensus, start: int, end: int
+) -> None:
+    """Cut the consensus to [start, end): its sequence and the cut-read
+    intervals on it (shifted to the new start, clipped to the new end; an
+    interval outside is dropped)."""
+    if not 0 <= start < end <= len(consensus_object.consensus_sequence):
+        raise ValueError(
+            f"cannot trim consensus {consensus_object.ID} of "
+            f"{len(consensus_object.consensus_sequence)} bp to {start}-{end}"
+        )
+    consensus_object.consensus_sequence = consensus_object.consensus_sequence[start:end]
+    consensus_object.intervals_cutread_alignments = [
+        (max(s, start) - start, min(e, end) - start, readname, forward)
+        for s, e, readname, forward in consensus_object.intervals_cutread_alignments
+        if min(e, end) > max(s, start)
+    ]
 
 
 # =============================================================================
@@ -2600,12 +2771,15 @@ def process_consensus_container(
                 dict_unused_reads[crID].append(seqobject)
 
     # add padding to the consensus objects
+    anchoring = read_anchoring(alns=alns, cutreads=cutreads, read_records=read_records)
     for consensus in consensus_objects.values():
         consensus.consensus_padding = create_padding_for_consensus(
             consensus_object=consensus,
             cutreads=cutreads,
             read_records=read_records,
             max_padding_size=max_padding_size,
+            anchoring=anchoring,
+            tmp_dir_path=tmp_dir_path,
         )
 
     # for each consensus, create a dict
