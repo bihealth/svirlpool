@@ -2333,26 +2333,34 @@ def choose_padding_flank(
 ) -> PaddingFlank | None:
     """The flank that pads one side ("left" or "right") of a consensus.
 
-    The junction is where most anchored flanking reads end on the consensus
-    (the median; on a tie the one farther inside the consensus): a consensus
-    end that only a few reads reach -- clipped, chimeric or foldback reads
-    whose cut extends past the locus -- is cut off rather than padded. Of the
-    reads ending there, the one with the longest flank pads.
+    Flanks of anchored reads are used when there are any: the flank of a
+    clipped, chimeric or foldback read is not sequence of the locus. Of
+    these, the flanks at least `min_flank` long count (all, if none is).
+    The junction is the outermost one of these anchored reads; a consensus
+    end beyond it was assembled from unanchored reads only (their clipped
+    sequence is cut with them) and is cut off. Without anchored flanks it is
+    where most flanking reads end (the median; on a tie the one farther
+    inside the consensus). Of the reads ending within `tolerance` of the
+    junction, the one with the longest flank pads.
     """
     if side not in ("left", "right"):
         raise ValueError(f"side must be 'left' or 'right', not {side!r}")
     flanks = [f for f in flanks if f.length > 0]
     if not flanks:
         return None
-    pool = [f for f in flanks if f.anchored] or flanks
+    anchored = [f for f in flanks if f.anchored]
+    pool = anchored or flanks
     longest = max(f.length for f in pool)
     pool = [f for f in pool if f.length >= min(min_flank, longest)]
     junctions = [f.junction for f in pool]
-    agreed = (
-        statistics.median_high(junctions)
-        if side == "left"
-        else statistics.median_low(junctions)
-    )
+    if anchored:
+        agreed = min(junctions) if side == "left" else max(junctions)
+    else:
+        agreed = (
+            statistics.median_high(junctions)
+            if side == "left"
+            else statistics.median_low(junctions)
+        )
     near = [f for f in pool if abs(f.junction - agreed) <= tolerance]
     return max(near, key=lambda f: (f.length, f.readname))
 
@@ -2376,8 +2384,8 @@ def create_padding_for_consensus(
     is the sequence of a read before (after) the point where its cut read's
     alignment starts (ends) on the consensus (``padding_flanks``,
     ``choose_padding_flank``). The core is the consensus between the two
-    junctions: a consensus end beyond the junction, which only a minority of
-    the reads reach, is trimmed off -- in place: ``consensus_sequence`` and
+    junctions: a consensus end beyond the junction, which no anchored
+    flanking read reaches, is trimmed off -- in place: ``consensus_sequence`` and
     ``intervals_cutread_alignments`` of `consensus_object` are cut to the core
     (``clustering_meta_data`` records the trimmed bp as ``padding_trim_left``
     and ``padding_trim_right`` when that happens). So the padded sequence

@@ -168,10 +168,12 @@ def test_only_reverse_or_only_forward_padding_reads(forward):
     assert padding.readname_left == padding.readname_right == "long"
 
 
-def test_consensus_end_reached_by_a_minority_is_trimmed():
-    """25130.0-like: two reads are cut 1.7 kb further; the consensus follows
-    them; the reads with the longest flank stop at CORE[1]. Padding the
-    consensus end with such a read (the old code) duplicates 1.7 kb."""
+def test_consensus_end_reached_by_unanchored_reads_is_trimmed():
+    """25130.0-like: two reads are cut 1.7 kb further (their reference
+    alignment ends inside the cut; the cut continues into the clipped rest);
+    the consensus follows them, the reads with the longest flank stop at
+    CORE[1]. Joining such a read's flank to the consensus end (the old code)
+    duplicates 1.7 kb."""
     reads = Reads()
     spanning_reads(reads)
     for i in range(2):
@@ -179,7 +181,9 @@ def test_consensus_end_reached_by_a_minority_is_trimmed():
         seq = REF[CORE[0] - 1_000 : CORE[1] + 3_000]
         reads.add(name, seq, (1_000, 1_000 + (CORE[1] - CORE[0]) + 1_700))
     cons = make_consensus(REF[CORE[0] : CORE[1] + 1_700], reads)
-    padding = pad(cons, reads)
+    anchoring = dict.fromkeys(reads.read_records, (True, True))
+    anchoring["long_cut0"] = anchoring["long_cut1"] = (True, False)
+    padding = pad(cons, reads, anchoring=anchoring)
     core = assert_padded_is_reference(padding, cons)
     assert core == CORE
     assert cons.clustering_meta_data["padding_trim_right"] == 1_700
@@ -194,7 +198,7 @@ def test_consensus_end_reached_by_a_minority_is_trimmed():
 def test_foreign_consensus_tail_from_chimeric_reads_is_trimmed():
     """6779.0-like: two chimeric reads continue with foreign sequence (another
     chromosome) at CORE[1]; their clipped part is cut with them and the
-    consensus ends in 464 bp of it."""
+    consensus ends in 464 bp of it. They have the longest flanks."""
     foreign = random_seq(20_000, 7)
     reads = Reads()
     spanning_reads(reads)
@@ -206,10 +210,8 @@ def test_foreign_consensus_tail_from_chimeric_reads_is_trimmed():
     anchoring["chimeric0"] = anchoring["chimeric1"] = (True, False)
     padding = pad(cons, reads, anchoring=anchoring)
     assert assert_padded_is_reference(padding, cons) == CORE
-    # also without anchoring information: the majority of flanking reads ends at CORE[1]
-    cons = make_consensus(REF[CORE[0] : CORE[1]] + foreign[:464], reads)
-    padding = pad(cons, reads)
-    assert assert_padded_is_reference(padding, cons) == CORE
+    assert cons.clustering_meta_data["padding_trim_right"] == 464
+    assert padding.readname_right == "span0"
 
 
 def test_clipped_sequence_at_the_consensus_start_is_trimmed():
@@ -356,19 +358,38 @@ def flank(name, junction, length, anchored=True):
     return PaddingFlank(name, junction, 0, length, True, anchored)
 
 
-def test_choose_padding_flank_takes_the_junction_most_reads_agree_on():
+def test_choose_padding_flank_takes_the_outermost_anchored_junction():
     flanks = [flank(f"r{i}", 900, 5_000 + i) for i in range(5)]
-    flanks += [flank("tail_a", 1_364, 50_000), flank("tail_b", 1_364, 60_000)]
-    chosen = choose_padding_flank(flanks, "right")
-    assert chosen.readname == "r4"
-    flanks = [flank(f"l{i}", 141, 5_000 + i) for i in range(5)] + [
-        flank("head", 0, 9_000)
+    tails = [
+        flank("tail_a", 1_364, 50_000, anchored=False),
+        flank("tail_b", 1_364, 60_000, anchored=False),
     ]
-    assert choose_padding_flank(flanks, "left").readname == "l4"
+    assert choose_padding_flank(flanks + tails, "right").readname == "r4"
+    # one anchored read reaching farther decides the junction
+    far = flank("far", 1_364, 2_000)
+    assert choose_padding_flank([*flanks, far], "right").readname == "far"
+    flanks = [flank(f"l{i}", 141, 5_000 + i) for i in range(5)]
+    head = flank("head", 0, 9_000, anchored=False)
+    assert choose_padding_flank([*flanks, head], "left").readname == "l4"
+    head = flank("head", 0, 1_200)
+    assert choose_padding_flank([*flanks, head], "left").readname == "head"
+    # within the tolerance of the outermost junction the longest flank pads
+    flanks = [flank("end", 2_070, 3_000), flank("near_end", 2_045, 36_000)]
+    assert choose_padding_flank(flanks, "right").readname == "near_end"
 
 
-def test_choose_padding_flank_tie_goes_inward():
-    flanks = [flank("a", 900, 5_000), flank("b", 1_400, 9_000)]
+def test_choose_padding_flank_without_anchored_flanks_takes_the_median():
+    flanks = [flank(f"r{i}", 900, 5_000 + i, anchored=False) for i in range(3)]
+    flanks += [
+        flank("tail_a", 1_364, 50_000, anchored=False),
+        flank("tail_b", 1_364, 60_000, anchored=False),
+    ]
+    assert choose_padding_flank(flanks, "right").readname == "r2"
+    # on a tie the junction farther inside the consensus
+    flanks = [
+        flank("a", 900, 5_000, anchored=False),
+        flank("b", 1_400, 9_000, anchored=False),
+    ]
     assert choose_padding_flank(flanks, "right").readname == "a"
     assert choose_padding_flank(flanks, "left").readname == "b"
 

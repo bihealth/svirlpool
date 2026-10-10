@@ -190,13 +190,13 @@ def test_create_padding_for_consensus() -> None:
     )
     expected_2 = consensus_class.ConsensusPadding(
         sequence="",
-        readname_left="800ed304-2134-49fd-9a24-b93f26713816",
-        readname_right="4c08354-027f-4cf0-8534-777467668ca1",
-        padding_size_left=28150,
+        # 800ed304 has the longest left flank, but its cut read aligns from
+        # consensus position 225 on; c719dee5 aligns from 0
+        readname_left="c719dee5-9997-4f73-b933-cc56d1043a43",
+        readname_right="a4c08354-027f-4cf0-8534-777467668ca1",
+        padding_size_left=24021,
         padding_size_right=29199,
-        # the left padding read aligns from consensus position 225 (as does
-        # one other of the four reads with a left flank); the core starts there
-        consensus_interval_on_sequence_with_padding=(28150, 30003),
+        consensus_interval_on_sequence_with_padding=(24021, 26099),
     )
     # print(result2)
     # counter-lengths are
