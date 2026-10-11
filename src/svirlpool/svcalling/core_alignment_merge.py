@@ -671,7 +671,7 @@ class GroupStats:
     links_alignment_only: int = 0
     links_old_only: int = 0
     links_fallback: int = 0
-    links_both_same_old: int = 0
+    links_twin: int = 0
     blocks_off_diagonal: int = 0
     distinct_pairs: int = 0
     cannot_link_blocked: int = 0
@@ -853,9 +853,11 @@ def merge_same_type_with_core_alignments(
         stats.composite_pairs += 1
         evaluable = dec is not None and dec.evaluable
         old = old_rule(a, b)
-        # both SVs present on the other haplotype, neither represented there by
-        # another composite: the same event placed differently, if the pairwise
-        # rule agrees
+        # the haplotypes agree across both SVs, the SVs do not land on each
+        # other, and neither is linked to another composite of the other
+        # consensus: the same haplotype difference placed differently by the two
+        # consensus-to-reference alignments (the haplotypes carry one event
+        # each way, so x and y are its two representations)
         unrepresented_twin = (
             evaluable
             and dec.both_same
@@ -876,19 +878,23 @@ def merge_same_type_with_core_alignments(
                 stats.links_old_only += 1
         if old:
             stats.links_old_rule += 1
+        aln_link = evaluable and (dec.link or unrepresented_twin)
+        if evaluable and not dec.link and unrepresented_twin:
+            stats.links_twin += 1
         if mode == "align":
             if evaluable:
-                link = dec.link or (unrepresented_twin and old)
-                if not dec.link and unrepresented_twin and old:
-                    stats.links_both_same_old += 1
+                link = aln_link
             else:
                 link = old
                 if old:
                     stats.links_fallback += 1
         else:  # "or"
-            link = old or (evaluable and dec.link)
+            link = old or aln_link
         if link:
-            score = dec.score if (dec is not None and dec.link) else 1.0
+            if aln_link:
+                score = dec.score + (0.5 if not dec.link else 0.0)
+            else:
+                score = 1.0
             links.append((score, i, j))
         if evaluable and dec.distinct and pa.key[0] == pb.key[0]:
             cannot.add((i, j))

@@ -320,12 +320,29 @@ def test_one_deletion_placed_at_two_copies_of_an_imperfect_repeat(rng):
         dele("HG004", "5.0", mother, len(left) + 160, copies[4], 1660),
     ]
     cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
-    # both deletions are present on the other haplotype, neither lands on the
-    # other: the pairwise rule decides
+    # the haplotypes agree across both deletions and neither lands on the
+    # other or on another deletion of the other consensus: one event, linked
+    # whatever the pairwise rule says
+    merged, stats = run(group, cores, old=never)
+    assert len(merged) == 1 and stats.links_twin == 1
+
+
+def test_two_events_both_haplotypes_carry_are_not_twins(rng):
+    # child and mother share a haplotype with two deletions 600 bp apart; each
+    # deletion lands on its counterpart, so the cross pairs are not linked
+    ref = rand_seq(4000, rng)
+    hap = ref[:1500] + ref[1580:2200] + ref[2270:]
+    child, mother = hap, hap[200:]
+    group = [
+        dele("HG002", "1.0", child, 1500, ref[1500:1580], 1500),
+        dele("HG002", "1.0", child, 2120, ref[2200:2270], 2200),
+        dele("HG004", "5.0", mother, 1300, ref[1500:1580], 1500),
+        dele("HG004", "5.0", mother, 1920, ref[2200:2270], 2200),
+    ]
+    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
     merged, stats = run(group, cores, old=always)
-    assert len(merged) == 1 and stats.links_both_same_old == 1
-    merged, _ = run(group, cores, old=never)
-    assert len(merged) == 2
+    assert records(merged) == [["HG002:1500", "HG004:1300"], ["HG002:2120", "HG004:1920"]]
+    assert stats.links_twin == 0
 
 
 def test_short_and_long_allele_of_an_imperfect_vntr_stay_apart(rng):
