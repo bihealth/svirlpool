@@ -453,6 +453,7 @@ class PairAlignment:
     mm_q: list[int]
     mm_t: list[int]
     gaps: list[tuple[int, int, int, int]]
+    _starts: list[int] | None = attrs.field(default=None, eq=False, repr=False)
 
     @classmethod
     def from_chain(cls, chain: list[Block]) -> PairAlignment:
@@ -511,7 +512,9 @@ class PairAlignment:
         """Position on t of position pos on q (a gap maps to its left/right anchor)."""
         if not self.runs:
             return self.t0
-        i = bisect_right([r[0] for r in self.runs], pos) - 1
+        if self._starts is None:
+            self._starts = [r[0] for r in self.runs]
+        i = bisect_right(self._starts, pos) - 1
         if i < 0:
             return self.runs[0][1]
         q0, t0, n = self.runs[i]
@@ -575,6 +578,7 @@ def decide_pair(
     params: CoreAlnParams,
     span_x: tuple[int, int] | None = None,
     span_y: tuple[int, int] | None = None,
+    aln_yx: PairAlignment | None = None,
 ) -> PairDecision:
     """Alignment-based decision for composite x (on core A = x.key) and y (on B).
 
@@ -605,7 +609,7 @@ def decide_pair(
     )
     if aln_xy is None:
         return PairDecision(False, False, False, 1.0, {"reason": "no_alignment"})
-    inv = aln_xy.inverted()
+    inv = aln_yx if aln_yx is not None else aln_xy.inverted()
     px = project(aln_xy, x.amb_start, x.amb_end)  # x on B
     py = project(inv, y.amb_start, y.amb_end)  # y on A
     detail = {
@@ -837,6 +841,7 @@ def merge_same_type_with_core_alignments(
                     params,
                     spans.get(pa.key),
                     spans.get(pb.key),
+                    alignments.get((pb.key, pa.key)),
                 )
                 if dec.link:
                     represented.add((i, pb.key))
