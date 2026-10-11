@@ -81,6 +81,9 @@ class CoreAlnParams:
     max_mismatch_frac: float = 0.2
     #: slack around the projected interval when looking for the partner SV
     link_slack: int = 50
+    #: insertions/deletions of the alignment closer than this count by their
+    #: net length (0: every indel base counts)
+    cancel_dist: int = 50
     minimap2: str = ""
     preset: str = "asm20"
     #: minimizers occurring more often than max(10, occ_per_core * cores in the
@@ -524,16 +527,41 @@ class PairAlignment:
             return self.runs[i + 1][1]
         return t0 + n
 
-    def window_differences(self, w0: int, w1: int) -> tuple[int, int]:
-        """(indel bases, mismatches) of the alignment inside [w0, w1) on q."""
+    def window_differences(
+        self, w0: int, w1: int, cancel_dist: int = 0
+    ) -> tuple[int, int]:
+        """(indel bases, mismatches) of the alignment inside [w0, w1) on q.
+
+        A stretch unaligned on both sequences (between two blocks) counts
+        max(qlen, tlen). Insertions and deletions count their length; with
+        cancel_dist > 0, runs of them less than cancel_dist apart count their
+        net length instead: inside a tandem repeat the aligner often writes one
+        allele difference as alternating 2-bp insertions and deletions (seen:
+        +13, six -2, five +2 within 300 bp, net +11), which are not differences
+        between the haplotypes.
+        """
         indel = 0
+        run_sum = 0
+        run_end = None
         for gq, _gt, ql, tl in self.gaps:
             if ql > 0:
                 inside = gq < w1 and gq + ql > w0
             else:
                 inside = w0 <= gq <= w1
-            if inside:
+            if not inside:
+                continue
+            if ql > 0 and tl > 0:
                 indel += max(ql, tl)
+                continue
+            if cancel_dist <= 0:
+                indel += ql + tl
+                continue
+            if run_end is not None and gq - run_end > cancel_dist:
+                indel += abs(run_sum)
+                run_sum = 0
+            run_sum += ql - tl
+            run_end = gq + ql
+        indel += abs(run_sum)
         lo = bisect_right(self.mm_q, w0 - 1)
         hi = bisect_right(self.mm_q, w1 - 1)
         return indel, hi - lo
@@ -631,7 +659,7 @@ def decide_pair(
         return PairDecision(False, False, False, 1.0, detail)
     w0 = max(aln_xy.q0, lo - params.flank)
     w1 = min(aln_xy.q1, hi + params.flank, len_x)
-    indel, _ = aln_xy.window_differences(w0, w1)
+    indel, _ = aln_xy.window_differences(w0, w1, params.cancel_dist)
     _, mm = aln_xy.window_differences(x.start, max(x.end, x.start + 1))
     # tolerance from the smaller SV: a piece of a decomposed event matches the
     # whole with ~0 indel bases, so this costs nothing there, while a large SV

@@ -364,3 +364,19 @@ def test_short_and_long_allele_of_an_imperfect_vntr_stay_apart(rng):
     merged, stats = run(group, cores, old=always)
     assert len(merged) == 2
     assert stats.distinct_pairs == 1
+
+
+def test_alternating_small_indels_in_a_repeat_count_by_their_net_length():
+    # one +13 insertion followed by alternating 2-bp deletions and insertions,
+    # as the aligner writes a shifted repeat: 37 indel bases, net +11
+    cigar = "50=13I20=" + "".join("2D9=" for _ in range(6)) + "".join("2I9=" for _ in range(5)) + "50="
+    ops = cam.parse_cigar(cigar)
+    qlen = sum(n for n, op in ops if op in "=I")
+    tlen = sum(n for n, op in ops if op in "=D")
+    aln = cam.PairAlignment.from_chain([cam.Block(0, qlen, 0, tlen, 100, ops)])
+    assert aln.window_differences(0, qlen) == (13 + 12 + 10, 0)
+    assert aln.window_differences(0, qlen, cancel_dist=50) == (11, 0)
+    # two differences far apart do not cancel
+    far = cam.parse_cigar("50=20I300=20D50=")
+    aln = cam.PairAlignment.from_chain([cam.Block(0, 390, 0, 390, 100, far)])
+    assert aln.window_differences(0, 390, cancel_dist=50) == (40, 0)
