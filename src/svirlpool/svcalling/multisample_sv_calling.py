@@ -28,6 +28,7 @@ from ..localassembly import SVpatterns, svirltile
 from ..util.covtree import covtree
 from ..util.datastructures import UnionFind
 from . import merge_audit
+from .core_alignment_merge import CoreAlnParams
 from .SVcomposite import SVcomposite
 from .svcomposite_merging import merge_svComposites
 from .svcomposite_utils import _svcomposite_log_id
@@ -305,10 +306,7 @@ def svPatterns_to_horizontally_merged_svComposites(
                         reason = "accept"
                     else:
                         reason = "no_shared_repeat"
-                    if (
-                        merge_audit.enabled()
-                        and gap <= merge_audit.HORIZONTAL_WINDOW
-                    ):
+                    if merge_audit.enabled() and gap <= merge_audit.HORIZONTAL_WINDOW:
                         merge_audit.record(
                             stage="horizontal",
                             svtype=f"{group[i].get_sv_type()}/{group[j].get_sv_type()}",
@@ -1334,7 +1332,9 @@ def svcall_object_from_svcomposite(
         consensusIDs=consensusIDs,
         ref_sequence=ref_seq,
         alt_sequence=alt_seq,
-        pattern_ids=merge_audit.pattern_keys(svComposite) if merge_audit.enabled() else [],
+        pattern_ids=merge_audit.pattern_keys(svComposite)
+        if merge_audit.enabled()
+        else [],
     )
 
 
@@ -2532,6 +2532,8 @@ def multisample_sv_calling(
     legacy_force_wildtype: bool = False,
     error_rate: float = DEFAULT_GENOTYPE_ERROR_RATE,
     vertical_merge: bool = True,
+    core_alignment_merge: CoreAlnParams | None = None,
+    core_alignment_pair_log: Path | str | None = None,
 ) -> None:
     check_if_all_svtypes_are_supported(sv_types=sv_types)
     if not 0.0 < error_rate < 0.5:
@@ -2649,12 +2651,12 @@ def multisample_sv_calling(
 
     # --- vertical merging of svComposites across samples and consensus sequences --- #
     if vertical_merge:
-        from . import core_alignment_merge as cam
+        core_alignment = None
+        if core_alignment_merge is not None:
+            from . import core_alignment_merge as cam
 
-        core_alignment_cores = None
-        if cam.MODE != "off":
             t0 = datetime.now()
-            core_alignment_cores = cam.load_cores_for_composites(
+            cores = cam.load_cores_for_composites(
                 composites=data,
                 db_paths=input,
                 samplenames=samplenames,
@@ -2662,8 +2664,17 @@ def multisample_sv_calling(
             )
             log.info(
                 "CORE_ALN_MERGE|CORES_LOADED|n=%d|seconds=%.1f",
-                len(core_alignment_cores),
+                len(cores),
                 (datetime.now() - t0).total_seconds(),
+            )
+            if core_alignment_pair_log:
+                Path(core_alignment_pair_log).mkdir(parents=True, exist_ok=True)
+            core_alignment = cam.CoreAlignmentMerge(
+                cores=cores,
+                params=core_alignment_merge,
+                pair_log_dir=(
+                    str(core_alignment_pair_log) if core_alignment_pair_log else None
+                ),
             )
         t0 = datetime.now()
         merged: list[SVcomposite] = merge_svComposites(
@@ -2673,12 +2684,10 @@ def multisample_sv_calling(
             min_kmer_overlap=min_kmer_overlap,
             threads=threads,
             verbose=verbose,
-            core_alignment_cores=core_alignment_cores,
+            core_alignment=core_alignment,
         )
-        log.info(
-            "VERTICAL_MERGE|seconds=%.1f", (datetime.now() - t0).total_seconds()
-        )
-        core_alignment_cores = None
+        log.info("VERTICAL_MERGE|seconds=%.1f", (datetime.now() - t0).total_seconds())
+        core_alignment = None
     else:
         log.warning(
             "--no-vertical-merge: every horizontally merged SVcomposite becomes its "
@@ -2786,6 +2795,18 @@ def multisample_sv_calling(
     )
 
 
+def core_alignment_params_from_args(args) -> CoreAlnParams | None:
+    """CoreAlnParams for --core-alignment-merge, None without it."""
+    if not getattr(args, "core_alignment_merge", False):
+        return None
+    return CoreAlnParams(
+        flank=args.core_alignment_flank,
+        abs_tol=args.core_alignment_abs_tol,
+        frac_tol=args.core_alignment_frac_tol,
+        link_twins=not args.core_alignment_no_twins,
+    )
+
+
 def run(args) -> None:
     # Experimental switches: module-level, set before any worker is forked.
     global MULTI_ASSEMBLY_OVERRIDE
@@ -2794,17 +2815,6 @@ def run(args) -> None:
     _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
     MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "subset")
-    from . import core_alignment_merge as _cam
-
-    _cam.MODE = getattr(args, "core_alignment_merge", "off")
-    _cam.PARAMS = _cam.CoreAlnParams(
-        flank=getattr(args, "core_alignment_flank", 150),
-        abs_tol=getattr(args, "core_alignment_abs_tol", 10),
-        frac_tol=getattr(args, "core_alignment_frac_tol", 0.1),
-    )
-    _cam.PAIR_LOG_DIR = getattr(args, "core_alignment_pair_log", None)
-    if _cam.PAIR_LOG_DIR:
-        Path(_cam.PAIR_LOG_DIR).mkdir(parents=True, exist_ok=True)
     if getattr(args, "merge_audit", None):
         merge_audit.start(args.merge_audit)
 
@@ -2855,6 +2865,8 @@ def run(args) -> None:
         legacy_force_wildtype=args.legacy_force_wildtype_genotypes,
         error_rate=args.genotype_error_rate,
         vertical_merge=getattr(args, "vertical_merge", True),
+        core_alignment_merge=core_alignment_params_from_args(args),
+        core_alignment_pair_log=getattr(args, "core_alignment_pair_log", None),
     )
     audit = merge_audit.finalize()
     if audit is not None:
@@ -2928,7 +2940,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--apriori-size-difference-fraction-tolerance",
-help="Fraction of the larger of two SV sizes that the sizes may differ by "
+        help="Fraction of the larger of two SV sizes that the sizes may differ by "
         "and still be merged (default: 0.1). Decrease for stronger separation of "
         "haplotypes.",
         type=float,
@@ -3013,15 +3025,22 @@ help="Fraction of the larger of two SV sizes that the sizes may differ by "
     )
     parser.add_argument(
         "--core-alignment-merge",
-        choices=("off", "align", "or"),
-        default="off",
-        help="EXPERIMENTAL (prototype). Judge whether INS/DEL composites of different "
-        "consensus assemblies are the same allele by aligning the consensus cores "
-        "(minimap2): an SV is present on the other consensus when the alignment "
-        "across it and its flanks is near-identical, and the two SVs are linked "
-        "when its projection lands on the other SV. 'align': the alignment decides "
-        "every pair it can judge, the pairwise rule the others; 'or': a pair merges "
-        "when either says so; 'off' (default): the pairwise rule only.",
+        action="store_true",
+        default=False,
+        help="EXPERIMENTAL. Judge whether INS/DEL composites of different consensus "
+        "assemblies are the same allele by aligning their consensus cores "
+        "(minimap2/mappy) instead of by SV size: two SVs are the same allele when "
+        "one projects through the alignment onto the other and the two haplotypes "
+        "around them differ by few indel bases. Pairs the alignment cannot judge "
+        "are decided by the pairwise rule; two composites of one sample from "
+        "different consensuses (or two events of one consensus) share a record only "
+        "when linked directly. Needs the consensus cores from the input DBs.",
+    )
+    parser.add_argument(
+        "--core-alignment-no-twins",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,  # ablation: do not link one event placed differently
     )
     parser.add_argument(
         "--core-alignment-frac-tol",

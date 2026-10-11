@@ -1,12 +1,12 @@
-"""Cross-sample merge of SVcomposites by aligning the consensus cores (prototype).
+"""Cross-sample merge of SVcomposites by aligning the consensus cores.
 
-Switched on with ``svirlpool sv-calling --core-alignment-merge align|or``; the
-default ``off`` leaves the merge untouched.
+Switched on with ``svirlpool sv-calling --core-alignment-merge``; without it the
+merge is unchanged.
 
 Idea: every SVpattern sits on a consensus sequence (``consensusID``,
 ``read_start``/``read_end`` on the padded consensus). Two consensuses whose
 reference placements overlap (different samples, or two haplotypes of one
-sample) are aligned with minimap2, core against core. An SV ``x`` on consensus
+sample) are aligned with minimap2 (mappy, in-process), core against core. An SV ``x`` on consensus
 A is *present* on consensus B when the A-B alignment across ``x`` and its flanks
 is near-identical (few indel bases); its interval then projects through the
 alignment onto B. ``x`` and an SV ``y`` of B are the same allele when one of
@@ -28,13 +28,8 @@ do not align) fall back to the existing pairwise rule. See
 from __future__ import annotations
 
 import logging
-import os
 import pickle
-import shutil
 import sqlite3
-import subprocess
-import sys
-import tempfile
 import time
 from bisect import bisect_right
 from collections import Counter, defaultdict
@@ -43,21 +38,13 @@ from itertools import combinations
 from pathlib import Path
 
 import attrs
+import mappy
 
 from ..localassembly import SVpatterns
 from ..util.datastructures import UnionFind
 from .SVcomposite import SVcomposite
 
 log = logging.getLogger(__name__)
-
-#: "off" (default, the existing merge), "align" (the alignment decides every
-#: pair it can judge, the existing rule the others) or "or" (a pair merges when
-#: either the alignment or the existing rule says so). Set once from the CLI
-#: before any worker process is forked.
-MODE: str = "off"
-MODES = ("off", "align", "or")
-#: when set, every judged composite pair is written to <dir>/pairs.<chr>.jsonl
-PAIR_LOG_DIR: str | None = None
 
 _COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
@@ -85,36 +72,27 @@ class CoreAlnParams:
     #: insertions/deletions of the alignment closer than this count by their
     #: net length (0: every indel base counts)
     cancel_dist: int = 50
-    minimap2: str = ""
     preset: str = "asm20"
-    #: minimizers occurring more often than max(10, occ_per_core * cores in the
-    #: group) are not used as anchors. A sequence unique to the locus occurs once
-    #: per core; without a cap of this order the cores of satellite loci produce
-    #: millions of anchors (minutes per group).
-    occ_per_core: int = 3
-    #: seconds per minimap2 call; a group that takes longer is not aligned (its
-    #: pairs fall back to the pairwise rule)
-    timeout: float = 10.0
-    #: groups with more core bases than this are not aligned (fallback)
+    #: groups with more core bases than this are not aligned (their pairs fall
+    #: back to the pairwise rule); bounds the alignment work of one group
     max_group_bp: int = 300_000
     #: band around the diagonal implied by the reference placements of two cores
     #: (plus the indel bases of their SVs) in which alignment blocks are kept
     diagonal_band: int = 1000
+    #: link "twins": one haplotype difference placed differently by the two
+    #: consensus-to-reference alignments (see merge_same_type_with_core_alignments)
+    link_twins: bool = True
 
 
-PARAMS: CoreAlnParams = CoreAlnParams()
+@attrs.define
+class CoreAlignmentMerge:
+    """Everything --core-alignment-merge needs, handed to the vertical merge."""
 
-
-def minimap2_binary(params: CoreAlnParams) -> str:
-    if params.minimap2:
-        return params.minimap2
-    found = shutil.which("minimap2")
-    if found:
-        return found
-    local = Path(sys.executable).parent / "minimap2"
-    if local.exists():
-        return str(local)
-    raise FileNotFoundError("minimap2 not found on PATH or next to the interpreter")
+    #: {(samplename, consensusID): (core start on the padded consensus, core)}
+    cores: dict[tuple[str, str], tuple[int, str]]
+    params: CoreAlnParams = attrs.field(factory=CoreAlnParams)
+    #: when set, every judged composite pair is written to <dir>/pairs.<chr>.jsonl
+    pair_log_dir: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -329,7 +307,7 @@ def core_interval_of_composite(
 
 
 # --------------------------------------------------------------------------- #
-# minimap2 alignments of cores
+# minimap2 (mappy) alignments of cores
 # --------------------------------------------------------------------------- #
 
 
@@ -357,78 +335,79 @@ def parse_cigar(cg: str) -> list[tuple[int, str]]:
     return out
 
 
-def _parse_paf(stdout: str, blocks: dict[tuple[str, str], list[Block]]) -> None:
-    for line in stdout.splitlines():
-        f = line.split("\t")
-        if len(f) < 12 or f[4] != "+":
-            continue
-        cg = next((x[5:] for x in f[12:] if x.startswith("cg:Z:")), None)
-        if cg is None:
-            continue
-        score = next((int(x[5:]) for x in f[12:] if x.startswith("AS:i:")), int(f[9]))
-        blocks[(f[0], f[5])].append(
-            Block(
-                qs=int(f[2]),
-                qe=int(f[3]),
-                ts=int(f[7]),
-                te=int(f[8]),
-                score=score,
-                cigar=parse_cigar(cg),
-            )
-        )
+#: asm20 scoring (minimap2 -A1 -B4 -O6,26 -E2,1); mappy does not report the
+#: DP score, so blocks are scored from their difference string
+_MATCH, _MISMATCH, _GAP_OPEN, _GAP_EXT, _GAP_OPEN2, _GAP_EXT2 = 1, 4, 6, 2, 26, 1
 
 
-def run_minimap2(
-    seqs: dict[str, str], params: CoreAlnParams, tmp_dir: str | None = None
-) -> dict[tuple[str, str], list[Block]] | None:
+def cigar_and_score_from_cs(cs: str) -> tuple[list[tuple[int, str]], int]:
+    """=/X/I/D operations and the asm20 alignment score of a short cs string."""
+    cigar: list[tuple[int, str]] = []
+    score = 0
+    i, n = 0, len(cs)
+    while i < n:
+        op = cs[i]
+        i += 1
+        if op == ":":
+            j = i
+            while j < n and cs[j].isdigit():
+                j += 1
+            length = int(cs[i:j])
+            i = j
+            if cigar and cigar[-1][1] == "=":
+                cigar[-1] = (cigar[-1][0] + length, "=")
+            else:
+                cigar.append((length, "="))
+            score += _MATCH * length
+        elif op == "*":
+            i += 2  # reference base, query base
+            if cigar and cigar[-1][1] == "X":
+                cigar[-1] = (cigar[-1][0] + 1, "X")
+            else:
+                cigar.append((1, "X"))
+            score -= _MISMATCH
+        elif op in "+-":
+            j = i
+            while j < n and cs[j] not in ":*+-~":
+                j += 1
+            length = j - i
+            i = j
+            cigar.append((length, "I" if op == "+" else "D"))
+            score -= min(_GAP_OPEN + _GAP_EXT * length, _GAP_OPEN2 + _GAP_EXT2 * length)
+        else:
+            raise ValueError(f"unexpected cs operation {op!r} in {cs[:50]!r}")
+    return cigar, score
+
+
+def align_cores(
+    seqs: dict[str, str], params: CoreAlnParams
+) -> dict[tuple[str, str], list[Block]]:
     """Pairwise alignments of the given sequences; {(query, target): [+ blocks]}.
 
-    One call per target with the later sequences as queries and
-    --secondary=no: each pair yields its primary alignment and the
-    supplementary ones (the flanks of a large indel come back as separate
-    blocks). All-vs-all in one call (-X) reports every secondary chain, which in
-    tandem repeats are thousands per pair (minutes per group). None when the
-    group exceeds params.timeout seconds in total.
+    Each sequence is indexed once and the later sequences are mapped onto it.
+    Primary and supplementary alignments are kept (the flanks of a large indel
+    come back as separate blocks); secondary ones are not (in tandem repeats
+    they are thousands of chains per pair). Single-threaded and deterministic.
     """
     names = list(seqs)
-    if len(names) < 2:
-        return {}
-    occ = max(10, params.occ_per_core * len(names))
     blocks: dict[tuple[str, str], list[Block]] = defaultdict(list)
-    t_end = time.perf_counter() + params.timeout
-    with tempfile.TemporaryDirectory(dir=tmp_dir) as td:
-        tf = os.path.join(td, "t.fa")
-        qf = os.path.join(td, "q.fa")
-        for i, tn in enumerate(names[:-1]):
-            with open(tf, "w") as f:
-                f.write(f">{tn}\n{seqs[tn]}\n")
-            with open(qf, "w") as f:
-                for qn in names[i + 1 :]:
-                    f.write(f">{qn}\n{seqs[qn]}\n")
-            cmd = [
-                minimap2_binary(params),
-                "-x",
-                params.preset,
-                "-c",
-                "--eqx",
-                "--secondary=no",
-                "-U",
-                f"{occ},{occ}",
-                "-t",
-                "1",
-                tf,
-                qf,
-            ]
-            remaining = t_end - time.perf_counter()
-            if remaining <= 0:
-                return None
-            try:
-                res = subprocess.run(
-                    cmd, capture_output=True, text=True, check=True, timeout=remaining
+    for i, tn in enumerate(names[:-1]):
+        aligner = mappy.Aligner(seq=seqs[tn], preset=params.preset, n_threads=1)
+        for qn in names[i + 1 :]:
+            for hit in aligner.map(seqs[qn], cs=True):
+                if hit.strand != 1 or not hit.is_primary:
+                    continue
+                cigar, score = cigar_and_score_from_cs(hit.cs)
+                blocks[(qn, tn)].append(
+                    Block(
+                        qs=hit.q_st,
+                        qe=hit.q_en,
+                        ts=hit.r_st,
+                        te=hit.r_en,
+                        score=score,
+                        cigar=cigar,
+                    )
                 )
-            except subprocess.TimeoutExpired:
-                return None
-            _parse_paf(res.stdout, blocks)
     return dict(blocks)
 
 
@@ -691,9 +670,13 @@ def decide_pair(
         and mm > params.max_mismatch_frac * (x.end - x.start) + 2
     ):
         same = False
-    detail.update(
-        {"corr": corr, "indel": indel, "mm": mm, "window": (w0, w1), "same": same}
-    )
+    detail.update({
+        "corr": corr,
+        "indel": indel,
+        "mm": mm,
+        "window": (w0, w1),
+        "same": same,
+    })
     return PairDecision(
         evaluable=True,
         link=corr and same,
@@ -713,19 +696,16 @@ def decide_pair(
 @attrs.define
 class GroupStats:
     groups: int = 0
-    minimap2_calls: int = 0
-    minimap2_seconds: float = 0.0
-    minimap2_timeouts: int = 0
+    groups_aligned: int = 0
+    alignment_seconds: float = 0.0
+    #: the slowest group's alignment time (not summed by add)
+    max_group_alignment_seconds: float = 0.0
     groups_too_large: int = 0
     cores_aligned: int = 0
     consensus_pairs_aligned: int = 0
     composite_pairs: int = 0
     evaluable_pairs: int = 0
     links_alignment: int = 0
-    links_old_rule: int = 0
-    links_both: int = 0
-    links_alignment_only: int = 0
-    links_old_only: int = 0
     links_fallback: int = 0
     links_twin: int = 0
     same_consensus_cannot: int = 0
@@ -737,7 +717,12 @@ class GroupStats:
 
     def add(self, other: GroupStats) -> None:
         for f in attrs.fields(GroupStats):
-            setattr(self, f.name, getattr(self, f.name) + getattr(other, f.name))
+            if f.name == "max_group_alignment_seconds":
+                self.max_group_alignment_seconds = max(
+                    self.max_group_alignment_seconds, other.max_group_alignment_seconds
+                )
+            else:
+                setattr(self, f.name, getattr(self, f.name) + getattr(other, f.name))
 
 
 def _core_name(key: tuple[str, str]) -> str:
@@ -820,12 +805,11 @@ def align_group_cores(
         stats.groups_too_large += 1
         return {}
     t0 = time.perf_counter()
-    raw = run_minimap2(seqs, params)
-    stats.minimap2_seconds += time.perf_counter() - t0
-    stats.minimap2_calls += 1
-    if raw is None:
-        stats.minimap2_timeouts += 1
-        return {}
+    raw = align_cores(seqs, params)
+    seconds = time.perf_counter() - t0
+    stats.alignment_seconds += seconds
+    stats.max_group_alignment_seconds = max(stats.max_group_alignment_seconds, seconds)
+    stats.groups_aligned += 1
     stats.cores_aligned += len(seqs)
     by_name = {_core_name(k): k for k in keys}
     out: dict[tuple[tuple[str, str], tuple[str, str]], PairAlignment] = {}
@@ -863,7 +847,6 @@ def merge_same_type_with_core_alignments(
     oriented: dict[tuple[str, str], str],
     alignments: dict[tuple[tuple[str, str], tuple[str, str]], PairAlignment],
     old_rule: Callable[[SVcomposite, SVcomposite], bool],
-    mode: str,
     params: CoreAlnParams,
     stats: GroupStats,
     pair_log: list[dict] | None = None,
@@ -871,10 +854,11 @@ def merge_same_type_with_core_alignments(
 ) -> list[SVcomposite]:
     """Union of composites of one SV type: alignment links, old rule, constraints.
 
-    Links are applied best first (alignment links by their divergence, then the
-    old rule's); a link is skipped when it would put two composites of the same
-    sample from different consensuses into one record although the alignment
-    found them to be different alleles.
+    The alignment decides every pair it can judge (evaluable), the pairwise rule
+    the others. Links are applied best first (alignment links by their
+    divergence, then the pairwise rule's); a link is skipped when it would put
+    two composites of one sample from different consensuses, or two events of
+    one consensus, into one record without a direct alignment link.
     """
     n = len(composites)
     if n == 0:
@@ -914,44 +898,35 @@ def merge_same_type_with_core_alignments(
         pa, pb = placed[i], placed[j]
         stats.composite_pairs += 1
         evaluable = dec is not None and dec.evaluable
-        old = old_rule(a, b)
+        # the pairwise rule decides the pairs the alignment cannot judge; it is
+        # evaluated for the others only for the pair log
+        old = old_rule(a, b) if (not evaluable or pair_log is not None) else None
         # the haplotypes agree across both SVs, the SVs do not land on each
         # other, and neither is linked to another composite of the other
         # consensus: the same haplotype difference placed differently by the two
         # consensus-to-reference alignments (the haplotypes carry one event
         # each way, so x and y are its two representations)
         unrepresented_twin = (
-            evaluable
+            params.link_twins
+            and evaluable
             and dec.both_same
             and (i, pb.key) not in represented
             and (j, pa.key) not in represented
         )
+        aln_link = evaluable and (dec.link or unrepresented_twin)
         if evaluable:
             stats.evaluable_pairs += 1
             if dec.link:
                 stats.links_alignment += 1
+            elif unrepresented_twin:
+                stats.links_twin += 1
             if dec.distinct:
                 stats.distinct_pairs += 1
-            if dec.link and old:
-                stats.links_both += 1
-            elif dec.link:
-                stats.links_alignment_only += 1
-            elif old:
-                stats.links_old_only += 1
-        if old:
-            stats.links_old_rule += 1
-        aln_link = evaluable and (dec.link or unrepresented_twin)
-        if evaluable and not dec.link and unrepresented_twin:
-            stats.links_twin += 1
-        if mode == "align":
-            if evaluable:
-                link = aln_link
-            else:
-                link = old
-                if old:
-                    stats.links_fallback += 1
-        else:  # "or"
-            link = old or aln_link
+            link = aln_link
+        else:
+            link = bool(old)
+            if link:
+                stats.links_fallback += 1
         if link:
             if aln_link:
                 score = dec.score + (0.5 if not dec.link else 0.0)
@@ -962,31 +937,28 @@ def merge_same_type_with_core_alignments(
             links.append((score, i, j))
         # two consensuses of one sample are two haplotypes (or two assemblies of
         # one): their composites share a record only if linked directly, never
-        # through partners (the transitive form of the haplotype gate); when the
-        # alignment judged them different alleles, not even directly ("or" mode)
+        # through partners (the transitive form of the haplotype gate)
         if (
-            (not link or (evaluable and not aln_link))
+            not link
             and _sample_of(a) == _sample_of(b)
             and _consensus_ids(a) != _consensus_ids(b)
         ):
             cannot.add((i, j))
         if pair_log is not None:
-            pair_log.append(
-                {
-                    "a": _pair_log_id(a),
-                    "b": _pair_log_id(b),
-                    "size_a": a.get_size(),
-                    "size_b": b.get_size(),
-                    "old": old,
-                    "evaluable": evaluable,
-                    "link_aln": bool(dec.link) if dec is not None else None,
-                    "distinct": bool(dec.distinct) if dec is not None else None,
-                    "both_same": bool(dec.both_same) if dec is not None else None,
-                    "twin": bool(unrepresented_twin),
-                    "final": link,
-                    **(dict(dec.detail) if dec is not None else {}),
-                }
-            )
+            pair_log.append({
+                "a": _pair_log_id(a),
+                "b": _pair_log_id(b),
+                "size_a": a.get_size(),
+                "size_b": b.get_size(),
+                "old": old,
+                "evaluable": evaluable,
+                "link_aln": bool(dec.link) if dec is not None else None,
+                "distinct": bool(dec.distinct) if dec is not None else None,
+                "both_same": bool(dec.both_same) if dec is not None else None,
+                "twin": bool(unrepresented_twin),
+                "final": link,
+                **(dict(dec.detail) if dec is not None else {}),
+            })
     stats.unplaced_composites += sum(1 for p in placed if p is None)
     # Two composites of one consensus (same sample and consensusID) are two
     # events on one haplotype. They may share a record only as pieces of one
@@ -1105,7 +1077,6 @@ def merge_group_with_core_alignments(
     cores: dict[tuple[str, str], tuple[int, str]],
     old_rule_ins: Callable[[SVcomposite, SVcomposite], bool],
     old_rule_del: Callable[[SVcomposite, SVcomposite], bool],
-    mode: str,
     params: CoreAlnParams,
     stats: GroupStats,
     pair_log: list[dict] | None = None,
@@ -1141,7 +1112,6 @@ def merge_group_with_core_alignments(
         oriented,
         alignments,
         old_rule_ins,
-        mode,
         params,
         stats,
         pair_log,
@@ -1152,7 +1122,6 @@ def merge_group_with_core_alignments(
         oriented,
         alignments,
         old_rule_del,
-        mode,
         params,
         stats,
         pair_log,

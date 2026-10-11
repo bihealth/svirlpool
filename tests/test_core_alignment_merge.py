@@ -6,9 +6,6 @@ samples' candidate regions do. Positions are on the cores (core_start 0).
 """
 
 import random
-import shutil
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,12 +14,6 @@ from svirlpool.localassembly import SVpatterns, SVprimitives
 from svirlpool.svcalling import core_alignment_merge as cam
 from svirlpool.svcalling import genotyping
 from svirlpool.svcalling.SVcomposite import SVcomposite
-
-pytestmark = pytest.mark.skipif(
-    shutil.which("minimap2") is None
-    and not (Path(sys.executable).parent / "minimap2").exists(),
-    reason="minimap2 is needed",
-)
 
 
 def rand_seq(n: int, rng: random.Random) -> str:
@@ -116,10 +107,10 @@ def always(a, b):
     return True
 
 
-def run(group, cores, mode="align", params=None, old=never):
+def run(group, cores, params=None, old=never):
     stats = cam.GroupStats()
     merged, rest = cam.merge_group_with_core_alignments(
-        group, cores, old, old, mode, params or cam.CoreAlnParams(), stats
+        group, cores, old, old, params or cam.CoreAlnParams(), stats
     )
     assert rest == []
     return merged, stats
@@ -224,7 +215,8 @@ def test_distinct_insertions_at_one_locus_are_not_linked(rng):
     # even when the old rule would merge them, the alignment decides
     merged, stats = run(group, cores, old=always)
     assert len(merged) == 2
-    assert stats.links_old_only == 1
+    assert stats.evaluable_pairs == 1 and stats.distinct_pairs == 1
+    assert stats.links_fallback == 0
 
 
 def test_two_nearby_deletions_are_not_fused(rng):
@@ -241,9 +233,6 @@ def test_two_nearby_deletions_are_not_fused(rng):
     )
     merged, _ = run(group, cores, old=always)
     assert len(merged) == 2
-    # "or" keeps every link of the old rule
-    merged, _ = run(group, cores, mode="or", old=always)
-    assert len(merged) == 1
 
 
 def test_same_deletion_is_linked(rng):
@@ -292,9 +281,8 @@ def test_two_alleles_of_one_sample_are_never_joined_through_partners(rng):
         f=("HG003", "9.0", h104, False),
     )
     # the old rule says yes to every pair; the alignment says which allele is which
-    merged, stats = run(group, cores, mode="or", old=always)
+    merged, stats = run(group, cores, old=always)
     assert len(merged) == 2
-    assert stats.cannot_link_blocked > 0
     samples = sorted(sorted(p.samplename for p in svc.svPatterns) for svc in merged)
     assert samples == [["HG002", "HG003"], ["HG002", "HG004"]]
 
@@ -502,3 +490,91 @@ def test_guarded_union_keeps_rejected_pairs_of_one_sample_apart(monkeypatch):
     joined = next(r for r in out if len(r) == 2)
     assert {p.samplename for p in joined} == {"HG002", "HG003"}
     assert all(p is not z.svPatterns[0] for p in joined)
+
+
+# --------------------------------------------------------------------------- #
+# aligner, switches, scheduling
+# --------------------------------------------------------------------------- #
+
+
+def test_cs_string_gives_operations_and_asm20_score():
+    cigar, score = cam.cigar_and_score_from_cs(":10*ag+acg:5-tt:3")
+    assert cigar == [(10, "="), (1, "X"), (3, "I"), (5, "="), (2, "D"), (3, "=")]
+    # 18 matches, one mismatch (-4), gaps of 3 and 2: -min(6 + 2l, 26 + l)
+    assert score == 18 - 4 - 12 - 10
+
+
+def test_align_cores_finds_the_indel_between_two_haplotypes(rng):
+    left, right = rand_seq(1500, rng), rand_seq(1500, rng)
+    a = left + rand_seq(200, rng) + right
+    b = with_snvs(left + right, [700])
+    blocks = cam.align_cores({"a": a, "b": b}, cam.CoreAlnParams())
+    assert set(blocks) == {("b", "a")}  # query b on target a
+    aln = cam.PairAlignment.from_chain(cam.best_colinear_chain(blocks[("b", "a")]))
+    # b lacks a's 200 inserted bases: a deletion on the query, one mismatch
+    assert aln.window_differences(0, len(b)) == (200, 1)
+    for q, t, n in aln.runs:
+        mismatches = sum(1 for k in range(n) if b[q + k] != a[t + k])
+        assert mismatches == sum(1 for m in aln.mm_q if q <= m < q + n)
+    # deterministic
+    assert cam.align_cores({"a": a, "b": b}, cam.CoreAlnParams()) == blocks
+
+
+def test_twins_are_not_linked_when_switched_off(rng):
+    unit = rand_seq(40, rng)
+    copies = [with_snvs(unit, [5 + 7 * k]) for k in range(5)]
+    left, right = rand_seq(1500, rng), rand_seq(1500, rng)
+    child = left + "".join(copies[1:]) + right
+    mother = left + "".join(copies[:4]) + right
+    group = [
+        dele("HG002", "1.0", child, len(left), copies[0], 1500),
+        dele("HG004", "5.0", mother, len(left) + 160, copies[4], 1660),
+    ]
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
+    merged, stats = run(group, cores, params=cam.CoreAlnParams(link_twins=False))
+    assert len(merged) == 2 and stats.links_twin == 0
+
+
+def test_group_scheduling_does_not_change_the_result(rng):
+    from svirlpool.svcalling import svcomposite_merging as M
+
+    left, right, inserted = rand_seq(2000, rng), rand_seq(2000, rng), rand_seq(944, rng)
+    hap = left + inserted + right
+    child = hap[200 : 2000 + 944 + 1700]
+    mother = with_snvs(hap[500 : 2000 + 944 + 1800], [100, 2700])
+    father = left[300:] + right[:1500]
+    c0 = 2000 - 200
+    composites = [
+        ins("HG002", "1.0", child, c0, 149, 2000),
+        ins("HG002", "1.0", child, c0 + 149, 199, 2000),
+        ins("HG002", "1.0", child, c0 + 348, 596, 2000),
+        ins("HG004", "5.0", mother, 2000 - 500, 944, 2000),
+        dele("HG003", "9.0", father, 1000, right[1500:1600], 4000),
+    ]
+    core_alignment = cam.CoreAlignmentMerge(
+        cores=cores_of(
+            c=("HG002", "1.0", child, False),
+            m=("HG004", "5.0", mother, False),
+            f=("HG003", "9.0", father, False),
+        )
+    )
+
+    def merged_records(threads):
+        merged = M.merge_svComposites(
+            svComposites=composites,
+            apriori_size_difference_fraction_tolerance=0.1,
+            near=150,
+            min_kmer_overlap=0.7,
+            threads=threads,
+            core_alignment=core_alignment,
+        )
+        return [
+            sorted(f"{p.samplename}:{p.read_start}" for p in svc.svPatterns)
+            for svc in merged
+        ]
+
+    one = merged_records(1)
+    assert one == merged_records(3)
+    assert sorted(len(r) for r in one) == [1, 4]

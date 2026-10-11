@@ -173,6 +173,7 @@ seqtk = "~=1.4"
 sortedcontainers = ">=2.4.0,<3"
 packaging = "<26.0"
 matplotlib-venn = ">=1.1.2,<2"
+mappy = ">=2.28"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
