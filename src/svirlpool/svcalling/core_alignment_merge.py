@@ -100,23 +100,21 @@ class CoreAlignmentMerge:
 # --------------------------------------------------------------------------- #
 
 
-def parse_core_description(description: str) -> tuple[int, int]:
-    """core=S-E from a consensus description (positions on the padded consensus)."""
+def parse_core_description(description: str) -> tuple[int, int] | None:
+    """core=S-E from a consensus description (positions on the padded consensus),
+    None if the description has none (DBs written before c6ac4b4)."""
     for token in description.split():
         if token.startswith("core="):
             s, e = token[5:].split("-")
             return int(s), int(e)
-    raise ValueError(f"no core= in consensus description {description!r}")
+    return None
 
 
-def _load_cores_job(args) -> tuple[str, dict[str, tuple[int, str]], float]:
+def _load_cores_job(args) -> tuple[str, dict[str, tuple[int, str]], int, float]:
     samplename, db_path, consensusIDs = args
     t0 = time.perf_counter()
-    return (
-        samplename,
-        load_core_sequences(db_path, consensusIDs),
-        time.perf_counter() - t0,
-    )
+    cores, without_core = load_core_sequences(db_path, consensusIDs)
+    return samplename, cores, without_core, time.perf_counter() - t0
 
 
 def load_cores_for_composites(
@@ -141,7 +139,7 @@ def load_cores_for_composites(
     ]
     out: dict[tuple[str, str], tuple[int, str]] = {}
     with ProcessPoolExecutor(max_workers=max(1, min(threads, len(jobs)))) as ex:
-        for samplename, cores, seconds in ex.map(_load_cores_job, jobs):
+        for samplename, cores, without_core, seconds in ex.map(_load_cores_job, jobs):
             log.info(
                 "CORE_ALN_MERGE|CORES|sample=%s|n=%d|bp=%d|seconds=%.1f",
                 samplename,
@@ -149,6 +147,15 @@ def load_cores_for_composites(
                 sum(len(s) for _, s in cores.values()),
                 seconds,
             )
+            if without_core:
+                log.warning(
+                    "--core-alignment-merge: %d consensus sequences of %s have no "
+                    "core= in their description (a DB written before the consensus "
+                    "headers named the core); their SVs are merged by the pairwise "
+                    "rule",
+                    without_core,
+                    samplename,
+                )
             for cid, value in cores.items():
                 out[(samplename, cid)] = value
     return out
@@ -156,13 +163,15 @@ def load_cores_for_composites(
 
 def load_core_sequences(
     db_path: Path | str, consensusIDs: set[str] | None = None
-) -> dict[str, tuple[int, str]]:
-    """{consensusID: (core_start on the padded consensus, core sequence)}.
+) -> tuple[dict[str, tuple[int, str]], int]:
+    """({consensusID: (core_start on the padded consensus, core sequence)},
+    number of wanted consensuses without a core description).
 
     Streams the consensus_sequences table (the padded sequences are ~75 kb each,
     ~5 Gb per 30x sample) and keeps only the cores of the wanted consensuses.
     """
     out: dict[str, tuple[int, str]] = {}
+    without_core = 0
     uri = f"file:{db_path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=60)
     try:
@@ -172,12 +181,16 @@ def load_core_sequences(
         for consensusID, blob, description in cur:
             if consensusIDs is not None and consensusID not in consensusIDs:
                 continue
-            s, e = parse_core_description(description or "")
+            core = parse_core_description(description or "")
+            if core is None:
+                without_core += 1
+                continue
+            s, e = core
             padded: str = pickle.loads(blob)
             out[consensusID] = (s, padded[s:e].upper())
     finally:
         conn.close()
-    return out
+    return out, without_core
 
 
 # --------------------------------------------------------------------------- #

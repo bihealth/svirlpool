@@ -1,11 +1,15 @@
-# Core-vs-core alignment as the cross-sample merge criterion (prototype)
+# Core-vs-core alignment as the cross-sample merge criterion
 
-Branch `exp/core-ava-merge` (prototype; default behaviour unchanged).
-Switch: `svirlpool sv-calling --core-alignment-merge {off,align,or}`.
+Prototype on branch `exp/core-ava-merge` (v1-v6), productionized on
+`feat/core-alignment-merge` (default behaviour unchanged).
+Switch: `svirlpool sv-calling --core-alignment-merge` (v6 design: the alignment
+decides every pair it can judge, the pairwise rule the others; the prototype's
+`or` mode is gone).
 Code: `src/svirlpool/svcalling/core_alignment_merge.py`, hooked into
-`svcomposite_merging.merge_svComposites` (per-chromosome worker
-`merge_svComposites_for_chromosome_core_aln`). Tests:
-`tests/test_core_alignment_merge.py`. Results: `RESULTS.md` next to this file.
+`svcomposite_merging.merge_svComposites` (`merge_svComposites_with_core_alignment`
+schedules the candidate groups, `merge_group_with_core_alignment` merges one).
+Tests: `tests/test_core_alignment_merge.py`. Results: `RESULTS.md` next to this
+file.
 
 ## Question
 
@@ -41,16 +45,28 @@ its composites), so all pairs align on `+`.
 
 ## How
 
-minimap2 2.31 (the env's binary), `-x asm20 -c --eqx --secondary=no`, one call
-per target core with the remaining cores of the group as queries, `-U c,c` with
-`c = max(10, 3 * cores in the group)` (minimizers more frequent than that are
-not anchors), at most 10 s per group (then: no alignment, fallback).
+minimap2 in-process (mappy, preset asm20): each core of the group is indexed once
+and the later cores are mapped onto it. Primary and supplementary alignments
+are kept (the flanks of a large indel come back as separate blocks), secondary
+ones are not. mappy does not report the DP score, so each block is scored with
+asm20's scoring (-A1 -B4 -O6,26 -E2,1) from its cs string. Groups with more than
+300 kb of cores are not aligned (their pairs fall back to the pairwise rule).
+Nothing depends on time, so the result is deterministic.
 
-Why this and not one all-vs-all call: `-X` all-vs-all reports every secondary
-chain; in tandem repeats that is thousands of chains per pair (one 6-core, 44 kb
-group: 19,143 PAF lines, 22 s). Per-target `--secondary=no` returns the primary
-alignment plus supplementary blocks (the two flanks of a large indel) per pair:
-6x faster on the slow tail. No edlib/mappy/parasail in the env.
+History: the prototype ran the minimap2 binary, one process per target core
+(about 96k per trio), with `-U c,c`, `c = max(10, 3 * cores in the group)`, and a
+10 s wall-clock cap per group, which made the set of aligned groups depend on
+machine load. mappy cannot set the seed-occurrence cap (it fixes `mid_occ` at
+1000 for an index built from a sequence); on chr21 this changed nothing that
+matters: 2,181 of 2,195 records identical, the satellite groups no slower,
+alignment time 32.3 s -> 23.8 s. The alignment time is concentrated in a few
+large groups (chr21: the top 10 of 677 groups take 69%), so the groups of all
+chromosomes are merged in parallel group by group, largest first, and
+reassembled in chromosome and group order.
+
+Why not one all-vs-all call: `-X` all-vs-all reports every secondary chain; in
+tandem repeats that is thousands of chains per pair (one 6-core, 44 kb group:
+19,143 PAF lines, 22 s).
 
 Per pair, the blocks inside a band around the diagonal the two reference
 placements imply (`|(t - q) - (ref_q - ref_t)| <= 1000 + the summed SV sizes of
@@ -90,8 +106,9 @@ Same SV type only (INS with INS, DEL with DEL), different consensuses.
    difference or an unalignable repeat): judged, not linked. When the cores do
    not both cover the SVs, or there is no alignment, or the SV has no aligned
    flanks, or the composite spans two consensuses/strands, the pair is not
-   evaluable and the existing pairwise rule decides (`align` mode). In `or`
-   mode the existing rule's links are always kept and alignment links added.
+   evaluable and the existing pairwise rule decides. (The prototype's `or`
+   mode, which kept every link of the existing rule and added the alignment's,
+   lost F1 and is gone.)
 6. Twins: no correspondence, but the haplotypes agree across both SVs within
    10 bp (no relative tolerance), and neither SV is linked to another composite
    of the other consensus: one haplotype difference placed differently by the
@@ -134,12 +151,19 @@ concatenated (ALT), its strongest pattern gives the position.
 Links are applied best first (alignment links by indel/size, twins after them,
 then the rule's). Two composites of one sample from different consensuses (two
 haplotypes, or two overlapping CRs) may share a record only if they are linked
-directly; a link that would join them through partners is skipped, and when
-the alignment judged them different alleles they are not joined even if the
-pairwise rule would (`or` mode). This keeps a compound-heterozygous child's two
-alleles apart. (v1-v3 blocked only pairs judged `distinct`; the harness then
-showed 405 -> 657 records holding two child consensuses whose sizes differ by
-more than 10%; most were one allele decomposed differently, some were chains.)
+directly; a link that would join them through partners is skipped. This keeps
+a compound-heterozygous child's two alleles apart. (v1-v3 blocked only pairs
+judged `distinct`; the harness then showed 405 -> 657 records holding two child
+consensuses whose sizes differ by more than 10%; most were one allele
+decomposed differently, some were chains.)
+
+Two composites of one consensus (v6) share a record only as pieces of one allele
+that another consensus carries in one piece: both linked by the alignment to the
+same partner. Any other path (fallback links, twins, links to different
+partners) must not bridge them. Inversions, which the alignment does not judge,
+get the pairwise rule with the same transitive gate (two composites of one
+sample whose pair the rule rejects never share a record; accepted pairs are
+applied closest in size first).
 
 ### Samples without a consensus at the locus
 

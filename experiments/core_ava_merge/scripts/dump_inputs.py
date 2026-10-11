@@ -27,7 +27,7 @@ DBS = [
 def load(args):
     db, wanted = args
     t = time.time()
-    cores = cam.load_core_sequences(db, wanted)
+    cores, _ = cam.load_core_sequences(db, wanted)
     return db, cores, time.time() - t
 
 

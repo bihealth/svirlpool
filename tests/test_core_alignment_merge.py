@@ -578,3 +578,29 @@ def test_group_scheduling_does_not_change_the_result(rng):
     one = merged_records(1)
     assert one == merged_records(3)
     assert sorted(len(r) for r in one) == [1, 4]
+
+
+def test_cores_are_read_from_the_db_and_old_headers_are_skipped(tmp_path):
+    import pickle
+    import sqlite3
+
+    db = tmp_path / "svirltile.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE consensus_sequences "
+        "(consensusID TEXT PRIMARY KEY, sequence BLOB, description TEXT)"
+    )
+    rows = [
+        ("1.0", "aaCCGGTTaa", "1.0 core=2-8"),
+        ("2.0", "ACGTACGT", "2.0"),  # written before the headers named the core
+        ("3.0", "ACGT", "3.0 core=0-4"),
+    ]
+    conn.executemany(
+        "INSERT INTO consensus_sequences VALUES (?, ?, ?)",
+        [(cid, pickle.dumps(seq), desc) for cid, seq, desc in rows],
+    )
+    conn.commit()
+    conn.close()
+    cores, without_core = cam.load_core_sequences(db, {"1.0", "2.0"})
+    assert cores == {"1.0": (2, "CCGGTT")}
+    assert without_core == 1
