@@ -2649,6 +2649,23 @@ def multisample_sv_calling(
 
     # --- vertical merging of svComposites across samples and consensus sequences --- #
     if vertical_merge:
+        from . import core_alignment_merge as cam
+
+        core_alignment_cores = None
+        if cam.MODE != "off":
+            t0 = datetime.now()
+            core_alignment_cores = cam.load_cores_for_composites(
+                composites=data,
+                db_paths=input,
+                samplenames=samplenames,
+                threads=threads,
+            )
+            log.info(
+                "CORE_ALN_MERGE|CORES_LOADED|n=%d|seconds=%.1f",
+                len(core_alignment_cores),
+                (datetime.now() - t0).total_seconds(),
+            )
+        t0 = datetime.now()
         merged: list[SVcomposite] = merge_svComposites(
             apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
             svComposites=data,
@@ -2656,7 +2673,12 @@ def multisample_sv_calling(
             min_kmer_overlap=min_kmer_overlap,
             threads=threads,
             verbose=verbose,
+            core_alignment_cores=core_alignment_cores,
         )
+        log.info(
+            "VERTICAL_MERGE|seconds=%.1f", (datetime.now() - t0).total_seconds()
+        )
+        core_alignment_cores = None
     else:
         log.warning(
             "--no-vertical-merge: every horizontally merged SVcomposite becomes its "
@@ -2772,6 +2794,17 @@ def run(args) -> None:
     _merging.HAPLOTYPE_AWARE_MERGE = getattr(args, "haplotype_aware_merge", True)
     _merging.SIBLING_SIZE_TOLERANCE = getattr(args, "sibling_size_tolerance", 0.1)
     MULTI_ASSEMBLY_OVERRIDE = getattr(args, "multi_assembly_override", "subset")
+    from . import core_alignment_merge as _cam
+
+    _cam.MODE = getattr(args, "core_alignment_merge", "off")
+    _cam.PARAMS = _cam.CoreAlnParams(
+        flank=getattr(args, "core_alignment_flank", 150),
+        abs_tol=getattr(args, "core_alignment_abs_tol", 10),
+        frac_tol=getattr(args, "core_alignment_frac_tol", 0.1),
+    )
+    _cam.PAIR_LOG_DIR = getattr(args, "core_alignment_pair_log", None)
+    if _cam.PAIR_LOG_DIR:
+        Path(_cam.PAIR_LOG_DIR).mkdir(parents=True, exist_ok=True)
     if getattr(args, "merge_audit", None):
         merge_audit.start(args.merge_audit)
 
@@ -2977,6 +3010,45 @@ help="Fraction of the larger of two SV sizes that the sizes may differ by "
         "--no-vertical-merge calls every horizontally merged composite on its own; "
         "with --repeat-collapse-mode none every call is one SVpattern, which is what "
         "labelling patterns against a truth set for --merge-audit needs.",
+    )
+    parser.add_argument(
+        "--core-alignment-merge",
+        choices=("off", "align", "or"),
+        default="off",
+        help="EXPERIMENTAL (prototype). Judge whether INS/DEL composites of different "
+        "consensus assemblies are the same allele by aligning the consensus cores "
+        "(minimap2): an SV is present on the other consensus when the alignment "
+        "across it and its flanks is near-identical, and the two SVs are linked "
+        "when its projection lands on the other SV. 'align': the alignment decides "
+        "every pair it can judge, the pairwise rule the others; 'or': a pair merges "
+        "when either says so; 'off' (default): the pairwise rule only.",
+    )
+    parser.add_argument(
+        "--core-alignment-frac-tol",
+        type=float,
+        default=0.1,
+        help="--core-alignment-merge: indel bases allowed between the two haplotypes "
+        "around an SV, as a fraction of the SV size (default: 0.1).",
+    )
+    parser.add_argument(
+        "--core-alignment-abs-tol",
+        type=int,
+        default=10,
+        help="--core-alignment-merge: indel bases always allowed (default: 10).",
+    )
+    parser.add_argument(
+        "--core-alignment-flank",
+        type=int,
+        default=150,
+        help="--core-alignment-merge: flank on each side of an SV (or of its "
+        "placement range in a repeat) that must agree (default: 150).",
+    )
+    parser.add_argument(
+        "--core-alignment-pair-log",
+        type=os.path.abspath,
+        default=None,
+        help="--core-alignment-merge: write every judged composite pair to "
+        "<dir>/pairs.<chr>.jsonl.",
     )
     parser.add_argument(
         "--merge-audit",

@@ -11,6 +11,7 @@ import math
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
+import attrs
 import numpy as np
 from intervaltree import IntervalTree
 from tqdm import tqdm
@@ -1333,6 +1334,122 @@ def merge_svComposites_across_chromosomes(
     return merged_svComposites
 
 
+def merge_svComposites_for_chromosome_core_aln(
+    chr_name: str,
+    svComposites: list[SVcomposite],
+    apriori_size_difference_fraction_tolerance: float,
+    near: int,
+    min_kmer_overlap: float,
+    cores: dict[tuple[str, str], tuple[int, str]],
+    mode: str,
+    params,
+    pair_log_dir: str | None = None,
+    verbose: bool = False,
+):
+    """`merge_svComposites_for_chromosome` with --core-alignment-merge.
+
+    The candidate groups are the same; inside a group, INS and DEL composites are
+    merged by `core_alignment_merge.merge_group_with_core_alignments` (falling
+    back to the pairwise rule where the alignment cannot judge), the other types
+    as before. Returns (merged composites, GroupStats).
+    """
+    import json
+    from functools import partial
+
+    from . import core_alignment_merge as cam
+
+    stats = cam.GroupStats()
+    pair_log: list[dict] | None = [] if pair_log_dir else None
+    old_ins = partial(
+        can_merge_svComposites_insertions,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+    )
+    old_del = partial(
+        can_merge_svComposites_deletions,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+    )
+    merged_svComposites: list[SVcomposite] = []
+    for cc in _candidate_groups_for_chromosome(chr_name, svComposites, near):
+        group = [svComposites[idx] for idx in cc]
+        if len(group) == 1:
+            merged_svComposites.append(group[0])
+            continue
+        merged, rest = cam.merge_group_with_core_alignments(
+            group=group,
+            cores=cores,
+            old_rule_ins=lambda a, b: old_ins(a=a, b=b),
+            old_rule_del=lambda a, b: old_del(a=a, b=b),
+            mode=mode,
+            params=params,
+            stats=stats,
+            pair_log=pair_log,
+        )
+        merged_svComposites.extend(merged)
+        if len(rest) > 1:
+            merged_svComposites.extend(
+                vertically_merged_svComposites_from_group(
+                    group=rest,
+                    near=near,
+                    min_kmer_overlap=min_kmer_overlap,
+                    apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+                    verbose=verbose,
+                )
+            )
+        else:
+            merged_svComposites.extend(rest)
+    if pair_log_dir and pair_log:
+        safe = chr_name.replace("/", "_")
+        with open(f"{pair_log_dir}/pairs.{safe}.jsonl", "w") as f:
+            for row in pair_log:
+                f.write(json.dumps(row, default=str) + "\n")
+    log.info(
+        "CORE_ALN_MERGE|CHR|chr=%s|in=%d|out=%d|%s",
+        chr_name,
+        len(svComposites),
+        len(merged_svComposites),
+        attrs.asdict(stats),
+    )
+    return merged_svComposites, stats
+
+
+def _candidate_groups_for_chromosome(
+    chr_name: str, svComposites: list[SVcomposite], near: int
+) -> list[list[int]]:
+    """Connected components of composites whose consensus-alignment intervals overlap."""
+    overlaptree = IntervalTree()
+    for idx, svComposite in enumerate(svComposites):
+        for svp in svComposite.svPatterns:
+            for interval_chr, start, end in svp.get_consensus_aln_intervals_from_svPrimitives():
+                if interval_chr != chr_name:
+                    continue
+                if start > end:
+                    start, end = end, start
+                if end - start < near:
+                    start -= near
+                    end += near
+                if start < 0:
+                    start = 0
+                overlaptree.addi(start, end, {idx})
+    uf = UnionFind(range(len(svComposites)))
+    overlaptree.merge_overlaps(data_reducer=lambda x, y: x.union(y))
+    for interval in overlaptree:
+        indices = list(set(interval.data))
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                a, b = svComposites[indices[i]], svComposites[indices[j]]
+                if (
+                    a.svPatterns[0].consensusID == b.svPatterns[0].consensusID
+                    and a.svPatterns[0].samplename == b.svPatterns[0].samplename
+                ):
+                    continue
+                uf.union_by_name(indices[i], indices[j])
+    return uf.get_connected_components(allow_singletons=True)
+
+
 def merge_svComposites_for_chromosome(
     chr_name: str,
     svComposites: list[SVcomposite],
@@ -1456,9 +1573,14 @@ def merge_svComposites(
     min_kmer_overlap: float,
     verbose: bool = False,
     threads: int = 1,
+    core_alignment_cores: dict[tuple[str, str], tuple[int, str]] | None = None,
 ) -> list[SVcomposite]:
     """
     Merge SVcomposites across samples, optionally using parallel processing per chromosome.
+
+    With `core_alignment_cores` ({(sample, consensusID): (core start, core)}),
+    INS and DEL composites are merged by --core-alignment-merge
+    (`core_alignment_merge.MODE`).
     """
     # Group SVcomposites by chromosome
     log.debug(f"Grouping {len(svComposites)} SVcomposites by chromosome...")
@@ -1489,7 +1611,46 @@ def merge_svComposites(
 
     merged_svComposites = []
 
-    if threads > 1:
+    if core_alignment_cores is not None:
+        from . import core_alignment_merge as cam
+
+        total = cam.GroupStats()
+        jobs = {}
+        with ProcessPoolExecutor(max_workers=max(1, threads)) as executor:
+            for chr_name, chr_svComposites in chr_groups.items():
+                keys = {
+                    (p.samplename, p.consensusID)
+                    for svc in chr_svComposites
+                    for p in svc.svPatterns
+                }
+                chr_cores = {
+                    k: core_alignment_cores[k] for k in keys if k in core_alignment_cores
+                }
+                jobs[
+                    executor.submit(
+                        merge_svComposites_for_chromosome_core_aln,
+                        chr_name,
+                        chr_svComposites,
+                        apriori_size_difference_fraction_tolerance,
+                        near,
+                        min_kmer_overlap,
+                        chr_cores,
+                        cam.MODE,
+                        cam.PARAMS,
+                        cam.PAIR_LOG_DIR,
+                        verbose,
+                    )
+                ] = chr_name
+            from concurrent.futures import as_completed
+
+            for future in tqdm(
+                as_completed(jobs), total=len(jobs), desc="Processing chromosomes"
+            ):
+                chr_merged, chr_stats = future.result()
+                merged_svComposites.extend(chr_merged)
+                total.add(chr_stats)
+        log.info("CORE_ALN_MERGE|SUMMARY|mode=%s|%s", cam.MODE, attrs.asdict(total))
+    elif threads > 1:
         # Parallel processing per chromosome
         log.info(f"Processing chromosomes in parallel with {threads} workers")
 
