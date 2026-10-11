@@ -133,7 +133,11 @@ def parse_core_description(description: str) -> tuple[int, int]:
 def _load_cores_job(args) -> tuple[str, dict[str, tuple[int, str]], float]:
     samplename, db_path, consensusIDs = args
     t0 = time.perf_counter()
-    return samplename, load_core_sequences(db_path, consensusIDs), time.perf_counter() - t0
+    return (
+        samplename,
+        load_core_sequences(db_path, consensusIDs),
+        time.perf_counter() - t0,
+    )
 
 
 def load_cores_for_composites(
@@ -147,10 +151,15 @@ def load_cores_for_composites(
 
     wanted: dict[str, set[str]] = defaultdict(set)
     for svc in composites:
-        if issubclass(svc.sv_type, (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)):
+        if issubclass(
+            svc.sv_type, (SVpatterns.SVpatternInsertion, SVpatterns.SVpatternDeletion)
+        ):
             for p in svc.svPatterns:
                 wanted[p.samplename].add(p.consensusID)
-    jobs = [(s, db, wanted.get(s, set())) for s, db in zip(samplenames, db_paths, strict=True)]
+    jobs = [
+        (s, db, wanted.get(s, set()))
+        for s, db in zip(samplenames, db_paths, strict=True)
+    ]
     out: dict[tuple[str, str], tuple[int, str]] = {}
     with ProcessPoolExecutor(max_workers=max(1, min(threads, len(jobs)))) as ex:
         for samplename, cores, seconds in ex.map(_load_cores_job, jobs):
@@ -228,7 +237,9 @@ class CoreSV:
 MAX_SHIFT: int = 1000
 
 
-def insertion_shift_range(seq: str, s: int, e: int, cap: int = MAX_SHIFT) -> tuple[int, int]:
+def insertion_shift_range(
+    seq: str, s: int, e: int, cap: int = MAX_SHIFT
+) -> tuple[int, int]:
     """[s - L, e + R]: how far the inserted bases seq[s:e] can slide in seq."""
     n = len(seq)
     r = 0
@@ -252,7 +263,11 @@ def deletion_shift_range(
     while r < cap and s + r < n and seq[s + r] == deleted[r % m]:
         r += 1
     left = 0
-    while left < cap and s - 1 - left >= 0 and seq[s - 1 - left] == deleted[m - 1 - (left % m)]:
+    while (
+        left < cap
+        and s - 1 - left >= 0
+        and seq[s - 1 - left] == deleted[m - 1 - (left % m)]
+    ):
         left += 1
     return s - left, s + r
 
@@ -265,9 +280,7 @@ def composite_consensus_key(svc: SVcomposite) -> tuple[str, str] | None:
 
 def composite_strand(svc: SVcomposite) -> bool | None:
     """aln_is_reverse shared by all primitives of the composite, else None."""
-    strands = {
-        prim.aln_is_reverse for p in svc.svPatterns for prim in p.SVprimitives
-    }
+    strands = {prim.aln_is_reverse for p in svc.svPatterns for prim in p.SVprimitives}
     return next(iter(strands)) if len(strands) == 1 else None
 
 
@@ -474,7 +487,11 @@ class PairAlignment:
                     if op == "X":
                         mm_q.extend(range(qp, qp + n))
                         mm_t.extend(range(tp, tp + n))
-                    if runs and runs[-1][0] + runs[-1][2] == qp and runs[-1][1] + runs[-1][2] == tp:
+                    if (
+                        runs
+                        and runs[-1][0] + runs[-1][2] == qp
+                        and runs[-1][1] + runs[-1][2] == tp
+                    ):
                         r = runs[-1]
                         runs[-1] = (r[0], r[1], r[2] + n)
                     else:
@@ -649,9 +666,9 @@ def decide_pair(
     if px is None or py is None:
         detail["reason"] = "not_projected" + ("_covered" if covered else "")
         return PairDecision(covered, False, False, 1.0, detail)
-    corr = _overlaps(px[0], px[1], y.amb_start, y.amb_end, params.link_slack) or _overlaps(
-        py[0], py[1], x.amb_start, x.amb_end, params.link_slack
-    )
+    corr = _overlaps(
+        px[0], px[1], y.amb_start, y.amb_end, params.link_slack
+    ) or _overlaps(py[0], py[1], x.amb_start, x.amb_end, params.link_slack)
     lo = min(x.amb_start, py[0])
     hi = max(x.amb_end, py[1])
     if lo - aln_xy.q0 < params.min_flank or aln_xy.q1 - hi < params.min_flank:
@@ -667,9 +684,15 @@ def decide_pair(
     size = min(x.size, y.size)
     tol = max(params.abs_tol, params.frac_tol * size)
     same = indel <= tol
-    if same and x.end - x.start > 0 and mm > params.max_mismatch_frac * (x.end - x.start) + 2:
+    if (
+        same
+        and x.end - x.start > 0
+        and mm > params.max_mismatch_frac * (x.end - x.start) + 2
+    ):
         same = False
-    detail.update({"corr": corr, "indel": indel, "mm": mm, "window": (w0, w1), "same": same})
+    detail.update(
+        {"corr": corr, "indel": indel, "mm": mm, "window": (w0, w1), "same": same}
+    )
     return PairDecision(
         evaluable=True,
         link=corr and same,
@@ -810,7 +833,11 @@ def align_group_cores(
             qk0, tk0 = by_name[qn], by_name[tn]
             if qk0 in ref_start and tk0 in ref_start:
                 expected = ref_start[qk0] - ref_start[tk0]
-                band = params.diagonal_band + (drift or {}).get(qk0, 0) + (drift or {}).get(tk0, 0)
+                band = (
+                    params.diagonal_band
+                    + (drift or {}).get(qk0, 0)
+                    + (drift or {}).get(tk0, 0)
+                )
                 kept = [b for b in blocks if abs((b.ts - b.qs) - expected) <= band]
                 stats.blocks_off_diagonal += len(blocks) - len(kept)
                 blocks = kept
@@ -939,23 +966,23 @@ def merge_same_type_with_core_alignments(
         ):
             cannot.add((i, j))
         if pair_log is not None:
-            pair_log.append({
-                "a": _pair_log_id(a),
-                "b": _pair_log_id(b),
-                "size_a": a.get_size(),
-                "size_b": b.get_size(),
-                "old": old,
-                "evaluable": evaluable,
-                "link_aln": bool(dec.link) if dec is not None else None,
-                "distinct": bool(dec.distinct) if dec is not None else None,
-                "both_same": bool(dec.both_same) if dec is not None else None,
-                "twin": bool(unrepresented_twin),
-                "final": link,
-                **({k: v for k, v in dec.detail.items()} if dec is not None else {}),
-            })
-    for idx, p in enumerate(placed):
-        if p is None:
-            stats.unplaced_composites += 1
+            pair_log.append(
+                {
+                    "a": _pair_log_id(a),
+                    "b": _pair_log_id(b),
+                    "size_a": a.get_size(),
+                    "size_b": b.get_size(),
+                    "old": old,
+                    "evaluable": evaluable,
+                    "link_aln": bool(dec.link) if dec is not None else None,
+                    "distinct": bool(dec.distinct) if dec is not None else None,
+                    "both_same": bool(dec.both_same) if dec is not None else None,
+                    "twin": bool(unrepresented_twin),
+                    "final": link,
+                    **(dict(dec.detail) if dec is not None else {}),
+                }
+            )
+    stats.unplaced_composites += sum(1 for p in placed if p is None)
     uf = UnionFind(range(n))
     members: dict[int, set[int]] = {i: {i} for i in range(n)}
     for _score, i, j in sorted(links):

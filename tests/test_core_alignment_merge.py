@@ -35,7 +35,9 @@ def with_snvs(seq: str, positions: list[int]) -> str:
     return "".join(s)
 
 
-def _primitive(sample, cid, sv_type, read_start, read_end, ref_start, ref_end, size, reverse):
+def _primitive(
+    sample, cid, sv_type, read_start, read_end, ref_start, ref_end, size, reverse
+):
     return SVprimitives.SVprimitive(
         ref_start=ref_start,
         ref_end=ref_end,
@@ -67,7 +69,9 @@ def ins(sample, cid, core, start, size, ref_pos, reverse=False):
     if reverse:  # the stored consensus is the reverse complement of `core`
         rs, re = len(core) - re, len(core) - rs
     pattern = SVpatterns.SVpatternInsertion(
-        SVprimitives=[_primitive(sample, cid, 0, rs, re, ref_pos, ref_pos + 1, size, reverse)]
+        SVprimitives=[
+            _primitive(sample, cid, 0, rs, re, ref_pos, ref_pos + 1, size, reverse)
+        ]
     )
     pattern.set_sequence(seq)
     return SVcomposite.from_SVpattern(pattern)
@@ -78,7 +82,17 @@ def dele(sample, cid, core, pos, deleted, ref_pos, reverse=False):
     rs = len(core) - pos if reverse else pos
     pattern = SVpatterns.SVpatternDeletion(
         SVprimitives=[
-            _primitive(sample, cid, 1, rs, rs, ref_pos, ref_pos + len(deleted), len(deleted), reverse)
+            _primitive(
+                sample,
+                cid,
+                1,
+                rs,
+                rs,
+                ref_pos,
+                ref_pos + len(deleted),
+                len(deleted),
+                reverse,
+            )
         ]
     )
     pattern.set_sequence(deleted)
@@ -112,7 +126,8 @@ def run(group, cores, mode="align", params=None, old=never):
 
 def records(merged):
     return sorted(
-        sorted(f"{p.samplename}:{p.read_start}" for p in svc.svPatterns) for svc in merged
+        sorted(f"{p.samplename}:{p.read_start}" for p in svc.svPatterns)
+        for svc in merged
     )
 
 
@@ -165,7 +180,9 @@ def test_tandem_repeat_length_variants_kept_apart_at_default_tolerance(rng):
         ins("HG002", "1.0", child, end_tr, 104, 1700),
         ins("HG004", "5.0", mother, end_tr, 121, 1700),
     ]
-    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
     merged, stats = run(group, cores)
     assert len(merged) == 2
     assert stats.distinct_pairs == 1
@@ -184,7 +201,9 @@ def test_same_repeat_allele_with_shifted_breakpoints_is_linked(rng):
         ins("HG002", "1.0", child, len(left), 104, 1500),
         ins("HG004", "5.0", mother, len(left) + len(ref_tr), 104, 1708),
     ]
-    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
     merged, stats = run(group, cores)
     assert len(merged) == 1
     assert stats.links_alignment == 1
@@ -198,7 +217,9 @@ def test_distinct_insertions_at_one_locus_are_not_linked(rng):
         ins("HG002", "1.0", child, 1500, 300, 1500),
         ins("HG004", "5.0", mother, 1500, 300, 1500),
     ]
-    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
     # even when the old rule would merge them, the alignment decides
     merged, stats = run(group, cores, old=always)
     assert len(merged) == 2
@@ -294,8 +315,17 @@ def test_deletion_shift_range_spans_the_repeat():
 
 def test_pair_alignment_inversion_round_trip():
     chain = [
-        cam.Block(qs=10, qe=110, ts=0, te=105, score=90, cigar=cam.parse_cigar("40=5D30=1X29=")),
-        cam.Block(qs=300, qe=400, ts=105, te=205, score=100, cigar=cam.parse_cigar("100=")),
+        cam.Block(
+            qs=10,
+            qe=110,
+            ts=0,
+            te=105,
+            score=90,
+            cigar=cam.parse_cigar("40=5D30=1X29="),
+        ),
+        cam.Block(
+            qs=300, qe=400, ts=105, te=205, score=100, cigar=cam.parse_cigar("100=")
+        ),
     ]
     aln = cam.PairAlignment.from_chain(chain)
     assert aln.map_pos(10) == 0
@@ -319,7 +349,9 @@ def test_one_deletion_placed_at_two_copies_of_an_imperfect_repeat(rng):
         dele("HG002", "1.0", child, len(left), copies[0], 1500),
         dele("HG004", "5.0", mother, len(left) + 160, copies[4], 1660),
     ]
-    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
     # the haplotypes agree across both deletions and neither lands on the
     # other or on another deletion of the other consensus: one event, linked
     # whatever the pairwise rule says
@@ -339,9 +371,14 @@ def test_two_events_both_haplotypes_carry_are_not_twins(rng):
         dele("HG004", "5.0", mother, 1300, ref[1500:1580], 1500),
         dele("HG004", "5.0", mother, 1920, ref[2200:2270], 2200),
     ]
-    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
     merged, stats = run(group, cores, old=always)
-    assert records(merged) == [["HG002:1500", "HG004:1300"], ["HG002:2120", "HG004:1920"]]
+    assert records(merged) == [
+        ["HG002:1500", "HG004:1300"],
+        ["HG002:2120", "HG004:1920"],
+    ]
     assert stats.links_twin == 0
 
 
@@ -353,14 +390,21 @@ def test_short_and_long_allele_of_an_imperfect_vntr_stay_apart(rng):
     def units(n):
         return "".join(with_snvs(unit, [rng.randrange(18)]) for _ in range(n))
 
-    left, ref_units, extra, right = rand_seq(1500, rng), units(20), units(60), rand_seq(1500, rng)
+    left, ref_units, extra, right = (
+        rand_seq(1500, rng),
+        units(20),
+        units(60),
+        rand_seq(1500, rng),
+    )
     child = left + extra[:180] + ref_units + right
     father = left + extra + ref_units + right
     group = [
         ins("HG002", "1.0", child, len(left), 180, 1500),
         ins("HG003", "9.0", father, len(left), 1080, 1500),
     ]
-    cores = cores_of(c=("HG002", "1.0", child, False), f=("HG003", "9.0", father, False))
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), f=("HG003", "9.0", father, False)
+    )
     merged, stats = run(group, cores, old=always)
     assert len(merged) == 2
     assert stats.distinct_pairs == 1
@@ -369,7 +413,12 @@ def test_short_and_long_allele_of_an_imperfect_vntr_stay_apart(rng):
 def test_alternating_small_indels_in_a_repeat_count_by_their_net_length():
     # one +13 insertion followed by alternating 2-bp deletions and insertions,
     # as the aligner writes a shifted repeat: 37 indel bases, net +11
-    cigar = "50=13I20=" + "".join("2D9=" for _ in range(6)) + "".join("2I9=" for _ in range(5)) + "50="
+    cigar = (
+        "50=13I20="
+        + "".join("2D9=" for _ in range(6))
+        + "".join("2I9=" for _ in range(5))
+        + "50="
+    )
     ops = cam.parse_cigar(cigar)
     qlen = sum(n for n, op in ops if op in "=I")
     tlen = sum(n for n, op in ops if op in "=D")

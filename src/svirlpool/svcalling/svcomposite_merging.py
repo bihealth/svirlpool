@@ -1423,7 +1423,11 @@ def _candidate_groups_for_chromosome(
     overlaptree = IntervalTree()
     for idx, svComposite in enumerate(svComposites):
         for svp in svComposite.svPatterns:
-            for interval_chr, start, end in svp.get_consensus_aln_intervals_from_svPrimitives():
+            for (
+                interval_chr,
+                start,
+                end,
+            ) in svp.get_consensus_aln_intervals_from_svPrimitives():
                 if interval_chr != chr_name:
                     continue
                 if start > end:
@@ -1624,7 +1628,9 @@ def merge_svComposites(
                     for p in svc.svPatterns
                 }
                 chr_cores = {
-                    k: core_alignment_cores[k] for k in keys if k in core_alignment_cores
+                    k: core_alignment_cores[k]
+                    for k in keys
+                    if k in core_alignment_cores
                 }
                 jobs[
                     executor.submit(
