@@ -73,8 +73,12 @@ class CoreAlnParams:
     #: net length (0: every indel base counts)
     cancel_dist: int = 50
     preset: str = "asm20"
-    #: groups with more core bases than this are not aligned (their pairs fall
-    #: back to the pairwise rule); bounds the alignment work of one group
+    #: only this many bases on each side of the placement ranges of a core's SVs
+    #: (in the group) are aligned; the decisions look at the SVs and their
+    #: flanks, and long repetitive cores cost minutes otherwise (None: whole cores)
+    crop_margin: int | None = 5000
+    #: groups with more (cropped) core bases than this are not aligned (their
+    #: pairs fall back to the pairwise rule); bounds the work of one group
     max_group_bp: int = 300_000
     #: band around the diagonal implied by the reference placements of two cores
     #: (plus the indel bases of their SVs) in which alignment blocks are kept
@@ -802,8 +806,13 @@ def align_group_cores(
     stats: GroupStats,
     ref_start: dict[tuple[str, str], int] | None = None,
     drift: dict[tuple[str, str], int] | None = None,
+    windows: dict[tuple[str, str], tuple[int, int]] | None = None,
 ) -> dict[tuple[tuple[str, str], tuple[str, str]], PairAlignment]:
     """Co-linear alignments between all pairs of the given cores (both orders).
+
+    With windows (the hull of the placement ranges of each core's SVs) and
+    params.crop_margin, only window +- crop_margin of each core is aligned; the
+    blocks are returned in whole-core coordinates.
 
     With ref_start (reference position of each oriented core's first base) a
     block is kept only near the diagonal the reference placements imply:
@@ -811,7 +820,16 @@ def align_group_cores(
     drift[t] (drift: the indel bases the core's own SVs shift it by). This drops
     blocks to another copy of a duplicated or repeated sequence in the cores.
     """
-    seqs = {_core_name(k): oriented[k] for k in keys}
+    offsets: dict[str, int] = {}
+    seqs: dict[str, str] = {}
+    for k in sorted(keys):
+        name = _core_name(k)
+        start, end = 0, len(oriented[k])
+        if params.crop_margin is not None and windows and k in windows:
+            start = max(0, windows[k][0] - params.crop_margin)
+            end = min(end, windows[k][1] + params.crop_margin)
+        offsets[name] = start
+        seqs[name] = oriented[k][start:end]
     if len(seqs) < 2:
         return {}
     if sum(len(s) for s in seqs.values()) > params.max_group_bp:
@@ -829,6 +847,12 @@ def align_group_cores(
     for (qn, tn), blocks in raw.items():
         if qn == tn:
             continue
+        oq, ot = offsets[qn], offsets[tn]
+        if oq or ot:
+            blocks = [
+                Block(b.qs + oq, b.qe + oq, b.ts + ot, b.te + ot, b.score, b.cigar)
+                for b in blocks
+            ]
         if ref_start is not None:
             qk0, tk0 = by_name[qn], by_name[tn]
             if qk0 in ref_start and tk0 in ref_start:
@@ -1116,8 +1140,19 @@ def merge_group_with_core_alignments(
     alignments = {}
     spans, drift = core_reference_spans(indels, placed)
     if len(keys_ins) > 1 or len(keys_del) > 1:
+        windows: dict[tuple[str, str], tuple[int, int]] = {}
+        for p in placed:
+            if p is not None:
+                w = windows.get(p.key, (p.amb_start, p.amb_end))
+                windows[p.key] = (min(w[0], p.amb_start), max(w[1], p.amb_end))
         alignments = align_group_cores(
-            oriented, keys, params, stats, {k: v[0] for k, v in spans.items()}, drift
+            oriented,
+            keys,
+            params,
+            stats,
+            {k: v[0] for k, v in spans.items()},
+            drift,
+            windows,
         )
     merged = merge_same_type_with_core_alignments(
         ins,
