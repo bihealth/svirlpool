@@ -20,6 +20,7 @@ Scripts: `scripts/` next to this file (hard-coded local paths).
 | proto_align_v4 | b626531 | align (+ transitive gate, smaller-size tol.) | 41,327 | 36,098 | 2,584 | 0.9332 | 0.8860 | 0.7722 | 0.8252 | 0.8583 | 0.8249 | 0.8581 | 21:54 |
 | proto_align_v4_tol02 | b626531 | align, `--core-alignment-frac-tol 0.2` | 39,902 | 34,956 | 2,467 | 0.9341 | 0.8855 | 0.7719 | 0.8248 | 0.8583 | 0.8242 | 0.8578 | 22:00 |
 | **proto_align_v5** | **0f3908f** | **align (+ net indels < 50 bp apart)** | 41,019 | 35,896 | 2,554 | **0.9336** | 0.8861 | 0.7719 | **0.8251** | **0.8583** | 0.8248 | 0.8581 | 22:04 |
+| proto_align_v6 | 14881fe | align (+ same-consensus guard, guarded union for INV) | 41,449 | 36,044 | 2,673 | 0.9310 | 0.8893 | 0.7755 | 0.8285 | 0.8600 | 0.8283 | 0.8599 | 18:52 |
 
 v5 vs base: MC +1.70 pt (3,204 -> 2,554 inconsistent, consistent +678), precision
 +1.06 pt, recall +0.70 pt, F1 +0.86 pt, H +1.10 pt (T2T; V5 the same). truvari
@@ -160,3 +161,36 @@ alt from that consensus's reads); "absent" gives consensus-level evidence for 0/
 The 35-37% without a consensus in the group need the consensuses that carry no
 SV at the locus (reference-like haplotypes); they are in `consensus_sequences`
 but are not placed on the reference in the DB except through `region=`.
+
+## v6: same-consensus guard (follow-up to the D3 study)
+
+D3 (exp/merge-repeat-aware 8189a30) found that most of its `--merge-cannot-link`
+gain comes from pairs of the SAME consensus bridged into one record through
+another sample's composite. v1-v5 skipped same-consensus pairs (so pieces of a
+decomposed allele could join through a partner), which also let partners bridge
+two distinct events of one consensus.
+
+v6 (14881fe): two composites of one (sample, consensusID) get a cannot-link
+unless the alignment links both of them (corresponding places, agreeing
+haplotypes) to the same partner composite: that is the signature of one allele
+carried in pieces on this consensus and in one piece on the other (the partner's
+range projects over both pieces and the haplotypes agree across the hull).
+Links of the pairwise rule, twins, or links to two different partners do not
+qualify. Rule links are applied after the alignment's, closest in size first (as
+D3's `_cannot_link_components`). Inversions (not judged by the alignment) go
+through the same guarded union. Genome-wide: 201,932 same-consensus pairs
+guarded, 2,352 allowed as pieces, 17,571 unions blocked (v5: 7,756).
+
+| arm | MC | P | R | F1 | H | strict F1 (pctsize/pctseq 0.9: P / R / F1) |
+|---|---:|---:|---:|---:|---:|---|
+| base_c8804b1 | 0.9166 | 0.8755 | 0.7649 | 0.8165 | 0.8473 | 0.8145 / 0.7095 / 0.7584 |
+| d3_guard (8189a30, `--merge-cannot-link`) | 0.9135 | 0.8918 | 0.7834 | 0.8341 | 0.8590 | 0.8330 / 0.7309 / 0.7786 |
+| proto_align_v5 | 0.9336 | 0.8861 | 0.7719 | 0.8251 | 0.8583 | 0.8256 / 0.7165 / 0.7672 |
+| proto_align_v6 | 0.9310 | 0.8893 | 0.7755 | 0.8285 | 0.8600 | 0.8298 / 0.7209 / 0.7715 |
+
+(T2T-Q100; strict numbers of base and d3_guard from d3/final_table_strict.tsv,
+base re-run here with the same result.) Labels (class a, consistent / newly
+joined to the transmitting parent): A1 395 / 375 (v5 410 / 386; d3_guard 6 / 0),
+B 1 / 1 (v5 0 / 2; d3_guard 1 / 0), C 15, D_cons 34, D_gt 22, wrong-parent-only
+attachments 2. Record transitions vs base: 883 inconsistent -> consistent, 388
+new violations (v5: 904 / 298). Merge step 238 s, wall 18:52, peak RSS 20.3 GB.
