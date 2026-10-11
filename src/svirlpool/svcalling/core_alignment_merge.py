@@ -39,6 +39,7 @@ import time
 from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable
+from itertools import combinations
 from pathlib import Path
 
 import attrs
@@ -727,6 +728,8 @@ class GroupStats:
     links_old_only: int = 0
     links_fallback: int = 0
     links_twin: int = 0
+    same_consensus_cannot: int = 0
+    same_consensus_pieces: int = 0
     blocks_off_diagonal: int = 0
     distinct_pairs: int = 0
     cannot_link_blocked: int = 0
@@ -953,7 +956,9 @@ def merge_same_type_with_core_alignments(
             if aln_link:
                 score = dec.score + (0.5 if not dec.link else 0.0)
             else:
-                score = 1.0
+                # links of the pairwise rule after the alignment's, closest in
+                # size first
+                score = 1.0 + _size_distance(a, b)
             links.append((score, i, j))
         # two consensuses of one sample are two haplotypes (or two assemblies of
         # one): their composites share a record only if linked directly, never
@@ -983,6 +988,29 @@ def merge_same_type_with_core_alignments(
                 }
             )
     stats.unplaced_composites += sum(1 for p in placed if p is None)
+    # Two composites of one consensus (same sample and consensusID) are two
+    # events on one haplotype. They may share a record only as pieces of one
+    # allele that another consensus carries in one piece: both are linked by
+    # the alignment (corresponding places, agreeing haplotypes) to the same
+    # partner composite. Any other path (the pairwise rule's links, twins, links
+    # to different partners) must not bridge them into one record.
+    aln_partners: dict[int, set[int]] = defaultdict(set)
+    for (i, j), dec in decisions.items():
+        if dec is not None and dec.evaluable and dec.link:
+            aln_partners[i].add(j)
+            aln_partners[j].add(i)
+    by_consensus: dict[tuple[str, frozenset[str]], list[int]] = defaultdict(list)
+    for i, svc in enumerate(composites):
+        sample = _sample_of(svc)
+        if sample is not None:
+            by_consensus[(sample, _consensus_ids(svc))].append(i)
+    for idxs in by_consensus.values():
+        for u, v in combinations(idxs, 2):
+            if aln_partners[u] & aln_partners[v]:
+                stats.same_consensus_pieces += 1
+            else:
+                cannot.add((min(u, v), max(u, v)))
+                stats.same_consensus_cannot += 1
     uf = UnionFind(range(n))
     members: dict[int, set[int]] = {i: {i} for i in range(n)}
     for _score, i, j in sorted(links):
@@ -1004,6 +1032,57 @@ def merge_same_type_with_core_alignments(
         patterns = [p for idx in cc for p in composites[idx].svPatterns]
         out.append(SVcomposite.from_SVpatterns(svPatterns=patterns))
     return out
+
+
+def _size_distance(a: SVcomposite, b: SVcomposite) -> float:
+    sa, sb = abs(a.get_size()), abs(b.get_size())
+    return abs(sa - sb) / max(sa, sb, 1)
+
+
+def guarded_union(
+    composites: list[SVcomposite], rule: Callable[[SVcomposite, SVcomposite], bool]
+) -> list[SVcomposite]:
+    """The pairwise rule's union with the haplotype gate made transitive.
+
+    For the types the alignment does not judge (inversions): two composites of
+    one sample (the same or different consensuses) whose pair the rule rejects
+    never end up in one record; accepted pairs are applied closest in size
+    first (as --merge-cannot-link of the D3 study).
+    """
+    n = len(composites)
+    if n < 2:
+        return list(composites)
+    accepted: list[tuple[float, int, int]] = []
+    cannot: set[tuple[int, int]] = set()
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = composites[i], composites[j]
+            if rule(a, b):
+                accepted.append((_size_distance(a, b), i, j))
+            elif {p.samplename for p in a.svPatterns} & {
+                p.samplename for p in b.svPatterns
+            }:
+                cannot.add((i, j))
+    uf = UnionFind(range(n))
+    members: dict[int, set[int]] = {i: {i} for i in range(n)}
+    for _d, i, j in sorted(accepted):
+        ri, rj = uf.find(i), uf.find(j)
+        if ri == rj:
+            continue
+        if any(
+            (min(u, v), max(u, v)) in cannot for u in members[ri] for v in members[rj]
+        ):
+            continue
+        uf.union(ri, rj)
+        r = uf.find(ri)
+        merged = members.pop(ri) | members.pop(rj)
+        members[r] = merged
+    return [
+        SVcomposite.from_SVpatterns(
+            svPatterns=[p for idx in cc for p in composites[idx].svPatterns]
+        )
+        for cc in uf.get_connected_components(allow_singletons=True)
+    ]
 
 
 def _sample_of(svc: SVcomposite) -> str | None:

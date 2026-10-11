@@ -9,6 +9,7 @@ import random
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -429,3 +430,75 @@ def test_alternating_small_indels_in_a_repeat_count_by_their_net_length():
     far = cam.parse_cigar("50=20I300=20D50=")
     aln = cam.PairAlignment.from_chain([cam.Block(0, 390, 0, 390, 100, far)])
     assert aln.window_differences(0, 390, cancel_dist=50) == (40, 0)
+
+
+def test_two_events_of_one_consensus_are_not_bridged_by_partners(rng):
+    # the child's consensus carries two different insertions 400 bp apart; the
+    # mother's core covers only the first, the father's only the second, so the
+    # parents' cores do not align and the pairwise rule (here: always) links
+    # them; without the same-consensus guard the chain child.x1 - mother -
+    # father - child.x2 puts the child's two events into one record
+    left, mid, right = rand_seq(1500, rng), rand_seq(400, rng), rand_seq(1500, rng)
+    i1, i2 = rand_seq(100, rng), rand_seq(120, rng)
+    child = left + i1 + mid + i2 + right
+    mother = left + i1 + mid[:200]
+    father = mid[200:] + i2 + right
+    group = [
+        ins("HG002", "1.0", child, 1500, 100, 1500),
+        ins("HG002", "1.0", child, 2000, 120, 1900),
+        ins("HG004", "5.0", mother, 1500, 100, 1500),
+        ins("HG003", "9.0", father, 200, 120, 1900),
+    ]
+    cores = cores_of(
+        c=("HG002", "1.0", child, False),
+        m=("HG004", "5.0", mother, False),
+        f=("HG003", "9.0", father, False),
+    )
+    merged, stats = run(group, cores, old=always)
+    assert stats.same_consensus_cannot == 1
+    child_counts = sorted(
+        sum(p.samplename == "HG002" for p in svc.svPatterns) for svc in merged
+    )
+    assert max(child_counts) == 1
+
+
+def test_pieces_linked_to_one_partner_stay_together(rng):
+    # the guard allows two pieces of the child's consensus in one record
+    # because the alignment links both to the mother's single insertion
+    left, right, inserted = rand_seq(2000, rng), rand_seq(2000, rng), rand_seq(600, rng)
+    hap = left + inserted + right
+    child, mother = hap[100:], hap[300:]
+    group = [
+        ins("HG002", "1.0", child, 1900, 250, 2000),
+        ins("HG002", "1.0", child, 2150, 350, 2000),
+        ins("HG004", "5.0", mother, 1700, 600, 2000),
+    ]
+    cores = cores_of(
+        c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False)
+    )
+    merged, stats = run(group, cores, old=never)
+    assert len(merged) == 1
+    assert stats.same_consensus_pieces == 1 and stats.same_consensus_cannot == 0
+
+
+def test_guarded_union_keeps_rejected_pairs_of_one_sample_apart(monkeypatch):
+    # the rule accepts x-y and y-z but rejects x-z (x and z of one sample):
+    # x-y (closer in size) is joined, z stays alone
+    class Fake:
+        def __init__(self, sample, size):
+            self.svPatterns = [SimpleNamespace(samplename=sample)]
+            self.size = size
+
+        def get_size(self):
+            return self.size
+
+    x, y, z = Fake("HG002", 100), Fake("HG003", 104), Fake("HG002", 115)
+    accepted = {(id(x), id(y)), (id(y), id(z))}
+    monkeypatch.setattr(
+        cam.SVcomposite, "from_SVpatterns", staticmethod(lambda svPatterns: svPatterns)
+    )
+    out = cam.guarded_union([x, y, z], lambda a, b: (id(a), id(b)) in accepted)
+    assert sorted(len(r) for r in out) == [1, 2]
+    joined = next(r for r in out if len(r) == 2)
+    assert {p.samplename for p in joined} == {"HG002", "HG003"}
+    assert all(p is not z.svPatterns[0] for p in joined)

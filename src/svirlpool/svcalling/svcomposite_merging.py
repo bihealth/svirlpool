@@ -1366,6 +1366,12 @@ def merge_svComposites_for_chromosome_core_aln(
         near=near,
         min_kmer_overlap=min_kmer_overlap,
     )
+    old_inv = partial(
+        can_merge_svComposites_inversions,
+        apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
+        near=near,
+        min_kmer_overlap=min_kmer_overlap,
+    )
     old_del = partial(
         can_merge_svComposites_deletions,
         apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -1389,10 +1395,17 @@ def merge_svComposites_for_chromosome_core_aln(
             pair_log=pair_log,
         )
         merged_svComposites.extend(merged)
-        if len(rest) > 1:
+        inversions = [
+            s for s in rest if issubclass(s.sv_type, SVpatterns.SVpatternInversion)
+        ]
+        others = [
+            s for s in rest if not issubclass(s.sv_type, SVpatterns.SVpatternInversion)
+        ]
+        merged_svComposites.extend(cam.guarded_union(inversions, old_inv))
+        if len(others) > 1:
             merged_svComposites.extend(
                 vertically_merged_svComposites_from_group(
-                    group=rest,
+                    group=others,
                     near=near,
                     min_kmer_overlap=min_kmer_overlap,
                     apriori_size_difference_fraction_tolerance=apriori_size_difference_fraction_tolerance,
@@ -1400,7 +1413,7 @@ def merge_svComposites_for_chromosome_core_aln(
                 )
             )
         else:
-            merged_svComposites.extend(rest)
+            merged_svComposites.extend(others)
     if pair_log_dir and pair_log:
         safe = chr_name.replace("/", "_")
         with open(f"{pair_log_dir}/pairs.{safe}.jsonl", "w") as f:
