@@ -586,7 +586,7 @@ def decide_pair(
        link_slack), or y's projected onto A overlaps x's.
     2. Haplotype agreement: the A-B alignment across the hull of x's range and
        y's projection on A, plus `flank` on each side, has at most
-       max(abs_tol, frac_tol * larger size) indel bases (and the inserted bases
+       max(abs_tol, frac_tol * smaller size) indel bases (and the inserted bases
        of x at most max_mismatch_frac mismatches). The hull makes a difference
        anywhere between or around the two SVs count: in a long, imperfect VNTR
        a window around x alone can look identical while the other haplotype has
@@ -633,7 +633,10 @@ def decide_pair(
     w1 = min(aln_xy.q1, hi + params.flank, len_x)
     indel, _ = aln_xy.window_differences(w0, w1)
     _, mm = aln_xy.window_differences(x.start, max(x.end, x.start + 1))
-    size = max(x.size, y.size)
+    # tolerance from the smaller SV: a piece of a decomposed event matches the
+    # whole with ~0 indel bases, so this costs nothing there, while a large SV
+    # cannot lend its tolerance to a small one
+    size = min(x.size, y.size)
     tol = max(params.abs_tol, params.frac_tol * size)
     same = indel <= tol
     if same and x.end - x.start > 0 and mm > params.max_mismatch_frac * (x.end - x.start) + 2:
@@ -644,7 +647,8 @@ def decide_pair(
         link=corr and same,
         distinct=corr and not same,
         score=indel / max(1, size),
-        both_same=(not corr) and same,
+        # without corresponding places only near-identity counts
+        both_same=(not corr) and same and indel <= params.abs_tol,
         detail=detail,
     )
 
@@ -896,7 +900,15 @@ def merge_same_type_with_core_alignments(
             else:
                 score = 1.0
             links.append((score, i, j))
-        if evaluable and dec.distinct and pa.key[0] == pb.key[0]:
+        # two consensuses of one sample are two haplotypes (or two assemblies of
+        # one): their composites share a record only if linked directly, never
+        # through partners (the transitive form of the haplotype gate); when the
+        # alignment judged them different alleles, not even directly ("or" mode)
+        if (
+            (not link or (evaluable and not aln_link))
+            and _sample_of(a) == _sample_of(b)
+            and _consensus_ids(a) != _consensus_ids(b)
+        ):
             cannot.add((i, j))
         if pair_log is not None:
             pair_log.append({
@@ -937,6 +949,15 @@ def merge_same_type_with_core_alignments(
         patterns = [p for idx in cc for p in composites[idx].svPatterns]
         out.append(SVcomposite.from_SVpatterns(svPatterns=patterns))
     return out
+
+
+def _sample_of(svc: SVcomposite) -> str | None:
+    samples = {p.samplename for p in svc.svPatterns}
+    return next(iter(samples)) if len(samples) == 1 else None
+
+
+def _consensus_ids(svc: SVcomposite) -> frozenset[str]:
+    return frozenset(p.consensusID for p in svc.svPatterns)
 
 
 def _pair_log_id(svc: SVcomposite) -> str:

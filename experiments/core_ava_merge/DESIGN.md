@@ -72,7 +72,7 @@ Same SV type only (INS with INS, DEL with DEL), different consensuses.
    P_y overlaps x's range (+- 50 bp).
 3. Haplotype agreement: the indel bases of the A-B alignment inside
    hull(x's range, P_y) +- 150 bp flank (clipped to the aligned part) are
-   <= max(10 bp, 0.1 * larger SV size), and x's inserted bases carry <= 20% (+2)
+   <= max(10 bp, 0.1 * smaller SV size), and x's inserted bases carry <= 20% (+2)
    mismatches. Gaps between blocks count max(gap on A, gap on B). At least
    30 aligned bp are needed on each side of the hull.
    The hull matters: a first version judged a window around x alone ("is x
@@ -89,16 +89,20 @@ Same SV type only (INS with INS, DEL with DEL), different consensuses.
    flanks, or the composite spans two consensuses/strands, the pair is not
    evaluable and the existing pairwise rule decides (`align` mode). In `or`
    mode the existing rule's links are always kept and alignment links added.
-6. One case is handed back to the existing rule: no correspondence, but the
-   haplotypes agree across both SVs, and neither SV is linked to another
-   composite of the other consensus. That is one event placed differently by
-   the two consensus-to-reference alignments (an imperfect repeat; the 40-bp
-   DEL placed 169 bp apart at chr22:30631699/30631908).
+6. Twins: no correspondence, but the haplotypes agree across both SVs within
+   10 bp (no relative tolerance), and neither SV is linked to another composite
+   of the other consensus: one haplotype difference placed differently by the
+   two consensus-to-reference alignments (an imperfect repeat; the 40-bp DEL
+   placed 169 bp apart at chr22:30631699/30631908). Linked. (v2 handed these to
+   the pairwise rule, which rejects them on size; 35 A1 records stayed unjoined
+   for that reason.)
 
 ### Tolerance ("near-identical")
 
-Indel bases between the two *haplotypes* around the SV, not the difference of
-the reference-alignment indel sizes. `max(10, 0.1 * size)`:
+Indel bases between the two *haplotypes* around the SVs, not the difference of
+the reference-alignment indel sizes. `max(10, 0.1 * size of the smaller SV)`
+(v1-v3: the larger; a 973-bp DEL then lent 97 bp of tolerance to a 47-bp
+piece 57 bp different):
 - 10 bp absorb consensus homopolymer/STR slippage (ONT R10; the tr_substring
   study finds median consensus identity 1.000 to Q100, read sigma 1.5-7 bp);
 - 0.1 * size mirrors the existing 10% size rule, but on sequence. A tandem-repeat
@@ -119,13 +123,17 @@ union-find puts all of them into one record. Representative unchanged: the
 best-supported (sample, consensus) group; its pieces are summed (size) and
 concatenated (ALT), its strongest pattern gives the position.
 
-### Constraint
+### Constraint (transitive haplotype gate)
 
-Links are applied best first (alignment links by indel/size, then the rule's).
-A link is skipped when it would put two composites of the same sample from
-different consensuses into one record although the alignment found them to be
-different alleles (`distinct`). This keeps a compound-heterozygous child's two
-alleles apart even when partners would chain them.
+Links are applied best first (alignment links by indel/size, twins after them,
+then the rule's). Two composites of one sample from different consensuses (two
+haplotypes, or two overlapping CRs) may share a record only if they are linked
+directly; a link that would join them through partners is skipped, and when
+the alignment judged them different alleles they are not joined even if the
+pairwise rule would (`or` mode). This keeps a compound-heterozygous child's two
+alleles apart. (v1-v3 blocked only pairs judged `distinct`; the harness then
+showed 405 -> 657 records holding two child consensuses whose sizes differ by
+more than 10%; most were one allele decomposed differently, some were chains.)
 
 ### Samples without a consensus at the locus
 
