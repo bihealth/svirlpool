@@ -1,4 +1,4 @@
-# Core-vs-core alignment merge: results (prototype)
+# Core-vs-core alignment merge: results
 
 GIAB HG002 (son) / HG003 / HG004, 30x ONT, hg38. Local copies of the evaluation
 DBs (built by 8d5ebd7), `bench.sh` (strict Mendel scorer pinned to c8804b1,
@@ -194,3 +194,42 @@ joined to the transmitting parent): A1 395 / 375 (v5 410 / 386; d3_guard 6 / 0),
 B 1 / 1 (v5 0 / 2; d3_guard 1 / 0), C 15, D_cons 34, D_gt 22, wrong-parent-only
 attachments 2. Record transitions vs base: 883 inconsistent -> consistent, 388
 new violations (v5: 904 / 298). Merge step 238 s, wall 18:52, peak RSS 20.3 GB.
+
+## Production version (`feat/core-alignment-merge`)
+
+Changes against v6 (see DESIGN.md): mappy in-process instead of ~96k minimap2
+processes, no wall-clock timeout, groups of all chromosomes scheduled one by one
+(largest first) and reassembled in chromosome/group order, cores aligned in
+sorted order (the set order depended on the worker's hash seed), the pairwise
+rule evaluated only for pairs the alignment cannot judge, `--core-alignment-merge`
+a plain switch (no `or` mode), and (ec420a6) only the hull of a core's SV
+placement ranges +- 5 kb aligned. Same trio 30x inputs, `bench.sh`, 8 threads
+unless noted.
+
+| arm | commit | flags | PASS | MC | P | R | F1 | H | merge step | wall |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| prod_off | a8e8bab | - | 40,696 | 0.9166 | 0.8755 | 0.7649 | 0.8165 | 0.8473 | 62 s | 18:13 |
+| prod_align | a8e8bab | `--core-alignment-merge` (whole cores) | 41,474 | 0.9318 | 0.8900 | 0.7756 | 0.8289 | 0.8606 | 282 s | 20:43 |
+| prod_notwins | a8e8bab | + hidden `--core-alignment-no-twins` | 42,175 | 0.9266 | 0.8899 | 0.7766 | 0.8294 | 0.8594 | 289 s | 20:38 |
+| prod_crop5k | ec420a6 | `--core-alignment-merge` | 41,470 | 0.9320 | 0.8900 | 0.7753 | 0.8287 | 0.8605 | 230 s | 19:08 |
+| prod_crop5k_t16 | ec420a6 | same, 16 threads | 41,470 | 0.9320 | 0.8900 | 0.7753 | 0.8287 | 0.8605 | 166 s | 18:11 |
+
+(T2T-Q100. Arms ran three/two at a time on a 24-core machine, so the merge-step
+times include contention.)
+
+- Flag off: the same 47,403 records as base_c8804b1 (only the SEQ_ID numbering
+  of 8 symbolic DELs differs, as for the prototype's flag-off arm).
+- Determinism: prod_crop5k and prod_crop5k_t16 (8 vs 16 threads, separate runs)
+  are byte-identical apart from the `##sequences=` header path.
+- Twins are not what costs F1 against d3_guard: without them F1 +0.05 pt but MC
+  -0.5 pt (H -0.12 pt). They stay on.
+- Cost: alignment CPU ~1,560-2,040 s summed over workers (mappy fixes the seed
+  cap at mid_occ 1000; the prototype's `-U` cap is not available). The work is
+  concentrated in a few repeat-rich groups, the slowest ~90 s (chr11:3.63 Mb,
+  10 cores, 246 kb; 137 s without cropping). mappy `best_n`, `bw_long` and
+  `max_chain_skip` did not help; `w 19` halved the time of the slowest groups
+  but changed most of their alignments (not adopted). Peak RSS unchanged
+  (20.3 GB).
+- Offline (all trio groups, 20 workers): whole cores 149 s, 5 kb crop 107 s,
+  2 kb crop 104 s; INS/DEL records differing from whole cores: 410/371 (5 kb),
+  735/671 (2 kb) of 95k.
