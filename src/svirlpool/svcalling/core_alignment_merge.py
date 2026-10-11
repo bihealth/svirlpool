@@ -210,6 +210,9 @@ class CoreSV:
     size: int
     amb_start: int = -1
     amb_end: int = -1
+    #: the composite's reference interval (chr dropped; one chromosome per group)
+    ref_start: int = -1
+    ref_end: int = -1
 
     def __attrs_post_init__(self):
         if self.amb_start < 0:
@@ -297,7 +300,14 @@ def core_interval_of_composite(
                 amb_s, amb_e = deletion_shift_range(oriented_core, s, deleted.upper())
                 amb_e = max(amb_e, e)
     return CoreSV(
-        key=key, start=s, end=e, size=abs(svc.get_size()), amb_start=amb_s, amb_end=amb_e
+        key=key,
+        start=s,
+        end=e,
+        size=abs(svc.get_size()),
+        amb_start=amb_s,
+        amb_end=amb_e,
+        ref_start=svc.ref_start[1],
+        ref_end=svc.ref_end[1],
     )
 
 
@@ -526,50 +536,13 @@ class PairAlignment:
         return indel, hi - lo
 
 
-@attrs.define
-class SideEvaluation:
-    evaluable: bool
-    same: bool = False
-    indel: int = 0
-    mismatches: int = 0
-    proj_start: int = 0
-    proj_end: int = 0
-
-
-def evaluate_sv_on_partner(
-    aln: PairAlignment, sv: CoreSV, q_len: int, params: CoreAlnParams
-) -> SideEvaluation:
-    """Is the haplotype around sv (on q) the same on t, and where does sv land on t?
-
-    The window is the SV's placement range plus `flank` bases each side, clipped
-    to the core and to the aligned part; at least `min_flank` aligned bases are
-    needed on each side of the placement range.
-    """
-    s, e = sv.amb_start, sv.amb_end
-    if s - aln.q0 < params.min_flank or aln.q1 - e < params.min_flank:
-        return SideEvaluation(evaluable=False)
-    w0 = max(aln.q0, s - params.flank)
-    w1 = min(aln.q1, e + params.flank, q_len)
-    indel, _ = aln.window_differences(w0, w1)
-    _, mm_sv = aln.window_differences(sv.start, max(sv.end, sv.start + 1))
-    tol = max(params.abs_tol, params.frac_tol * sv.size)
-    same = indel <= tol
-    if same and sv.end - sv.start > 0 and mm_sv > (
-        params.max_mismatch_frac * (sv.end - sv.start) + 2
-    ):
-        same = False
-    ps = aln.map_pos(s)
-    pe = aln.map_pos(e, right=True)
-    if pe < ps:
-        ps, pe = pe, ps
-    return SideEvaluation(
-        evaluable=True,
-        same=same,
-        indel=indel,
-        mismatches=mm_sv,
-        proj_start=ps,
-        proj_end=pe,
-    )
+def project(aln: PairAlignment, start: int, end: int) -> tuple[int, int] | None:
+    """[start, end) on q projected onto t, or None if it is not inside the chain."""
+    if start < aln.q0 or end > aln.q1:
+        return None
+    ps = aln.map_pos(start)
+    pe = aln.map_pos(end, right=True)
+    return (ps, pe) if ps <= pe else (pe, ps)
 
 
 def _overlaps(a0: int, a1: int, b0: int, b1: int, slack: int) -> bool:
@@ -579,18 +552,17 @@ def _overlaps(a0: int, a1: int, b0: int, b1: int, slack: int) -> bool:
 
 @attrs.define
 class PairDecision:
-    #: the alignment judged at least one side of the pair
+    #: the alignment covers both SVs with flanks
     evaluable: bool
-    #: same allele
+    #: same allele: corresponding places, haplotypes agree across both SVs
     link: bool
-    #: the two SVs sit at corresponding places but the haplotypes differ there
+    #: corresponding places, haplotypes differ there (different alleles)
     distinct: bool
-    #: indel bases / SV size of the side that linked (lower is better)
+    #: indel bases / SV size (lower is better)
     score: float
     detail: dict
-    #: both SVs are present on the other consensus (the haplotypes agree around
-    #: both), but neither lands on the other: two placements of one event or two
-    #: events that both haplotypes carry; the pairwise rule decides
+    #: no corresponding places, but the haplotypes agree across both SVs: two
+    #: placements of one event, or two events both haplotypes carry
     both_same: bool = False
 
 
@@ -601,54 +573,75 @@ def decide_pair(
     len_x: int,
     len_y: int,
     params: CoreAlnParams,
+    span_x: tuple[int, int] | None = None,
+    span_y: tuple[int, int] | None = None,
 ) -> PairDecision:
-    """Alignment-based decision for composite x (on core x.key) and y (on y.key)."""
+    """Alignment-based decision for composite x (on core A = x.key) and y (on B).
+
+    1. Correspondence: x's placement range projected onto B overlaps y's (within
+       link_slack), or y's projected onto A overlaps x's.
+    2. Haplotype agreement: the A-B alignment across the hull of x's range and
+       y's projection on A, plus `flank` on each side, has at most
+       max(abs_tol, frac_tol * larger size) indel bases (and the inserted bases
+       of x at most max_mismatch_frac mismatches). The hull makes a difference
+       anywhere between or around the two SVs count: in a long, imperfect VNTR
+       a window around x alone can look identical while the other haplotype has
+       extra units next to it.
+    Evaluable only if both ranges project and the hull has min_flank aligned
+    bases on both sides. One exception: when the reference spans of both cores
+    (span_x, span_y) cover both SVs, the two cores hold the locus, and a range
+    that does not project means the alignment breaks there (a large difference
+    or an unalignable repeat): judged, not linked.
+    """
+    lo_ref = min(x.ref_start, y.ref_start)
+    hi_ref = max(x.ref_end, y.ref_end)
+    covered = (
+        span_x is not None
+        and span_y is not None
+        and span_x[0] <= lo_ref
+        and hi_ref <= span_x[1]
+        and span_y[0] <= lo_ref
+        and hi_ref <= span_y[1]
+    )
     if aln_xy is None:
         return PairDecision(False, False, False, 1.0, {"reason": "no_alignment"})
-    ex = evaluate_sv_on_partner(aln_xy, x, len_x, params)
-    ey = evaluate_sv_on_partner(aln_xy.inverted(), y, len_y, params)
-    x_on_y = ex.evaluable and _overlaps(
-        ex.proj_start, ex.proj_end, y.amb_start, y.amb_end, params.link_slack
+    inv = aln_xy.inverted()
+    px = project(aln_xy, x.amb_start, x.amb_end)  # x on B
+    py = project(inv, y.amb_start, y.amb_end)  # y on A
+    detail = {
+        "x_iv": (x.start, x.end, x.amb_start, x.amb_end),
+        "y_iv": (y.start, y.end, y.amb_start, y.amb_end),
+        "x_proj": px,
+        "y_proj": py,
+    }
+    if px is None or py is None:
+        detail["reason"] = "not_projected" + ("_covered" if covered else "")
+        return PairDecision(covered, False, False, 1.0, detail)
+    corr = _overlaps(px[0], px[1], y.amb_start, y.amb_end, params.link_slack) or _overlaps(
+        py[0], py[1], x.amb_start, x.amb_end, params.link_slack
     )
-    y_on_x = ey.evaluable and _overlaps(
-        ey.proj_start, ey.proj_end, x.amb_start, x.amb_end, params.link_slack
-    )
-    link = False
-    score = 1.0
-    if x_on_y and ex.same:
-        link = True
-        score = min(score, ex.indel / max(1, x.size))
-    if y_on_x and ey.same:
-        link = True
-        score = min(score, ey.indel / max(1, y.size))
-    distinct = (
-        not link
-        and (x_on_y or y_on_x)
-        and not (ex.evaluable and ex.same)
-        and not (ey.evaluable and ey.same)
-    )
+    lo = min(x.amb_start, py[0])
+    hi = max(x.amb_end, py[1])
+    if lo - aln_xy.q0 < params.min_flank or aln_xy.q1 - hi < params.min_flank:
+        detail["reason"] = "no_flank"
+        return PairDecision(False, False, False, 1.0, detail)
+    w0 = max(aln_xy.q0, lo - params.flank)
+    w1 = min(aln_xy.q1, hi + params.flank, len_x)
+    indel, _ = aln_xy.window_differences(w0, w1)
+    _, mm = aln_xy.window_differences(x.start, max(x.end, x.start + 1))
+    size = max(x.size, y.size)
+    tol = max(params.abs_tol, params.frac_tol * size)
+    same = indel <= tol
+    if same and x.end - x.start > 0 and mm > params.max_mismatch_frac * (x.end - x.start) + 2:
+        same = False
+    detail.update({"corr": corr, "indel": indel, "mm": mm, "window": (w0, w1), "same": same})
     return PairDecision(
-        evaluable=ex.evaluable or ey.evaluable,
-        link=link,
-        distinct=distinct,
-        score=score,
-        both_same=(not link and ex.evaluable and ex.same and ey.evaluable and ey.same),
-        detail={
-            "x_iv": (x.start, x.end, x.amb_start, x.amb_end),
-            "y_iv": (y.start, y.end, y.amb_start, y.amb_end),
-            "x_eval": ex.evaluable,
-            "x_same": ex.same,
-            "x_indel": ex.indel,
-            "x_mm": ex.mismatches,
-            "x_proj": (ex.proj_start, ex.proj_end),
-            "y_eval": ey.evaluable,
-            "y_same": ey.same,
-            "y_indel": ey.indel,
-            "y_mm": ey.mismatches,
-            "y_proj": (ey.proj_start, ey.proj_end),
-            "x_on_y": x_on_y,
-            "y_on_x": y_on_x,
-        },
+        evaluable=True,
+        link=corr and same,
+        distinct=corr and not same,
+        score=indel / max(1, size),
+        both_same=(not corr) and same,
+        detail=detail,
     )
 
 
@@ -722,22 +715,24 @@ def place_composites(
     return placed, oriented
 
 
-def core_reference_starts(
+def core_reference_spans(
     composites: list[SVcomposite], placed: list[CoreSV | None]
-) -> tuple[dict[tuple[str, str], int], dict[tuple[str, str], int]]:
-    """Reference start of each core (its consensus_aln_interval, most common
+) -> tuple[dict[tuple[str, str], tuple[int, int]], dict[tuple[str, str], int]]:
+    """Reference span of each core (its consensus_aln_interval, most common
     value) and the summed SV sizes of each core's composites."""
-    starts: dict[tuple[str, str], Counter] = defaultdict(Counter)
+    spans: dict[tuple[str, str], Counter] = defaultdict(Counter)
     drift: dict[tuple[str, str], int] = defaultdict(int)
     for svc, p in zip(composites, placed, strict=True):
         if p is None:
             continue
         for pattern in svc.svPatterns:
             for prim in pattern.SVprimitives:
-                if prim.consensus_aln_interval is not None:
-                    starts[p.key][prim.consensus_aln_interval[1]] += 1
+                interval = prim.consensus_aln_interval
+                if interval is not None:
+                    a, b = interval[1], interval[2]
+                    spans[p.key][(min(a, b), max(a, b))] += 1
         drift[p.key] += p.size
-    return {k: c.most_common(1)[0][0] for k, c in starts.items()}, dict(drift)
+    return {k: c.most_common(1)[0][0] for k, c in spans.items()}, dict(drift)
 
 
 def align_group_cores(
@@ -806,6 +801,7 @@ def merge_same_type_with_core_alignments(
     params: CoreAlnParams,
     stats: GroupStats,
     pair_log: list[dict] | None = None,
+    spans: dict[tuple[str, str], tuple[int, int]] | None = None,
 ) -> list[SVcomposite]:
     """Union of composites of one SV type: alignment links, old rule, constraints.
 
@@ -817,6 +813,7 @@ def merge_same_type_with_core_alignments(
     n = len(composites)
     if n == 0:
         return []
+    spans = spans or {}
     links: list[tuple[float, int, int]] = []
     cannot: set[tuple[int, int]] = set()
     decisions: dict[tuple[int, int], PairDecision | None] = {}
@@ -832,11 +829,17 @@ def merge_same_type_with_core_alignments(
             if pa is not None and pb is not None:
                 aln = alignments.get((pa.key, pb.key))
                 dec = decide_pair(
-                    pa, pb, aln, len(oriented[pa.key]), len(oriented[pb.key]), params
+                    pa,
+                    pb,
+                    aln,
+                    len(oriented[pa.key]),
+                    len(oriented[pb.key]),
+                    params,
+                    spans.get(pa.key),
+                    spans.get(pb.key),
                 )
-                if dec.detail.get("x_on_y") and dec.detail.get("x_same"):
+                if dec.link:
                     represented.add((i, pb.key))
-                if dec.detail.get("y_on_x") and dec.detail.get("y_same"):
                     represented.add((j, pa.key))
             decisions[(i, j)] = dec
     for (i, j), dec in decisions.items():
@@ -961,12 +964,32 @@ def merge_group_with_core_alignments(
     keys_del = {p.key for p in placed[len(ins) :] if p is not None}
     keys = keys_ins | keys_del
     alignments = {}
+    spans, drift = core_reference_spans(indels, placed)
     if len(keys_ins) > 1 or len(keys_del) > 1:
-        ref_start, drift = core_reference_starts(indels, placed)
-        alignments = align_group_cores(oriented, keys, params, stats, ref_start, drift)
+        alignments = align_group_cores(
+            oriented, keys, params, stats, {k: v[0] for k, v in spans.items()}, drift
+        )
     merged = merge_same_type_with_core_alignments(
-        ins, placed[: len(ins)], oriented, alignments, old_rule_ins, mode, params, stats, pair_log
+        ins,
+        placed[: len(ins)],
+        oriented,
+        alignments,
+        old_rule_ins,
+        mode,
+        params,
+        stats,
+        pair_log,
+        spans,
     ) + merge_same_type_with_core_alignments(
-        dels, placed[len(ins) :], oriented, alignments, old_rule_del, mode, params, stats, pair_log
+        dels,
+        placed[len(ins) :],
+        oriented,
+        alignments,
+        old_rule_del,
+        mode,
+        params,
+        stats,
+        pair_log,
+        spans,
     )
     return merged, rest

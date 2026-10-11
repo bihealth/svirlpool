@@ -304,3 +304,46 @@ def test_pair_alignment_inversion_round_trip():
     inv = aln.inverted()
     assert inv.map_pos(45) == 50
     assert inv.inverted() == aln
+
+
+def test_one_deletion_placed_at_two_copies_of_an_imperfect_repeat(rng):
+    # five 40-bp copies that differ by one base each; the child's consensus
+    # deletes the first copy, the mother's the last: the same haplotype (only
+    # mismatches between them), the two deletions 160 bp apart
+    unit = rand_seq(40, rng)
+    copies = [with_snvs(unit, [5 + 7 * k]) for k in range(5)]
+    left, right = rand_seq(1500, rng), rand_seq(1500, rng)
+    child = left + "".join(copies[1:]) + right
+    mother = left + "".join(copies[:4]) + right
+    group = [
+        dele("HG002", "1.0", child, len(left), copies[0], 1500),
+        dele("HG004", "5.0", mother, len(left) + 160, copies[4], 1660),
+    ]
+    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, False))
+    # both deletions are present on the other haplotype, neither lands on the
+    # other: the pairwise rule decides
+    merged, stats = run(group, cores, old=always)
+    assert len(merged) == 1 and stats.links_both_same_old == 1
+    merged, _ = run(group, cores, old=never)
+    assert len(merged) == 2
+
+
+def test_short_and_long_allele_of_an_imperfect_vntr_stay_apart(rng):
+    # 18-bp units with one random substitution each: no exact shifting, and a
+    # window around the child's +180 alone looks identical in the father's +1080
+    unit = rand_seq(18, rng)
+
+    def units(n):
+        return "".join(with_snvs(unit, [rng.randrange(18)]) for _ in range(n))
+
+    left, ref_units, extra, right = rand_seq(1500, rng), units(20), units(60), rand_seq(1500, rng)
+    child = left + extra[:180] + ref_units + right
+    father = left + extra + ref_units + right
+    group = [
+        ins("HG002", "1.0", child, len(left), 180, 1500),
+        ins("HG003", "9.0", father, len(left), 1080, 1500),
+    ]
+    cores = cores_of(c=("HG002", "1.0", child, False), f=("HG003", "9.0", father, False))
+    merged, stats = run(group, cores, old=always)
+    assert len(merged) == 2
+    assert stats.distinct_pairs == 1
