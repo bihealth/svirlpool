@@ -604,3 +604,51 @@ def test_cores_are_read_from_the_db_and_old_headers_are_skipped(tmp_path):
     cores, without_core = cam.load_core_sequences(db, {"1.0", "2.0"})
     assert cores == {"1.0": (2, "CCGGTT")}
     assert without_core == 1
+
+
+@pytest.mark.parametrize("crop_margin", [None, 300])
+def test_cropped_cores_give_the_same_decisions(rng, crop_margin):
+    # the decomposed insertion of the first test, with SNVs far from the SVs
+    # that only the uncropped alignment sees
+    left, right, inserted = rand_seq(2000, rng), rand_seq(2000, rng), rand_seq(944, rng)
+    hap = left + inserted + right
+    child = with_snvs(hap[200 : 2000 + 944 + 1700], [50, 4200])
+    mother = with_snvs(hap[500 : 2000 + 944 + 1800], [100, 2700])
+    c0 = 2000 - 200
+    group = [
+        ins("HG002", "1.0", child, c0, 149, 2000),
+        ins("HG002", "1.0", child, c0 + 149, 199, 2000),
+        ins("HG002", "1.0", child, c0 + 348, 596, 2000),
+        ins("HG004", "5.0", mother, 2000 - 500, 944, 2000, reverse=True),
+    ]
+    cores = cores_of(c=("HG002", "1.0", child, False), m=("HG004", "5.0", mother, True))
+    params = cam.CoreAlnParams(crop_margin=crop_margin)
+    merged, stats = run(group, cores, params=params)
+    assert len(merged) == 1 and len(merged[0].svPatterns) == 4
+    assert stats.links_alignment == 3
+    # the blocks come back in whole-core coordinates
+    placed, oriented = cam.place_composites(group, cores)
+    keys = {p.key for p in placed}
+    windows = {
+        k: (
+            min(p.amb_start for p in placed if p.key == k),
+            max(p.amb_end for p in placed if p.key == k),
+        )
+        for k in keys
+    }
+    alns = cam.align_group_cores(
+        oriented, keys, params, cam.GroupStats(), windows=windows
+    )
+    ck, mk = ("HG002", "1.0"), ("HG004", "5.0")
+    aln = alns[(ck, mk)]
+    for q, t, n in aln.runs:
+        assert q + n <= len(oriented[ck]) and t + n <= len(oriented[mk])
+        assert sum(
+            a != b
+            for a, b in zip(
+                oriented[ck][q : q + n], oriented[mk][t : t + n], strict=True
+            )
+        ) == sum(1 for m in aln.mm_q if q <= m < q + n)
+    if crop_margin is not None:
+        assert aln.q0 >= windows[ck][0] - crop_margin
+        assert aln.q1 <= windows[ck][1] + crop_margin
