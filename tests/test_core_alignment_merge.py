@@ -652,3 +652,17 @@ def test_cropped_cores_give_the_same_decisions(rng, crop_margin):
     if crop_margin is not None:
         assert aln.q0 >= windows[ck][0] - crop_margin
         assert aln.q1 <= windows[ck][1] + crop_margin
+
+
+def test_core_alignment_merge_is_on_by_default():
+    import argparse
+
+    from svirlpool.svcalling import multisample_sv_calling as msc
+
+    parser = argparse.ArgumentParser()
+    msc.add_arguments(parser)
+    required = ["--input", "a.db", "--output", "o.vcf.gz", "--reference", "r.fa"]
+    params = msc.core_alignment_params_from_args(parser.parse_args(required))
+    assert params == cam.CoreAlnParams()
+    off = parser.parse_args([*required, "--no-core-alignment-merge"])
+    assert msc.core_alignment_params_from_args(off) is None

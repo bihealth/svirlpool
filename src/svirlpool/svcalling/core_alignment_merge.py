@@ -1,7 +1,7 @@
 """Cross-sample merge of SVcomposites by aligning the consensus cores.
 
-Switched on with ``svirlpool sv-calling --core-alignment-merge``; without it the
-merge is unchanged.
+On by default (``svirlpool sv-calling --core-alignment-merge``);
+``--no-core-alignment-merge`` leaves the INS/DEL merge to the pairwise rule.
 
 Idea: every SVpattern sits on a consensus sequence (``consensusID``,
 ``read_start``/``read_end`` on the padded consensus). Two consensuses whose

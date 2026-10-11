@@ -2797,7 +2797,7 @@ def multisample_sv_calling(
 
 def core_alignment_params_from_args(args) -> CoreAlnParams | None:
     """CoreAlnParams for --core-alignment-merge, None without it."""
-    if not getattr(args, "core_alignment_merge", False):
+    if not getattr(args, "core_alignment_merge", True):
         return None
     return CoreAlnParams(
         flank=args.core_alignment_flank,
@@ -3025,16 +3025,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--core-alignment-merge",
-        action="store_true",
-        default=False,
-        help="EXPERIMENTAL. Judge whether INS/DEL composites of different consensus "
-        "assemblies are the same allele by aligning their consensus cores "
-        "(minimap2/mappy) instead of by SV size: two SVs are the same allele when "
-        "one projects through the alignment onto the other and the two haplotypes "
-        "around them differ by few indel bases. Pairs the alignment cannot judge "
-        "are decided by the pairwise rule; two composites of one sample from "
-        "different consensuses (or two events of one consensus) share a record only "
-        "when linked directly. Needs the consensus cores from the input DBs.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Judge whether INS/DEL composites of different consensus assemblies "
+        "are the same allele by aligning their consensus cores (minimap2/mappy) "
+        "instead of by SV size: two SVs are the same allele when one projects "
+        "through the alignment onto the other and the two haplotypes around them "
+        "differ by few indel bases. Pairs the alignment cannot judge are decided by "
+        "the pairwise rule; two composites of one sample from different consensuses "
+        "(or two events of one consensus) share a record only when linked directly. "
+        "Reads the consensus cores from the input DBs (default: on; "
+        "--no-core-alignment-merge: the pairwise rule only).",
     )
     parser.add_argument(
         "--core-alignment-no-twins",

@@ -1,7 +1,8 @@
 # Core-vs-core alignment as the cross-sample merge criterion
 
 Prototype on branch `exp/core-ava-merge` (v1-v6), productionized on
-`feat/core-alignment-merge` (default behaviour unchanged).
+`feat/core-alignment-merge`, on by default since it went into
+`fix/all-fixes-integration` (`--no-core-alignment-merge`: the pairwise rule only).
 Switch: `svirlpool sv-calling --core-alignment-merge` (v6 design: the alignment
 decides every pair it can judge, the pairwise rule the others; the prototype's
 `or` mode is gone).
