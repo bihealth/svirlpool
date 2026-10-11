@@ -73,8 +73,11 @@ Same SV type only (INS with INS, DEL with DEL), different consensuses.
 3. Haplotype agreement: the indel bases of the A-B alignment inside
    hull(x's range, P_y) +- 150 bp flank (clipped to the aligned part) are
    <= max(10 bp, 0.1 * smaller SV size), and x's inserted bases carry <= 20% (+2)
-   mismatches. Gaps between blocks count max(gap on A, gap on B). At least
-   30 aligned bp are needed on each side of the hull.
+   mismatches. A stretch unaligned on both sides (between blocks) counts
+   max(gap on A, gap on B); insertions/deletions less than 50 bp apart count
+   their net length (v5: inside a repeat minimap2 writes one difference as
+   alternating 2-bp insertions and deletions, chr7:87626349: 36 indel bases,
+   net 11). At least 30 aligned bp are needed on each side of the hull.
    The hull matters: a first version judged a window around x alone ("is x
    present on B?"); in long, imperfect VNTRs that window looked identical while
    the other haplotype carried 1.1 kb of extra units next to it, and the
@@ -113,6 +116,9 @@ piece 57 bp different):
   same Q100 haplotype in child and transmitting-parent consensus in 68% of the
   size-discordant records). B (parent reads lack the child's allele, typically
   several STR units, 10-55 units) should stay apart at 0.1.
+- Measured (RESULTS.md): 0.2 instead of 0.1 gives MC +0.09 pt, the same F1/H,
+  11 more A1 records consistent, and 3 of the 21 B records consistent (0 at 0.1).
+  0.1 stays the default.
 
 ### Different decompositions of one haplotype
 
